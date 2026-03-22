@@ -38,7 +38,7 @@ These decisions were made during brainstorming and constrain the design:
 | `Symbol` | `"Symbol"` |
 | `ZapfDingbats` | `"ZapfDingbats"` |
 
-Derives: `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`.
+Derives: `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`.
 
 **`PdfPosition`** — A point on a PDF page.
 
@@ -85,7 +85,7 @@ Unit tests co-located in `#[cfg(test)]`. Cover:
 |---------|--------|------|
 | `OpenFailed` | `#[from] lopdf::Error` | Source PDF cannot be parsed |
 | `PageNotFound` | `requested: u32, total: u32` | Overlay references a nonexistent page |
-| `SaveFailed` | `path: PathBuf, source: io::Error` | Output file cannot be written |
+| `SaveFailed` | `path: PathBuf, source: lopdf::Error` | Output file cannot be written |
 
 ### Public API
 
