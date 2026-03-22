@@ -157,19 +157,25 @@ Skills support dynamic values in skill content:
 
 ### Dynamic Context Injection
 
-The `` !`command` `` syntax runs shell commands **before** Claude sees the skill content. The output replaces the placeholder.
+Prefix a backtick-quoted command with an exclamation mark (no space between them) to run a shell command **before** Claude sees the skill content. The command output replaces the placeholder inline.
 
-```yaml
+**Syntax:** The exclamation character followed immediately by a backtick-quoted command, with no space between them. For example, to inject the output of "gh pr diff", write the exclamation character then the command in backticks, all as one token.
+
+Example skill (shown with the injection syntax spelled out to avoid triggering the preprocessor):
+
+```
 ---
 name: pr-summary
 context: fork
 agent: Explore
 ---
-PR diff: !`gh pr diff`
-Changed files: !`gh pr diff --name-only`
+PR diff: <exclamation-backtick>gh pr diff<backtick>
+Changed files: <exclamation-backtick>gh pr diff --name-only<backtick>
 
 Summarize this pull request.
 ```
+
+In the actual file, replace each `<exclamation-backtick>...<backtick>` with the real syntax (exclamation mark + backtick-quoted command). The preprocessor runs before markdown parsing, so code fences do not prevent execution — this is why this documentation uses placeholders.
 
 This is preprocessing — Claude only sees the final result with actual data inserted.
 
