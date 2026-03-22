@@ -32,6 +32,10 @@ pub fn write_overlays(
     destination: &Path,
     overlays: &[TextOverlay],
 ) -> Result<(), WriterError> {
+    if overlays.is_empty() {
+        return Ok(());
+    }
+
     let mut doc = Document::load(source).map_err(WriterError::OpenFailed)?;
 
     let pages = doc.get_pages();
@@ -688,6 +692,54 @@ mod tests {
         assert_eq!(
             bt_count, 2,
             "expected 2 BT blocks (one per overlay) in the overlay stream, got {bt_count}"
+        );
+    }
+
+    #[test]
+    fn write_overlays_empty_slice_returns_ok_without_creating_destination() {
+        let src = NamedTempFile::new().expect("failed to create temp file");
+        create_test_pdf(src.path());
+
+        let dst_path = src.path().with_extension("output.pdf");
+
+        write_overlays(src.path(), &dst_path, &[]).expect("write_overlays failed");
+
+        assert!(
+            !dst_path.exists(),
+            "destination file should not be created for empty overlays"
+        );
+    }
+
+    #[test]
+    fn write_overlays_invalid_page_returns_page_not_found() {
+        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+
+        let src = NamedTempFile::new().expect("failed to create temp file");
+        create_test_pdf(src.path());
+
+        let dst = NamedTempFile::new().expect("failed to create temp file");
+
+        let overlay = TextOverlay {
+            page: 99,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Ghost".to_string(),
+            font: Standard14Font::Helvetica,
+            font_size: 12.0,
+        };
+
+        let result = write_overlays(src.path(), dst.path(), &[overlay]);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                WriterError::PageNotFound {
+                    requested: 99,
+                    total: 1
+                }
+            ),
+            "expected PageNotFound for page 99, got: {err}"
         );
     }
 
