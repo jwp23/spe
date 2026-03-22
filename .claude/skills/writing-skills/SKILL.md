@@ -17,7 +17,7 @@ You write test cases (pressure scenarios with subagents), watch them fail (basel
 
 **REQUIRED BACKGROUND:** You MUST understand superpowers:test-driven-development before using this skill. That skill defines the fundamental RED-GREEN-REFACTOR cycle. This skill adapts TDD to documentation.
 
-**Official guidance:** For Anthropic's official skill authoring best practices, see anthropic-best-practices.md. This document provides additional patterns and guidelines that complement the TDD-focused approach in this skill.
+**Official guidance:** For Anthropic's official skill authoring best practices, see anthropic-best-practices.md. For the complete guide covering planning, testing, distribution, and the skill-creator tool, see anthropic-skills-guide.md. This skill provides additional TDD-focused methodology that complements the official guidance.
 
 ## What is a Skill?
 
@@ -93,19 +93,38 @@ skills/
 ## SKILL.md Structure
 
 **Frontmatter (YAML):**
-- Only two fields supported: `name` and `description`
-- Max 1024 characters total
-- `name`: Use letters, numbers, and hyphens only (no parentheses, special chars)
-- `description`: Third-person, describes ONLY when to use (NOT what it does)
-  - Start with "Use when..." to focus on triggering conditions
-  - Include specific symptoms, situations, and contexts
-  - **NEVER summarize the skill's process or workflow** (see CSO section for why)
-  - Keep under 500 characters if possible
+
+All fields optional. Only `description` is recommended so Claude knows when to use the skill.
+
+| Field | Description |
+|-------|-------------|
+| `name` | Display name. Lowercase letters, numbers, hyphens only. Max 64 chars. If omitted, uses directory name. |
+| `description` | What the skill does and when to use it. Max 1024 chars. See CSO section for how to write effective descriptions. |
+| `argument-hint` | Autocomplete hint for expected arguments. Example: `[issue-number]` or `[filename] [format]`. |
+| `disable-model-invocation` | Set `true` to prevent Claude from auto-loading. User must invoke with `/name`. |
+| `user-invocable` | Set `false` to hide from `/` menu. Only Claude can invoke. Use for background knowledge. |
+| `allowed-tools` | Tools Claude can use without permission when skill is active. Example: `Read, Grep, Glob`. |
+| `model` | Model override when skill is active. |
+| `effort` | Effort level override: `low`, `medium`, `high`, `max`. |
+| `context` | Set to `fork` to run in an isolated subagent. |
+| `agent` | Subagent type when `context: fork` (e.g., `Explore`, `Plan`, `general-purpose`, or custom agent name). |
+| `hooks` | Hooks scoped to this skill's lifecycle. |
+
+The [Agent Skills open standard](https://agentskills.io) also supports `license`, `compatibility`, and `metadata` fields for cross-platform distribution.
+
+**`name` constraints:** Lowercase letters, numbers, hyphens. No spaces, capitals, underscores. Cannot contain "anthropic" or "claude". No XML tags.
+
+**`description` guidance:**
+- Write in third person (injected into system prompt)
+- Include what the skill does AND when to use it
+- **NEVER summarize the skill's process or workflow** (see CSO section for why)
+- Include trigger phrases users would say
+- Keep under 500 characters if possible
 
 ```markdown
 ---
-name: Skill-Name-With-Hyphens
-description: Use when [specific triggering conditions and symptoms]
+name: my-skill-name
+description: What this does. Use when [triggering conditions].
 ---
 
 # Skill Name
@@ -114,27 +133,55 @@ description: Use when [specific triggering conditions and symptoms]
 What is this? Core principle in 1-2 sentences.
 
 ## When to Use
-[Small inline flowchart IF decision non-obvious]
-
 Bullet list with SYMPTOMS and use cases
 When NOT to use
-
-## Core Pattern (for techniques/patterns)
-Before/after code comparison
 
 ## Quick Reference
 Table or bullets for scanning common operations
 
-## Implementation
-Inline code for simple patterns
-Link to file for heavy reference or reusable tools
-
 ## Common Mistakes
 What goes wrong + fixes
-
-## Real-World Impact (optional)
-Concrete results
 ```
+
+### String Substitutions
+
+Skills support dynamic values in skill content:
+
+| Variable | Description |
+|----------|-------------|
+| `$ARGUMENTS` | All arguments passed when invoking. If not present in content, appended as `ARGUMENTS: <value>`. |
+| `$ARGUMENTS[N]` | Specific argument by 0-based index (e.g., `$ARGUMENTS[0]`). |
+| `$N` | Shorthand for `$ARGUMENTS[N]` (e.g., `$0`, `$1`). |
+| `${CLAUDE_SESSION_ID}` | Current session ID. |
+| `${CLAUDE_SKILL_DIR}` | Directory containing the skill's SKILL.md. Use in scripts to reference bundled files. |
+
+### Dynamic Context Injection
+
+The `` !`command` `` syntax runs shell commands **before** Claude sees the skill content. The output replaces the placeholder.
+
+```yaml
+---
+name: pr-summary
+context: fork
+agent: Explore
+---
+PR diff: !`gh pr diff`
+Changed files: !`gh pr diff --name-only`
+
+Summarize this pull request.
+```
+
+This is preprocessing — Claude only sees the final result with actual data inserted.
+
+### Invocation Control
+
+| Frontmatter | You invoke | Claude invokes | Description loaded |
+|-------------|-----------|---------------|-------------------|
+| _(default)_ | Yes | Yes | Always in context |
+| `disable-model-invocation: true` | Yes | No | Not in context |
+| `user-invocable: false` | No | Yes | Always in context |
+
+Use `disable-model-invocation: true` for tasks with side effects (deploy, send-message) where you control timing. Use `user-invocable: false` for background knowledge Claude should know but users shouldn't invoke directly.
 
 
 ## Claude Search Optimization (CSO)
@@ -147,9 +194,9 @@ Concrete results
 
 **Format:** Start with "Use when..." to focus on triggering conditions
 
-**CRITICAL: Description = When to Use, NOT What the Skill Does**
+**CRITICAL: Description = Capabilities + Triggers, NOT Process/Workflow**
 
-The description should ONLY describe triggering conditions. Do NOT summarize the skill's process or workflow in the description.
+The description should say what the skill does and when to use it. Do NOT summarize the skill's internal process or workflow steps.
 
 **Why this matters:** Testing revealed that when a description summarizes the skill's workflow, Claude may follow the description instead of reading the full skill content. A description saying "code review between tasks" caused Claude to do ONE review, even though the skill's flowchart clearly showed TWO reviews (spec compliance then code quality).
 
@@ -172,12 +219,15 @@ description: Use when implementing any feature or bugfix, before writing impleme
 ```
 
 **Content:**
-- Use concrete triggers, symptoms, and situations that signal this skill applies
+- State what the skill does (capabilities) AND when to use it (triggers)
+- Capabilities are fine: "Extracts text from PDFs" — this is what, not how
+- Workflow is bad: "Reads XML, parses nodes, extracts text" — this is process
+- Use concrete triggers, symptoms, and situations
 - Describe the *problem* (race conditions, inconsistent behavior) not *language-specific symptoms* (setTimeout, sleep)
 - Keep triggers technology-agnostic unless the skill itself is technology-specific
-- If skill is technology-specific, make that explicit in the trigger
 - Write in third person (injected into system prompt)
 - **NEVER summarize the skill's process or workflow**
+- Note: Skills with `disable-model-invocation: true` have descriptions NOT loaded into context, so CSO matters less for those
 
 ```yaml
 # ❌ BAD: Too abstract, vague, doesn't include when to use
@@ -604,8 +654,9 @@ Deploying untested skills = deploying untested code. It's a violation of quality
 
 **GREEN Phase - Write Minimal Skill:**
 - [ ] Name uses only letters, numbers, hyphens (no parentheses/special chars)
-- [ ] YAML frontmatter with only name and description (max 1024 chars)
-- [ ] Description starts with "Use when..." and includes specific triggers/symptoms
+- [ ] YAML frontmatter with name and description (see Frontmatter Reference for all fields)
+- [ ] Description includes what the skill does AND when to use it (max 1024 chars)
+- [ ] Choose invocation control: default (both), manual-only, or Claude-only
 - [ ] Description written in third person
 - [ ] Keywords throughout for search (errors, symptoms, tools)
 - [ ] Clear overview with core principle

@@ -1,10 +1,12 @@
 # Skill authoring best practices
 
-> Learn how to write effective Skills that Claude can discover and use successfully.
+> Sourced from [Anthropic's official docs](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices) (verified 2026-03-22).
+>
+> **Note:** This page covers the Agent Skills standard (`name` and `description` frontmatter). Claude Code extends this with additional frontmatter fields (`context`, `agent`, `allowed-tools`, `model`, `effort`, `hooks`, `disable-model-invocation`, `user-invocable`, `argument-hint`). See the SKILL.md frontmatter table in the parent writing-skills skill for the complete reference, or consult the [Claude Code skills docs](https://code.claude.com/docs/en/skills).
 
 Good Skills are concise, well-structured, and tested with real usage. This guide provides practical authoring decisions to help you write Skills that Claude can discover and use effectively.
 
-For conceptual background on how Skills work, see the [Skills overview](/en/docs/agents-and-tools/agent-skills/overview).
+For conceptual background on how Skills work, see the [Skills overview](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview).
 
 ## Core principles
 
@@ -144,12 +146,12 @@ What works perfectly for Opus might need more detail for Haiku. If you plan to u
 ## Skill structure
 
 <Note>
-  **YAML Frontmatter**: The SKILL.md frontmatter supports two fields:
+  **YAML Frontmatter**: The Agent Skills standard requires two fields:
 
-  * `name` - Human-readable name of the Skill (64 characters maximum)
-  * `description` - One-line description of what the Skill does and when to use it (1024 characters maximum)
+  * `name` - Lowercase letters, numbers, hyphens only (64 characters maximum). Cannot contain "anthropic" or "claude".
+  * `description` - What the Skill does and when to use it (1024 characters maximum). No XML tags.
 
-  For complete Skill structure details, see the [Skills overview](/en/docs/agents-and-tools/agent-skills/overview#skill-structure).
+  Claude Code extends this with additional fields. See the SKILL.md frontmatter table in the parent writing-skills skill, or the [Claude Code skills docs](https://code.claude.com/docs/en/skills).
 </Note>
 
 ### Naming conventions
