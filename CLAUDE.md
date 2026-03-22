@@ -90,6 +90,18 @@ If a utility that is not commonly pre-installed would meaningfully reduce code c
 
 When calling system utilities from code: use the language's standard subprocess/exec mechanism with error checking enabled. Never invoke commands through a shell interpreter. Wrap failures with clear error messages stating what tool failed and how to install it.
 
+## Code Style
+
+These principles are mandatory regardless of language or framework. See `@docs/code-style-guide.md` for detailed examples and anti-patterns.
+
+- **Human readable** — Code is read far more than it is written. Optimize for the next developer. Descriptive names, clear control flow, no clever tricks.
+- **Loosely coupled** — Components communicate through well-defined interfaces. No module should need to know another's internals. Changing one component must not cascade through the codebase.
+- **Idiomatic** — Use the conventions of the chosen language and framework. Do not import patterns from other ecosystems. Claude records language-specific idiom decisions in `docs/decisions/`.
+- **Simple** — Do not inherit a ball of mud. Prefer composition over inheritance. Prefer flat over nested. Prefer explicit over implicit. If a pattern adds indirection without clear value, do not use it.
+- **Professional** — Write like a senior engineer shipping to production. No TODO-driven development, no dead code, no commented-out blocks, no "temporary" hacks without a tracked issue.
+
+When style conventions and simplicity conflict, simplicity wins.
+
 ## Testing
 
 ### Test Pyramid (Mandatory)
@@ -137,6 +149,7 @@ GitHub Actions CI must run the same checks. Record the pipeline design in `docs/
 
 Read these only when the trigger condition applies:
 
+- `@docs/code-style-guide.md` — Read when writing or reviewing code. Detailed examples and anti-patterns for the five code style principles.
 - `docs/adr/*.md` — Read when making decisions related to an existing ADR, or when context on a past decision is needed
 - `docs/decisions/*.md` — Read when working in an area covered by an existing decision
 - `docs/architecture.md` — Read when modifying component boundaries or data flow (create after bootstrapping)
@@ -151,6 +164,7 @@ Finalized during bootstrapping. Claude proposes and records as a decision doc. E
 ├── docs/
 │   ├── adr/
 │   ├── decisions/
+│   ├── code-style-guide.md
 │   └── architecture.md
 ├── src/ or pkg/ or cmd/     # depends on language
 ├── tests/
