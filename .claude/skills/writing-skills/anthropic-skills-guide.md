@@ -40,7 +40,7 @@ Result: Fully planned sprint with tasks created
 
 ## The skill-creator
 
-The `skill-creator` skill is available in Claude.ai via plugin directory or download for Claude Code. It helps you build and iterate on skills interactively.
+The `skill-creator` skill helps you build, test, and iterate on skills. Available via the Anthropic example-skills plugin (`/plugin install example-skills@anthropic-agent-skills`).
 
 **Usage:** "Use the skill-creator skill to help me build a skill for [your use case]"
 
@@ -50,13 +50,14 @@ The `skill-creator` skill is available in Claude.ai via plugin directory or down
 - Suggests trigger phrases and structure
 - Flags common issues (vague descriptions, missing triggers, structural problems)
 - Identifies potential over/under-triggering risks
-- Suggests test cases based on the skill's stated purpose
+- Suggests and runs test cases with parallel subagent execution (with-skill vs. baseline)
+- Grades test outputs against assertions (`agents/grader.md`)
+- Aggregates quantitative benchmarks — pass rate, timing, token usage (`scripts/aggregate_benchmark.py`)
+- Provides an eval viewer for structured human feedback (`eval-viewer/generate_review.py`)
+- Optimizes skill descriptions for triggering accuracy (`scripts/run_loop.py`)
+- Packages skills for distribution (`scripts/package_skill.py`)
 
-**What it does NOT do:**
-- Execute automated test suites
-- Produce quantitative evaluation results
-
-**Iterative improvement:** After using your skill and encountering edge cases or failures, bring those examples back to skill-creator to improve how the skill handles them.
+**Iterative improvement:** After running test cases, the eval viewer lets you review outputs and leave feedback. skill-creator reads your feedback and improves the skill, then reruns tests in a new iteration. Repeat until satisfied.
 
 ## Testing and Iteration
 

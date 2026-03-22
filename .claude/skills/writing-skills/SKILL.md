@@ -615,6 +615,24 @@ Agent found new rationalization? Add explicit counter. Re-test until bulletproof
 - Plugging holes systematically
 - Meta-testing techniques
 
+### Automated Eval Tooling (Optional)
+
+The **skill-creator** skill provides automated eval infrastructure that complements the manual TDD workflow above. Use it after completing the RED/GREEN/REFACTOR cycle for:
+
+- **Eval viewer** — HTML interface for structured human feedback on test outputs
+- **Benchmark aggregation** — Quantitative pass rate and timing comparison (with-skill vs. baseline)
+- **Description optimization** — Automated train/test loop to improve skill triggering accuracy
+- **Packaging** — Bundle skill into distributable `.skill` file
+
+The manual TDD workflow in this skill is self-contained and works without skill-creator. Use skill-creator when you need quantitative benchmarks, want to scale testing beyond manual subagent runs, or are preparing a skill for distribution.
+
+**Installation:** If skill-creator is not available, install the Anthropic example-skills plugin:
+```
+/plugin install example-skills@anthropic-agent-skills
+```
+
+**REQUIRED:** Use skill-creator for the automated eval workflow.
+
 ## Anti-Patterns
 
 ### ❌ Narrative Example
@@ -688,6 +706,8 @@ Deploying untested skills = deploying untested code. It's a violation of quality
 **Deployment:**
 - [ ] Commit skill to git and push to your fork (if configured)
 - [ ] Consider contributing back via PR (if broadly useful)
+- [ ] Run skill-creator benchmarks (optional — recommended for widely-shared skills)
+- [ ] Optimize description with skill-creator (optional — recommended before distribution)
 
 ## Discovery Workflow
 
