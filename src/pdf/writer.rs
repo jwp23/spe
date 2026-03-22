@@ -1,5 +1,4 @@
 // PDF text overlay writing via lopdf.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 // PDF page rendering via pdftoppm.
 
 use std::io::ErrorKind;
