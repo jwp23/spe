@@ -157,19 +157,25 @@ Skills support dynamic values in skill content:
 
 ### Dynamic Context Injection
 
-The `` !`command` `` syntax runs shell commands **before** Claude sees the skill content. The output replaces the placeholder.
+Prefix a backtick-quoted command with an exclamation mark (no space between them) to run a shell command **before** Claude sees the skill content. The command output replaces the placeholder inline.
 
-```yaml
+**Syntax:** The exclamation character followed immediately by a backtick-quoted command, with no space between them. For example, to inject the output of "gh pr diff", write the exclamation character then the command in backticks, all as one token.
+
+Example skill (shown with the injection syntax spelled out to avoid triggering the preprocessor):
+
+```
 ---
 name: pr-summary
 context: fork
 agent: Explore
 ---
-PR diff: !`gh pr diff`
-Changed files: !`gh pr diff --name-only`
+PR diff: <exclamation-backtick>gh pr diff<backtick>
+Changed files: <exclamation-backtick>gh pr diff --name-only<backtick>
 
 Summarize this pull request.
 ```
+
+In the actual file, replace each `<exclamation-backtick>...<backtick>` with the real syntax (exclamation mark + backtick-quoted command). The preprocessor runs before markdown parsing, so code fences do not prevent execution — this is why this documentation uses placeholders.
 
 This is preprocessing — Claude only sees the final result with actual data inserted.
 
@@ -609,6 +615,24 @@ Agent found new rationalization? Add explicit counter. Re-test until bulletproof
 - Plugging holes systematically
 - Meta-testing techniques
 
+### Automated Eval Tooling (Optional)
+
+The **skill-creator** skill provides automated eval infrastructure that complements the manual TDD workflow above. Use it after completing the RED/GREEN/REFACTOR cycle for:
+
+- **Eval viewer** — HTML interface for structured human feedback on test outputs
+- **Benchmark aggregation** — Quantitative pass rate and timing comparison (with-skill vs. baseline)
+- **Description optimization** — Automated train/test loop to improve skill triggering accuracy
+- **Packaging** — Bundle skill into distributable `.skill` file
+
+The manual TDD workflow in this skill is self-contained and works without skill-creator. Use skill-creator when you need quantitative benchmarks, want to scale testing beyond manual subagent runs, or are preparing a skill for distribution.
+
+**Installation:** If skill-creator is not available, install the Anthropic example-skills plugin:
+```
+/plugin install example-skills@anthropic-agent-skills
+```
+
+**REQUIRED:** Use skill-creator for the automated eval workflow.
+
 ## Anti-Patterns
 
 ### ❌ Narrative Example
@@ -682,6 +706,8 @@ Deploying untested skills = deploying untested code. It's a violation of quality
 **Deployment:**
 - [ ] Commit skill to git and push to your fork (if configured)
 - [ ] Consider contributing back via PR (if broadly useful)
+- [ ] Run skill-creator benchmarks (optional — recommended for widely-shared skills)
+- [ ] Optimize description with skill-creator (optional — recommended before distribution)
 
 ## Discovery Workflow
 

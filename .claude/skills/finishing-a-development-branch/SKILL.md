@@ -1,6 +1,6 @@
 ---
 name: finishing-a-development-branch
-description: Use when implementation is complete and all tests pass - pushes feature branch, creates PR, waits for CI checks to pass, and cleans up worktree
+description: Use when implementation is complete and all tests pass - handles the push, PR creation, and CI verification workflow
 ---
 
 # Finishing a Development Branch
