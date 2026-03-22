@@ -4,27 +4,19 @@ A desktop GUI application for Linux that opens PDF documents, renders pages visu
 
 @AGENTS.md
 
-## Project Bootstrapping
+## Tech Stack
 
-**This is a discovery-driven project.** The language, GUI framework, PDF libraries, and tooling are NOT pre-selected. Claude's first task is to propose and execute a bootstrapping sequence.
+- **Language**: Rust (edition 2024)
+- **GUI**: Iced 0.14 — Cosmic Desktop's native toolkit, GPU-accelerated (wgpu), Wayland-first
+- **PDF rendering**: `pdftoppm` (poppler-utils) via `std::process::Command`
+- **PDF writing**: `lopdf` — modifies existing PDFs to add text content streams
+- **Font discovery**: `fc-list` (fontconfig) via `std::process::Command`
+- **File dialogs**: `rfd` crate (XDG Desktop Portal)
+- **Testing**: `cargo test` with TDD (red/green/refactor)
+- **Linting**: `rustfmt` + `clippy -D warnings`
+- **CI**: GitHub Actions — same checks as pre-commit
 
-### First Session Workflow
-
-1. Propose a bootstrapping sequence as the first action. Present it to the user for approval before proceeding.
-2. Evaluate each decision through discussion with the user.
-3. Record every decision using the formats below.
-4. Do NOT write application code until the bootstrapping sequence is complete and recorded.
-
-### Suggested Bootstrapping ADRs (propose order, user approves)
-
-- Language and runtime selection
-- GUI framework selection
-- PDF rendering and writing library selection
-- Linux system utility integration strategy
-- Testing framework and tooling
-- Code style, formatting, and linting conventions
-- Project directory structure
-- Pre-commit check suite
+See `docs/adr/` for rationale behind each choice.
 
 ## Decision Recording
 
@@ -81,16 +73,14 @@ Rationale: [why, in 1-3 sentences]
 
 ## Linux System Utilities
 
-Prefer common Linux system utilities when they simplify the codebase over pure-library solutions. Check for commonly installed tools first:
+The project uses these system utilities instead of pure-library alternatives:
 
 - `pdftoppm` (poppler-utils) — PDF page rasterization
 - `fc-list` (fontconfig) — discover installed system fonts
-- `qpdf` — PDF optimization, linearization, repair
-- `gs` (Ghostscript) — PDF post-processing
 
-If a utility that is not commonly pre-installed would meaningfully reduce code complexity, propose it to the user and record the decision in `docs/decisions/`. Include installation instructions.
+Each utility has a trait-based wrapper module for testability. See ADR-004.
 
-When calling system utilities from code: use the language's standard subprocess/exec mechanism with error checking enabled. Never invoke commands through a shell interpreter. Wrap failures with clear error messages stating what tool failed and how to install it.
+When calling system utilities: use `std::process::Command` (never shell). Wrap failures with clear error messages stating what tool failed and how to install it.
 
 ## Code Style
 
@@ -122,7 +112,7 @@ Never skip the RED step. If a test passes immediately, the test is wrong or the 
 
 ### Test Framework
 
-Claude selects the testing framework based on the language chosen. Record as an ADR including: framework choice, test organization structure, coverage targets, and mocking approach.
+Rust built-in `cargo test`. Unit tests co-located in `#[cfg(test)]` modules. Integration tests in `tests/` directory, marked `#[ignore]` when they require system utilities. See ADR-005 for full strategy.
 
 ## Git Workflow
 
@@ -130,22 +120,20 @@ Claude selects the testing framework based on the language chosen. Record as an 
   - `feat: add font size selector to overlay toolbar`
   - `fix: prevent crash when opening password-protected PDF`
   - `chore: add ruff to pre-commit hooks`
-- **Branches**: Feature branches with PRs. Claude proposes branch naming convention and records in `docs/decisions/`.
+- **Branches**: Feature branches: `feat/`, `fix/`, `chore/`, `docs/`, `refactor/`, `test/` + short description.
 - **Lockfiles**: Always commit lockfiles regardless of language/package manager.
 - **CI**: GitHub Actions. PRs cannot merge without passing CI. No exceptions.
 
 ## Pre-commit & CI
 
-Claude must define and record a pre-commit check suite once tooling is selected. The suite MUST include:
+Pre-commit hook (`.beads/hooks/pre-commit`) runs after beads integration:
+- `cargo fmt --check`
+- `cargo clippy -- -D warnings`
+- `cargo test`
 
-- Lint
-- Format check
-- Type check (if the language supports it)
-- Full test suite (or fast subset if full suite exceeds 30 seconds)
+GitHub Actions CI (`.github/workflows/ci.yml`) runs the same checks plus `cargo test -- --ignored` for integration tests.
 
-Record the pre-commit configuration in `docs/decisions/pre-commit-suite.md`.
-
-GitHub Actions CI must run the same checks. Record the pipeline design in `docs/decisions/ci-pipeline.md`.
+See `docs/decisions/pre-commit-suite.md` and `docs/decisions/ci-pipeline.md`.
 
 ## Reference Documents
 
@@ -158,18 +146,22 @@ Read these only when the trigger condition applies:
 
 ## Project Structure
 
-Finalized during bootstrapping. Claude proposes and records as a decision doc. Expected top-level:
+```
+src/
+├── main.rs         # entry point
+├── app.rs          # Iced application state and messages
+├── overlay.rs      # text overlay data model
+├── fonts.rs        # fc-list wrapper for font discovery
+├── pdf/
+│   ├── renderer.rs # pdftoppm wrapper for page rendering
+│   └── writer.rs   # lopdf wrapper for text overlay writing
+└── ui/
+    ├── canvas.rs   # PDF page display with click-to-place
+    └── toolbar.rs  # font family and size controls
+tests/
+├── pdf_rendering.rs
+├── pdf_writing.rs
+└── font_discovery.rs
+```
 
-```
-├── CLAUDE.md
-├── AGENTS.md
-├── .claude/
-├── docs/
-│   ├── adr/
-│   ├── decisions/
-│   ├── code-style-guide.md
-│   └── architecture.md
-├── src/ or pkg/ or cmd/     # depends on language
-├── tests/
-└── [language-specific config files]
-```
+See `docs/decisions/project-directory-structure.md`.
