@@ -102,6 +102,20 @@ When style conventions and simplicity conflict, simplicity wins.
 - **Integration tests**: Cover how components work together
 - **End-to-end tests**: Cover user workflows (open PDF → place text → save)
 
+#### When to Use Each Level
+
+| Code Under Test | Unit Test | Integration Test | E2E Test |
+|----------------|-----------|-----------------|----------|
+| Pure logic (overlay model, coordinate math) | Yes | — | — |
+| System utility wrapper (`fc-list`, `pdftoppm`) | Yes (trait-based test double) | Yes (`#[ignore]`, needs real utility) | — |
+| PDF writing (`lopdf` operations) | Yes (in-memory PDF) | Yes (read-back written file) | — |
+| Component interaction (renderer + writer) | — | Yes | — |
+| User workflow (open → place → save) | — | — | Yes |
+
+- **Unit tests** use trait-based test doubles for system boundaries. They must pass without external utilities installed.
+- **Integration tests** go in `tests/`, marked `#[ignore]` when they require system utilities. CI runs them with `cargo test -- --ignored`.
+- **E2E tests** exercise the full user workflow with real files and real utilities.
+
 ### TDD Workflow (Mandatory)
 
 1. **RED** — Write a failing test first. Verify it actually fails before proceeding.
