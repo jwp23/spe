@@ -1,5 +1,4 @@
 // Text overlay data model: position, text content, font family, font size.
-#![allow(dead_code)]
 
 /// PDF Standard 14 built-in fonts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
