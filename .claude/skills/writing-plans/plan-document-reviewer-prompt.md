@@ -2,27 +2,34 @@
 
 Use this template when dispatching a plan document reviewer subagent.
 
-**Purpose:** Verify the plan is complete, matches the spec, and has proper task decomposition.
+**Purpose:** Verify the bd task hierarchy is complete, matches the spec, and has proper task decomposition.
 
-**Dispatch after:** The complete plan is written.
+**Dispatch after:** All tasks are created in bd under the epic.
 
 ```
 Task tool (general-purpose):
-  description: "Review plan document"
+  description: "Review plan task hierarchy"
   prompt: |
-    You are a plan document reviewer. Verify this plan is complete and ready for implementation.
+    You are a plan reviewer. Verify this task hierarchy is complete and ready for implementation.
 
-    **Plan to review:** [PLAN_FILE_PATH]
+    **Epic ID:** [EPIC_ID]
     **Spec for reference:** [SPEC_FILE_PATH]
+
+    ## How to Review
+
+    1. Run `bd children [EPIC_ID] --json` to see the feature/bug breakdown
+    2. For each feature/bug, run `bd children <feature-id> --json` to see its tasks
+    3. For each task, run `bd show <task-id>` to read description, acceptance criteria, and design (implementation steps)
 
     ## What to Check
 
     | Category | What to Look For |
     |----------|------------------|
-    | Completeness | TODOs, placeholders, incomplete tasks, missing steps |
-    | Spec Alignment | Plan covers spec requirements, no major scope creep |
+    | Completeness | Missing tasks, incomplete designs, placeholder steps |
+    | Spec Alignment | Tasks cover spec requirements, no major scope creep |
     | Task Decomposition | Tasks have clear boundaries, steps are actionable |
-    | Buildability | Could an engineer follow this plan without getting stuck? |
+    | Buildability | Could an engineer follow each task's design without getting stuck? |
+    | Dependencies | Are inter-task dependencies set correctly? (`bd dep list <id>`) |
 
     ## Calibration
 
@@ -40,7 +47,7 @@ Task tool (general-purpose):
     **Status:** Approved | Issues Found
 
     **Issues (if any):**
-    - [Task X, Step Y]: [specific issue] - [why it matters for implementation]
+    - [Task <bd-id>]: [specific issue] - [why it matters for implementation]
 
     **Recommendations (advisory, do not block approval):**
     - [suggestions for improvement]

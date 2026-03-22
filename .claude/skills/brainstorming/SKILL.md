@@ -29,7 +29,8 @@ You MUST create a task for each of these items and complete them in order:
 6. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
 7. **Spec review loop** — dispatch spec-document-reviewer subagent with precisely crafted review context (never your session history); fix issues and re-dispatch until approved (max 3 iterations, then surface to human)
 8. **User reviews written spec** — ask user to review the spec file before proceeding
-9. **Transition to implementation** — invoke writing-plans skill to create implementation plan
+9. **Create bd epic and decompose into features/bugs** — see Work Decomposition section below
+10. **Transition to implementation** — invoke writing-plans skill with the epic ID
 
 ## Process Flow
 
@@ -46,7 +47,10 @@ digraph brainstorming {
     "Spec review loop" [shape=box];
     "Spec review passed?" [shape=diamond];
     "User reviews spec?" [shape=diamond];
-    "Invoke writing-plans skill" [shape=doublecircle];
+    "Create bd epic" [shape=box];
+    "Decompose into\nfeatures/bugs" [shape=box];
+    "User approves\nhierarchy?" [shape=diamond];
+    "Invoke writing-plans\nwith epic ID" [shape=doublecircle];
 
     "Explore project context" -> "Visual questions ahead?";
     "Visual questions ahead?" -> "Offer Visual Companion\n(own message, no other content)" [label="yes"];
@@ -62,11 +66,15 @@ digraph brainstorming {
     "Spec review passed?" -> "Spec review loop" [label="issues found,\nfix and re-dispatch"];
     "Spec review passed?" -> "User reviews spec?" [label="approved"];
     "User reviews spec?" -> "Write design doc" [label="changes requested"];
-    "User reviews spec?" -> "Invoke writing-plans skill" [label="approved"];
+    "User reviews spec?" -> "Create bd epic" [label="approved"];
+    "Create bd epic" -> "Decompose into\nfeatures/bugs";
+    "Decompose into\nfeatures/bugs" -> "User approves\nhierarchy?";
+    "User approves\nhierarchy?" -> "Decompose into\nfeatures/bugs" [label="revise"];
+    "User approves\nhierarchy?" -> "Invoke writing-plans\nwith epic ID" [label="approved"];
 }
 ```
 
-**The terminal state is invoking writing-plans.** Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skill you invoke after brainstorming is writing-plans.
+**The terminal state is invoking writing-plans with the epic ID.** Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skill you invoke after brainstorming is writing-plans.
 
 ## The Process
 
@@ -130,9 +138,36 @@ After the spec review loop passes, ask the user to review the written spec befor
 
 Wait for the user's response. If they request changes, make them and re-run the spec review loop. Only proceed once the user approves.
 
+**Work Decomposition:**
+
+After the user approves the spec, create the bd issue hierarchy:
+
+1. Create the epic:
+   ```bash
+   bd create "<project name>" -t epic \
+     --description="<one-paragraph summary of what this builds>" \
+     --spec-id="<path-to-spec-file>" --json
+   ```
+
+2. Decompose into features (or bugs) as children of the epic. Each feature represents a component or subsystem from the design:
+   ```bash
+   bd create "<component name>" -t feature \
+     --parent <epic-id> \
+     --description="<what this component does>" \
+     --acceptance="<acceptance criteria>" --json
+   ```
+
+3. Present the hierarchy to the user:
+   ```bash
+   bd children <epic-id>
+   ```
+   Ask: "Here's how I've broken down the work. Does this decomposition look right?"
+
+4. Revise if the user requests changes. Only proceed once approved.
+
 **Implementation:**
 
-- Invoke the writing-plans skill to create a detailed implementation plan
+- Invoke the writing-plans skill with the epic ID to create detailed tasks
 - Do NOT invoke any other skill. writing-plans is the next step.
 
 ## Key Principles
