@@ -1,15 +1,15 @@
 ---
 name: finishing-a-development-branch
-description: Use when implementation is complete, all tests pass, and you need to decide how to integrate the work - guides completion of development work by presenting structured options for merge, PR, or cleanup
+description: Use when implementation is complete and all tests pass - pushes feature branch, creates PR, waits for CI checks to pass, and cleans up worktree
 ---
 
 # Finishing a Development Branch
 
 ## Overview
 
-Guide completion of development work by presenting clear options and handling chosen workflow.
+Complete development work by pushing the feature branch, creating a PR, and waiting for CI to pass.
 
-**Core principle:** Verify tests → Present options → Execute choice → Clean up.
+**Core principle:** Verify tests -> Push -> PR -> Wait for CI -> Clean up.
 
 **Announce at start:** "I'm using the finishing-a-development-branch skill to complete this work."
 
@@ -17,127 +17,61 @@ Guide completion of development work by presenting clear options and handling ch
 
 ### Step 1: Verify Tests
 
-**Before presenting options, verify tests pass:**
+**Before proceeding, verify tests pass:**
 
 ```bash
-# Run project's test suite
-npm test / cargo test / pytest / go test ./...
+cargo test  # or project-appropriate command
 ```
 
-**If tests fail:**
-```
-Tests failing (<N> failures). Must fix before completing:
-
-[Show failures]
-
-Cannot proceed with merge/PR until tests pass.
-```
-
-Stop. Don't proceed to Step 2.
+**If tests fail:** Stop. Fix failures before proceeding.
 
 **If tests pass:** Continue to Step 2.
 
 ### Step 2: Determine Base Branch
 
 ```bash
-# Try common base branches
 git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null
 ```
 
 Or ask: "This branch split from main - is that correct?"
 
-### Step 3: Present Options
-
-Present exactly these 4 options:
-
-```
-Implementation complete. What would you like to do?
-
-1. Merge back to <base-branch> locally
-2. Push and create a Pull Request
-3. Keep the branch as-is (I'll handle it later)
-4. Discard this work
-
-Which option?
-```
-
-**Don't add explanation** - keep options concise.
-
-### Step 4: Execute Choice
-
-#### Option 1: Merge Locally
+### Step 3: Push and Create PR
 
 ```bash
-# Switch to base branch
-git checkout <base-branch>
-
-# Pull latest
-git pull
-
-# Merge feature branch
-git merge <feature-branch>
-
-# Verify tests on merged result
-<test command>
-
-# If tests pass
-git branch -d <feature-branch>
-```
-
-Then: Cleanup worktree (Step 5)
-
-#### Option 2: Push and Create PR
-
-```bash
-# Push branch
+# Push feature branch
 git push -u origin <feature-branch>
 
-# Create PR
-gh pr create --title "<title>" --body "$(cat <<'EOF'
+# Create PR with summary body
+gh pr create --title "<conventional-commit-title>" --body "$(cat <<'EOF'
 ## Summary
 <2-3 bullets of what changed>
 
 ## Test Plan
-- [ ] <verification steps>
+<verification steps>
 EOF
 )"
 ```
 
-Then: Cleanup worktree (Step 5)
+The PR title should follow conventional commit format based on the branch work.
 
-#### Option 3: Keep As-Is
+### Step 4: Wait for CI Checks
 
-Report: "Keeping branch <name>. Worktree preserved at <path>."
-
-**Don't cleanup worktree.**
-
-#### Option 4: Discard
-
-**Confirm first:**
-```
-This will permanently delete:
-- Branch <name>
-- All commits: <commit-list>
-- Worktree at <path>
-
-Type 'discard' to confirm.
-```
-
-Wait for exact confirmation.
-
-If confirmed:
 ```bash
-git checkout <base-branch>
-git branch -D <feature-branch>
+gh pr checks <number> --watch
 ```
 
-Then: Cleanup worktree (Step 5)
+**If checks fail:**
+1. Investigate the failure output
+2. Fix the issue locally
+3. Commit and push the fix
+4. Wait again: `gh pr checks <number> --watch`
+5. Repeat until all checks pass
+
+**If checks pass:** Report PR URL and status.
 
 ### Step 5: Cleanup Worktree
 
-**For Options 1, 2, 4:**
-
-Check if in worktree:
+Check if in a worktree:
 ```bash
 git worktree list | grep $(git branch --show-current)
 ```
@@ -147,48 +81,65 @@ If yes:
 git worktree remove <worktree-path>
 ```
 
-**For Option 3:** Keep worktree.
+Report: "PR ready at <URL>. All CI checks passing."
+
+## Merging (when Joe requests)
+
+When Joe says to merge or close a PR, squash merge with no body:
+
+```bash
+gh pr merge <number> --squash --body "" --delete-branch
+git checkout main && git pull
+git branch -d <feature-branch>
+```
+
+Clean up worktree if applicable.
 
 ## Quick Reference
 
-| Option | Merge | Push | Keep Worktree | Cleanup Branch |
-|--------|-------|------|---------------|----------------|
-| 1. Merge locally | ✓ | - | - | ✓ |
-| 2. Create PR | - | ✓ | ✓ | - |
-| 3. Keep as-is | - | - | ✓ | - |
-| 4. Discard | - | - | - | ✓ (force) |
+| Step | Action |
+|------|--------|
+| 1. Verify | Run tests, stop if failing |
+| 2. Base branch | Confirm target branch |
+| 3. Push + PR | Push branch, create PR with summary |
+| 4. CI | Watch checks, fix failures |
+| 5. Cleanup | Remove worktree if applicable |
+| Merge | Squash merge, no body (on request) |
 
 ## Common Mistakes
 
 **Skipping test verification**
-- **Problem:** Merge broken code, create failing PR
-- **Fix:** Always verify tests before offering options
+- **Problem:** Create a failing PR
+- **Fix:** Always verify tests before pushing
 
-**Open-ended questions**
-- **Problem:** "What should I do next?" → ambiguous
-- **Fix:** Present exactly 4 structured options
+**Not waiting for CI checks**
+- **Problem:** Report "done" before knowing CI status
+- **Fix:** Always `gh pr checks --watch` and fix failures
 
-**Automatic worktree cleanup**
-- **Problem:** Remove worktree when might need it (Option 2, 3)
-- **Fix:** Only cleanup for Options 1 and 4
+**Pushing directly to main**
+- **Problem:** Bypasses code review and CI
+- **Fix:** Always use feature branches and PRs
 
-**No confirmation for discard**
-- **Problem:** Accidentally delete work
-- **Fix:** Require typed "discard" confirmation
+**Including a body in squash merge commit**
+- **Problem:** Clutters git log with PR details in merge commits
+- **Fix:** Always use `--body ""` when merging
 
 ## Red Flags
 
 **Never:**
+- Push directly to main
 - Proceed with failing tests
-- Merge without verifying tests on result
-- Delete work without confirmation
+- Report completion before CI checks pass
 - Force-push without explicit request
+- Include a body in the squash merge commit
 
 **Always:**
-- Verify tests before offering options
-- Present exactly 4 options
-- Get typed confirmation for Option 4
-- Clean up worktree for Options 1 & 4 only
+- Verify tests before pushing
+- Create PR with a summary body
+- Wait for CI checks to pass
+- Fix CI failures before reporting done
+- Squash merge with `--body ""` when merging
+- Clean up worktree after PR is created
 
 ## Integration
 

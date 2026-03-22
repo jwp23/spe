@@ -148,3 +148,14 @@ For more details, see README.md and docs/QUICKSTART.md.
 - If push fails, resolve and retry until it succeeds
 
 <!-- END BEADS INTEGRATION -->
+
+## Session Completion Override
+
+The "Landing the Plane" section above (beads-managed) describes pushing directly to main. **This project uses a PR-based workflow instead.** See `.claude/rules/git-workflow.md` for the authoritative procedure:
+
+1. Push feature branch to origin
+2. Create PR targeting main
+3. Wait for CI checks to pass (fix if needed)
+4. Report PR URL and status
+
+Work is NOT complete until the PR is open and CI checks are green.
