@@ -14,3 +14,6 @@ Create a PR for the current branch.
    - Any new decisions recorded (link to ADR/decision doc files)
    - Testing notes
 6. Create PR using `gh pr create --title "..." --body "..."`.
+7. Wait for CI checks: `gh pr checks <number> --watch`
+8. If any check fails: investigate, fix locally, commit, push, wait again. Repeat until all checks pass.
+9. Report the PR URL and final check status.

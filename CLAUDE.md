@@ -123,6 +123,9 @@ Rust built-in `cargo test`. Unit tests co-located in `#[cfg(test)]` modules. Int
 - **Branches**: Feature branches: `feat/`, `fix/`, `chore/`, `docs/`, `refactor/`, `test/` + short description.
 - **Lockfiles**: Always commit lockfiles regardless of language/package manager.
 - **CI**: GitHub Actions. PRs cannot merge without passing CI. No exceptions.
+- **Main branch**: Never commit directly to main. All changes go through feature branches and PRs.
+- **Worktrees**: For extensive changes, use git worktrees in `.worktrees/`. See the using-git-worktrees skill.
+- **PR workflow**: Push feature branch, create PR with summary, wait for CI to pass. Squash merge with no body when merging. See `.claude/rules/git-workflow.md`.
 
 ## Pre-commit & CI
 
