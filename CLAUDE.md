@@ -2,6 +2,8 @@
 
 A desktop GUI application for Linux that opens PDF documents, renders pages visually, and lets users click anywhere on a page to place text overlays. Users control font and font size. The result is saved as a new PDF with text baked in.
 
+@AGENTS.md
+
 ## Project Bootstrapping
 
 **This is a discovery-driven project.** The language, GUI framework, PDF libraries, and tooling are NOT pre-selected. Claude's first task is to propose and execute a bootstrapping sequence.
@@ -160,6 +162,7 @@ Finalized during bootstrapping. Claude proposes and records as a decision doc. E
 
 ```
 ├── CLAUDE.md
+├── AGENTS.md
 ├── .claude/
 ├── docs/
 │   ├── adr/
