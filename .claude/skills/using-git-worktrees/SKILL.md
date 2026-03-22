@@ -59,7 +59,7 @@ Per Jesse's rule "Fix broken things immediately":
 
 **Why critical:** Prevents accidentally committing worktree contents to repository.
 
-### For Global Directory (~/.config/superpowers/worktrees)
+### For Global Directory (~/.local/share/worktrees)
 
 No .gitignore verification needed - outside project entirely.
 
@@ -79,8 +79,8 @@ case $LOCATION in
   .worktrees|worktrees)
     path="$LOCATION/$BRANCH_NAME"
     ;;
-  ~/.config/superpowers/worktrees/*)
-    path="~/.config/superpowers/worktrees/$project/$BRANCH_NAME"
+  ~/.local/share/worktrees/*)
+    path="~/.local/share/worktrees/$project/$BRANCH_NAME"
     ;;
 esac
 
