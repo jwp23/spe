@@ -8,3 +8,5 @@ iced = { version = "0.14", features = ["image", "canvas", "tokio"] }
 lopdf = "0.40"
 rfd = "0.17"
 image = "0.25"
+thiserror = "2"
+tempfile = "3"
