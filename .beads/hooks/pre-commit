@@ -22,3 +22,20 @@ if command -v bd >/dev/null 2>&1; then
   if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v0.61.0 ---
+
+# --- BEGIN PROJECT CHECKS ---
+if ! cargo fmt --check 2>/dev/null; then
+    echo >&2 "pre-commit: cargo fmt check failed. Run 'cargo fmt' to fix."
+    exit 1
+fi
+
+if ! cargo clippy -- -D warnings 2>/dev/null; then
+    echo >&2 "pre-commit: clippy found warnings."
+    exit 1
+fi
+
+if ! cargo test 2>/dev/null; then
+    echo >&2 "pre-commit: tests failed."
+    exit 1
+fi
+# --- END PROJECT CHECKS ---
