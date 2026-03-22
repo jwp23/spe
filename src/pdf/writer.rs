@@ -1,13 +1,14 @@
 // PDF text overlay writing via lopdf.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use lopdf::content::{Content, Operation};
 use lopdf::{Document, Object, Stream, dictionary};
 use thiserror::Error;
 
-use crate::overlay::TextOverlay;
+use crate::overlay::{Standard14Font, TextOverlay};
 
 #[derive(Debug, Error)]
 pub enum WriterError {
@@ -35,22 +36,103 @@ pub fn write_overlays(
 
     let pages = doc.get_pages();
 
+    // Validate all page references before mutating anything.
     for overlay in overlays {
-        let &page_id = pages.get(&overlay.page).ok_or(WriterError::PageNotFound {
-            requested: overlay.page,
-            total: pages.len() as u32,
-        })?;
+        if !pages.contains_key(&overlay.page) {
+            return Err(WriterError::PageNotFound {
+                requested: overlay.page,
+                total: pages.len() as u32,
+            });
+        }
+    }
 
-        // Add the font as an indirect object.
-        let font_obj_id = doc.add_object(dictionary! {
-            "Type" => "Font",
-            "Subtype" => "Type1",
-            "BaseFont" => Object::Name(overlay.font.pdf_name().as_bytes().to_vec()),
-        });
+    // Group overlays by page number so each page gets a single content stream.
+    let mut overlays_by_page: HashMap<u32, Vec<&TextOverlay>> = HashMap::new();
+    for overlay in overlays {
+        overlays_by_page
+            .entry(overlay.page)
+            .or_default()
+            .push(overlay);
+    }
+
+    for (page_num, page_overlays) in &overlays_by_page {
+        let &page_id = pages.get(page_num).expect("validated above");
+
+        // Build a map from resource name → BaseFont for the page's existing fonts.
+        // Uses lopdf's get_page_fonts which resolves inherited resources from parent nodes.
+        let existing: HashMap<Vec<u8>, Vec<u8>> = doc
+            .get_page_fonts(page_id)
+            .map(|fonts| {
+                fonts
+                    .into_iter()
+                    .filter_map(|(key, fd)| {
+                        if let Ok(Object::Name(base)) = fd.get(b"BaseFont") {
+                            Some((key, base.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Collect unique fonts needed for this page's overlays.
+        let needed_fonts: Vec<Standard14Font> = {
+            let mut seen = std::collections::HashSet::new();
+            page_overlays
+                .iter()
+                .filter_map(|o| {
+                    if seen.insert(o.font) {
+                        Some(o.font)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        // Build font mapping: Standard14Font → resource name.
+        // Reuse existing names where the BaseFont already matches; assign new F_ovl_N otherwise.
+        let mut font_resource_name: HashMap<Standard14Font, String> = HashMap::new();
+        let mut new_font_objects: Vec<(String, lopdf::ObjectId)> = Vec::new();
+
+        // Track which names already exist to avoid collisions when generating new ones.
+        let existing_names: std::collections::HashSet<Vec<u8>> = existing.keys().cloned().collect();
+
+        for font in &needed_fonts {
+            let base_font_bytes = font.pdf_name().as_bytes();
+
+            // Check if any existing resource already maps to this BaseFont.
+            let reuse_name = existing
+                .iter()
+                .find(|(_, base)| base.as_slice() == base_font_bytes)
+                .map(|(key, _)| String::from_utf8_lossy(key).into_owned());
+
+            if let Some(name) = reuse_name {
+                font_resource_name.insert(*font, name);
+            } else {
+                // Generate a fresh name, skipping any that already exist.
+                let new_name = (0..)
+                    .map(|i| format!("F_ovl_{i}"))
+                    .find(|candidate| {
+                        !existing_names.contains(candidate.as_bytes())
+                            && !new_font_objects.iter().any(|(n, _)| n == candidate)
+                    })
+                    .expect("infinite iterator always finds a free name");
+
+                let font_obj_id = doc.add_object(dictionary! {
+                    "Type" => "Font",
+                    "Subtype" => "Type1",
+                    "BaseFont" => Object::Name(base_font_bytes.to_vec()),
+                });
+                new_font_objects.push((new_name.clone(), font_obj_id));
+                font_resource_name.insert(*font, new_name);
+            }
+        }
 
         // Ensure the page has its own Resources dict with a Font sub-dict.
         // Setting Resources directly on the Page overrides the inherited parent dict (PDF spec §7.8.3).
-        {
+        if !new_font_objects.is_empty() {
             let page_dict = doc
                 .get_object_mut(page_id)
                 .expect("page object must exist")
@@ -71,43 +153,49 @@ pub fn write_overlays(
                 resources.set("Font", dictionary! {});
             }
 
-            resources
+            let font_dict = resources
                 .get_mut(b"Font")
                 .expect("Font just set")
                 .as_dict_mut()
-                .expect("Font must be a dictionary")
-                .set("F_overlay0", font_obj_id);
+                .expect("Font must be a dictionary");
+
+            for (name, obj_id) in new_font_objects {
+                font_dict.set(name, obj_id);
+            }
         }
 
-        // Build the content stream for this overlay.
-        let content = Content {
-            operations: vec![
-                Operation::new("BT", vec![]),
-                Operation::new(
-                    "Tf",
-                    vec![
-                        Object::Name(b"F_overlay0".to_vec()),
-                        Object::Real(overlay.font_size),
-                    ],
-                ),
-                Operation::new(
-                    "Td",
-                    vec![
-                        Object::Real(overlay.position.x),
-                        Object::Real(overlay.position.y),
-                    ],
-                ),
-                Operation::new(
-                    "Tj",
-                    vec![Object::String(
-                        overlay.text.as_bytes().to_vec(),
-                        lopdf::StringFormat::Literal,
-                    )],
-                ),
-                Operation::new("ET", vec![]),
-            ],
-        };
+        // Build ONE content stream containing all overlays for this page.
+        let mut operations: Vec<Operation> = Vec::new();
+        for overlay in page_overlays {
+            let resource_name = font_resource_name
+                .get(&overlay.font)
+                .expect("all fonts mapped above");
+            operations.push(Operation::new("BT", vec![]));
+            operations.push(Operation::new(
+                "Tf",
+                vec![
+                    Object::Name(resource_name.as_bytes().to_vec()),
+                    Object::Real(overlay.font_size),
+                ],
+            ));
+            operations.push(Operation::new(
+                "Td",
+                vec![
+                    Object::Real(overlay.position.x),
+                    Object::Real(overlay.position.y),
+                ],
+            ));
+            operations.push(Operation::new(
+                "Tj",
+                vec![Object::String(
+                    overlay.text.as_bytes().to_vec(),
+                    lopdf::StringFormat::Literal,
+                )],
+            ));
+            operations.push(Operation::new("ET", vec![]));
+        }
 
+        let content = Content { operations };
         let content_bytes = content.encode().map_err(|e| WriterError::SaveFailed {
             path: destination.to_path_buf(),
             source: e,
@@ -367,6 +455,240 @@ mod tests {
         };
         assert!((x - 72.0_f64).abs() < 0.01, "Td x mismatch: {x}");
         assert!((y - 720.0_f64).abs() < 0.01, "Td y mismatch: {y}");
+    }
+
+    #[test]
+    fn write_overlays_reuses_existing_font() {
+        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+
+        // The test PDF already has Helvetica registered as "F1".
+        let src = NamedTempFile::new().expect("failed to create temp file");
+        create_test_pdf(src.path());
+
+        let dst = NamedTempFile::new().expect("failed to create temp file");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Reuse".to_string(),
+            font: Standard14Font::Helvetica,
+            font_size: 12.0,
+        };
+
+        write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
+
+        let doc = Document::load(dst.path()).expect("failed to re-open output PDF");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1 not found");
+
+        // There should be exactly one font resource with BaseFont=Helvetica, not two.
+        let font_names = collect_page_font_names(&doc, page_id);
+        let helvetica_count = font_names
+            .iter()
+            .filter(|n| n.as_str() == "Helvetica")
+            .count();
+        assert_eq!(
+            helvetica_count, 1,
+            "expected exactly 1 Helvetica font resource, got {helvetica_count}: {font_names:?}"
+        );
+
+        // The content stream must reference the EXISTING resource name "F1", not a new F_ovl_N.
+        let ops = collect_page_operations(&doc, page_id);
+        let tf_ops: Vec<&Operation> = ops.iter().filter(|o| o.operator == "Tf").collect();
+        let uses_f1 = tf_ops
+            .iter()
+            .any(|op| matches!(&op.operands[0], Object::Name(n) if n == b"F1"));
+        assert!(
+            uses_f1,
+            "expected Tf to reference existing 'F1', got: {tf_ops:?}"
+        );
+    }
+
+    #[test]
+    fn write_overlays_multiple_fonts_get_unique_names() {
+        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+
+        let src = NamedTempFile::new().expect("failed to create temp file");
+        create_test_pdf(src.path());
+
+        let dst = NamedTempFile::new().expect("failed to create temp file");
+
+        let overlays = vec![
+            TextOverlay {
+                page: 1,
+                position: PdfPosition { x: 72.0, y: 720.0 },
+                text: "Helvetica text".to_string(),
+                font: Standard14Font::Helvetica,
+                font_size: 12.0,
+            },
+            TextOverlay {
+                page: 1,
+                position: PdfPosition { x: 72.0, y: 700.0 },
+                text: "Courier text".to_string(),
+                font: Standard14Font::Courier,
+                font_size: 12.0,
+            },
+        ];
+
+        write_overlays(src.path(), dst.path(), &overlays).expect("write_overlays failed");
+
+        let doc = Document::load(dst.path()).expect("failed to re-open output PDF");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1 not found");
+
+        // Build a map from resource name → BaseFont for the page.
+        let Ok(fonts) = doc.get_page_fonts(page_id) else {
+            panic!("could not get page fonts");
+        };
+        let resource_to_basefont: std::collections::HashMap<Vec<u8>, Vec<u8>> = fonts
+            .iter()
+            .filter_map(|(key, fd)| {
+                if let Ok(Object::Name(base)) = fd.get(b"BaseFont") {
+                    Some((key.clone(), base.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Both Helvetica and Courier must appear.
+        assert!(
+            resource_to_basefont.values().any(|b| b == b"Helvetica"),
+            "Helvetica missing from font resources: {resource_to_basefont:?}"
+        );
+        assert!(
+            resource_to_basefont.values().any(|b| b == b"Courier"),
+            "Courier missing from font resources: {resource_to_basefont:?}"
+        );
+
+        // Parse the overlay-only content stream: the NEW stream added by write_overlays.
+        // We expect a single new stream containing both overlays.
+        let content_ids = doc.get_page_contents(page_id);
+        // The last stream is the overlay stream (original PDF has 1 stream, we add 1).
+        let overlay_stream_id = *content_ids.last().expect("no content streams");
+        let stream_obj = doc.get_object(overlay_stream_id).expect("stream not found");
+        let stream = stream_obj.as_stream().expect("expected stream");
+        let content = stream.decode_content().expect("failed to decode content");
+
+        // Walk through ops: each BT block should have a Tf op whose resource name
+        // maps to the correct BaseFont.
+        // Op sequence: BT Tf Td Tj ET  BT Tf Td Tj ET
+        let ops = &content.operations;
+
+        // Find Tf operand immediately after first BT → should resolve to Helvetica.
+        let first_tf = ops
+            .iter()
+            .skip_while(|o| o.operator != "BT")
+            .skip(1) // skip the BT itself
+            .find(|o| o.operator == "Tf")
+            .expect("no Tf after first BT");
+
+        let first_resource = match &first_tf.operands[0] {
+            Object::Name(n) => n.clone(),
+            other => panic!("expected Name in Tf operand, got {other:?}"),
+        };
+        let first_basefont = resource_to_basefont
+            .get(&first_resource)
+            .unwrap_or_else(|| panic!("resource {first_resource:?} not in font dict"));
+        assert_eq!(
+            first_basefont, b"Helvetica",
+            "first overlay Tf should map to Helvetica, resource {:?} maps to {:?}",
+            first_resource, first_basefont
+        );
+
+        // Find Tf operand in the second BT block → should resolve to Courier.
+        let second_tf = ops
+            .iter()
+            .skip_while(|o| o.operator != "ET") // skip past first ET
+            .skip(1)
+            .skip_while(|o| o.operator != "BT") // find second BT
+            .skip(1)
+            .find(|o| o.operator == "Tf")
+            .expect("no Tf after second BT");
+
+        let second_resource = match &second_tf.operands[0] {
+            Object::Name(n) => n.clone(),
+            other => panic!("expected Name in Tf operand, got {other:?}"),
+        };
+        let second_basefont = resource_to_basefont
+            .get(&second_resource)
+            .unwrap_or_else(|| panic!("resource {second_resource:?} not in font dict"));
+        assert_eq!(
+            second_basefont, b"Courier",
+            "second overlay Tf should map to Courier, resource {:?} maps to {:?}",
+            second_resource, second_basefont
+        );
+
+        // The two resource names must be different.
+        assert_ne!(
+            first_resource, second_resource,
+            "Helvetica and Courier overlays must use different resource names"
+        );
+    }
+
+    #[test]
+    fn write_overlays_multiple_overlays_same_page_single_stream() {
+        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+
+        let src = NamedTempFile::new().expect("failed to create temp file");
+        create_test_pdf(src.path());
+
+        let dst = NamedTempFile::new().expect("failed to create temp file");
+
+        let overlays = vec![
+            TextOverlay {
+                page: 1,
+                position: PdfPosition { x: 72.0, y: 720.0 },
+                text: "First".to_string(),
+                font: Standard14Font::Helvetica,
+                font_size: 12.0,
+            },
+            TextOverlay {
+                page: 1,
+                position: PdfPosition { x: 72.0, y: 700.0 },
+                text: "Second".to_string(),
+                font: Standard14Font::Helvetica,
+                font_size: 12.0,
+            },
+        ];
+
+        // Count content streams BEFORE writing.
+        let doc_before = Document::load(src.path()).expect("failed to open source PDF");
+        let pages_before = doc_before.get_pages();
+        let &page_id_before = pages_before.get(&1).expect("page 1 not found");
+        let streams_before = doc_before.get_page_contents(page_id_before).len();
+
+        write_overlays(src.path(), dst.path(), &overlays).expect("write_overlays failed");
+
+        let doc = Document::load(dst.path()).expect("failed to re-open output PDF");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1 not found");
+        let streams_after = doc.get_page_contents(page_id).len();
+
+        // Two overlays on the same page → exactly ONE new stream was added.
+        assert_eq!(
+            streams_after,
+            streams_before + 1,
+            "expected {} content streams after writing 2 overlays on 1 page, got {}",
+            streams_before + 1,
+            streams_after
+        );
+
+        // The NEW stream (last content stream) must contain TWO BT/ET pairs.
+        let content_ids = doc.get_page_contents(page_id);
+        let overlay_stream_id = *content_ids.last().expect("no content streams");
+        let stream_obj = doc.get_object(overlay_stream_id).expect("stream not found");
+        let stream = stream_obj.as_stream().expect("expected stream");
+        let content = stream.decode_content().expect("failed to decode content");
+        let bt_count = content
+            .operations
+            .iter()
+            .filter(|o| o.operator == "BT")
+            .count();
+        assert_eq!(
+            bt_count, 2,
+            "expected 2 BT blocks (one per overlay) in the overlay stream, got {bt_count}"
+        );
     }
 
     // --- Test helpers ---
