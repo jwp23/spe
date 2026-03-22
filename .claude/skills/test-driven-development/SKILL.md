@@ -68,6 +68,22 @@ digraph tdd_cycle {
 }
 ```
 
+### Choose Test Level
+
+Before writing, decide which level proves the behavior with the smallest scope:
+
+| Ask Yourself | Test Level | Example |
+|-------------|-----------|---------|
+| Pure inputs and outputs? | **Unit** | Parse a string, compute a value, validate input |
+| Crosses a boundary (filesystem, network, subprocess)? | **Unit** (mock at boundary) + **Integration** (real dependency) | System utility wrapper, database query, API client |
+| Represents a user workflow? | **E2E** | Open file, interact with UI, save result |
+
+**Start with unit.** Add integration when the boundary behavior matters. Add e2e for workflows.
+
+**Boundary code gets both levels:** A unit test proves your logic works with controlled inputs. An integration test proves the real dependency behaves as expected. Neither alone is sufficient.
+
+**Project-specific guidance** (which boundaries to mock, how to tag integration tests, e2e tooling) belongs in CLAUDE.md and testing rules — not here.
+
 ### RED - Write Failing Test
 
 Write one minimal test showing what should happen.
