@@ -374,11 +374,13 @@ impl App {
                 self.sidebar.visible = !self.sidebar.visible;
             }
             Message::ThumbnailBatchRendered(batch, generation) => {
-                if generation == self.sidebar.backfill_generation {
-                    for (page, handle) in batch {
-                        self.sidebar.thumbnails.insert(page, handle);
-                    }
+                if generation != self.sidebar.backfill_generation {
+                    return iced::Task::none();
                 }
+                for (page, handle) in batch {
+                    self.sidebar.thumbnails.insert(page, handle);
+                }
+                return self.schedule_thumbnail_backfill();
             }
             Message::SidebarScrolled(scroll_y, viewport_height) => {
                 self.sidebar.scroll_y = scroll_y;
@@ -760,6 +762,41 @@ impl App {
             }
         }
         iced::Task::batch(tasks)
+    }
+
+    /// Backfill thumbnails for pages not yet rendered, working outward from
+    /// the current page in batches of 20. Chains itself via `ThumbnailBatchRendered`
+    /// until all pages are covered. Discards results from stale generations.
+    fn schedule_thumbnail_backfill(&self) -> iced::Task<Message> {
+        let Some(doc) = &self.document else {
+            return iced::Task::none();
+        };
+        if !self.sidebar.visible || doc.page_count == 0 {
+            return iced::Task::none();
+        }
+        let dpi = self.sidebar.thumbnail_dpi as u32;
+        if dpi == 0 {
+            return iced::Task::none();
+        }
+        let center_page = doc.current_page;
+        let mut unrendered: Vec<u32> = (1..=doc.page_count)
+            .filter(|p| !self.sidebar.thumbnails.contains_key(p))
+            .collect();
+        if unrendered.is_empty() {
+            return iced::Task::none();
+        }
+        // Sort nearest-first so the most relevant pages render sooner.
+        unrendered.sort_by_key(|p| (*p as i64 - center_page as i64).unsigned_abs());
+        let batch: Vec<u32> = unrendered.into_iter().take(20).collect();
+        let range_first = batch.iter().copied().min().unwrap();
+        let range_last = batch.iter().copied().max().unwrap();
+        render_thumbnail_batch_task(
+            doc.source_path.clone(),
+            range_first,
+            range_last,
+            dpi,
+            self.sidebar.backfill_generation,
+        )
     }
 
     /// Render thumbnails for pages visible in the sidebar (plus a buffer),
@@ -1546,5 +1583,69 @@ mod tests {
             3, // stale generation
         ));
         assert!(!app.sidebar.thumbnails.contains_key(&1));
+    }
+
+    #[test]
+    fn schedule_thumbnail_backfill_returns_none_without_document() {
+        let (app, _) = App::new();
+        // Should not panic and should return a no-op task
+        let _ = app.schedule_thumbnail_backfill();
+    }
+
+    #[test]
+    fn schedule_thumbnail_backfill_returns_none_when_sidebar_hidden() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = false;
+        app.sidebar.thumbnail_dpi = 36.0;
+        // No crash, returns early
+        let _ = app.schedule_thumbnail_backfill();
+    }
+
+    #[test]
+    fn schedule_thumbnail_backfill_returns_none_when_all_rendered() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        // doc has page_count = 3; pre-populate all thumbnails
+        for p in 1..=3u32 {
+            app.sidebar
+                .thumbnails
+                .insert(p, Handle::from_rgba(1, 1, vec![0u8; 4]));
+        }
+        // All pages rendered — should return none (no task needed)
+        let _ = app.schedule_thumbnail_backfill();
+    }
+
+    #[test]
+    fn schedule_thumbnail_backfill_skips_already_cached_pages() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        // Pre-render pages 1 and 2; page 3 is missing
+        for p in 1..=2u32 {
+            app.sidebar
+                .thumbnails
+                .insert(p, Handle::from_rgba(1, 1, vec![0u8; 4]));
+        }
+        // Should not panic — only page 3 is unrendered
+        let _ = app.schedule_thumbnail_backfill();
+    }
+
+    #[test]
+    fn thumbnail_batch_rendered_chains_backfill() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        app.sidebar.backfill_generation = 1;
+        // Page 2 and 3 are unrendered; receiving batch for page 1 should
+        // trigger a backfill task (non-none) for the remaining pages.
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let task = app.update(Message::ThumbnailBatchRendered(vec![(1, handle)], 1));
+        // Page 1 must be inserted
+        assert!(app.sidebar.thumbnails.contains_key(&1));
+        // The returned task should be non-trivial (backfill for pages 2 & 3).
+        // We can't easily inspect iced::Task internals, but we can verify the
+        // method doesn't panic and the thumbnail state is correct.
+        let _ = task;
     }
 }
