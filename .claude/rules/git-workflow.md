@@ -28,8 +28,10 @@ When Joe says to merge or close a PR:
 
 1. Squash merge with no body: `gh pr merge <number> --squash --body "" --delete-branch`
 2. Switch to main and pull: `git checkout main && git pull`
-3. Delete local feature branch: `git branch -d <branch>`
-4. Remove worktree if applicable: `git worktree remove <path>`
+3. Wait for CI checks on main: `gh run watch` (the merge commit triggers a new CI run)
+4. If checks fail: investigate and fix on a new branch
+5. Delete local feature branch: `git branch -d <branch>`
+6. Remove worktree if applicable: `git worktree remove <path>`
 
 ## Session Completion
 
