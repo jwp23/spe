@@ -14,6 +14,13 @@ use crate::ui::canvas::{self, CanvasState, PdfCanvasProgram};
 use crate::ui::sidebar::SidebarState;
 use crate::ui::toolbar::{self, ToolbarContext, ToolbarState};
 
+/// Minimum sidebar width the user can resize to.
+const MIN_SIDEBAR_WIDTH: f32 = 80.0;
+/// Maximum sidebar width the user can resize to.
+const MAX_SIDEBAR_WIDTH: f32 = 400.0;
+/// Phase advance per shimmer tick (fraction of full cycle).
+const SHIMMER_TICK_DELTA: f32 = 0.05;
+
 /// State for the currently loaded PDF document.
 pub struct DocumentState {
     pub source_path: PathBuf,
@@ -75,7 +82,13 @@ pub enum Message {
 
     // Sidebar
     ToggleSidebar,
-    ThumbnailRendered(u32, Handle),
+    ThumbnailBatchRendered(Vec<(u32, Handle)>, u64),
+    SidebarScrolled(f32, f32),
+    SidebarResized(f32),
+    SidebarResizeEnd,
+    SidebarResizeDebounceExpired(u64),
+    SidebarPageClicked(u32),
+    ShimmerTick,
 
     // Undo/Redo
     Undo,
@@ -316,7 +329,7 @@ impl App {
                         .fold(0.0f32, f32::max);
                     if max_page_w > 0.0 {
                         let sidebar_w = if self.sidebar.visible {
-                            crate::ui::sidebar::SIDEBAR_WIDTH
+                            self.sidebar.width
                         } else {
                             0.0
                         };
@@ -360,8 +373,28 @@ impl App {
             Message::ToggleSidebar => {
                 self.sidebar.visible = !self.sidebar.visible;
             }
-            Message::ThumbnailRendered(page, handle) => {
-                self.sidebar.thumbnails.insert(page, handle);
+            Message::ThumbnailBatchRendered(batch, generation) => {
+                if generation == self.sidebar.backfill_generation {
+                    for (page, handle) in batch {
+                        self.sidebar.thumbnails.insert(page, handle);
+                    }
+                }
+            }
+            Message::SidebarScrolled(scroll_y, viewport_height) => {
+                self.sidebar.scroll_y = scroll_y;
+                self.sidebar.viewport_height = viewport_height;
+            }
+            Message::SidebarResized(new_width) => {
+                self.sidebar.width = new_width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+            }
+            Message::SidebarResizeEnd => {}
+            Message::SidebarResizeDebounceExpired(_generation) => {}
+            Message::SidebarPageClicked(page) => {
+                return self.update(Message::GoToPage(page));
+            }
+            Message::ShimmerTick => {
+                self.sidebar.shimmer_phase =
+                    (self.sidebar.shimmer_phase + SHIMMER_TICK_DELTA) % 1.0;
             }
 
             // --- Undo/Redo ---
@@ -449,7 +482,7 @@ impl App {
             if self.sidebar.visible {
                 let sidebar: iced::Element<Message> =
                     iced::widget::container(iced::widget::text("Sidebar"))
-                        .width(crate::ui::sidebar::SIDEBAR_WIDTH)
+                        .width(self.sidebar.width)
                         .into();
                 iced::widget::row![sidebar, scrollable_canvas].into()
             } else {
@@ -480,7 +513,7 @@ impl App {
         match self.window_size {
             Some(win) => {
                 let sidebar_w = if self.sidebar.visible {
-                    crate::ui::sidebar::SIDEBAR_WIDTH
+                    self.sidebar.width
                 } else {
                     0.0
                 };
@@ -607,7 +640,7 @@ impl App {
                         .unwrap_or(0.0);
                     if max_page_w > 0.0 {
                         let sidebar_w = if self.sidebar.visible {
-                            crate::ui::sidebar::SIDEBAR_WIDTH
+                            self.sidebar.width
                         } else {
                             0.0
                         };

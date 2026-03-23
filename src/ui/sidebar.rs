@@ -8,6 +8,21 @@ use iced::widget::image::Handle;
 pub struct SidebarState {
     pub visible: bool,
     pub thumbnails: HashMap<u32, Handle>,
+    /// Current sidebar width in pixels (user-resizable).
+    pub width: f32,
+    /// Current scroll position within the sidebar (pixels from top).
+    pub scroll_y: f32,
+    /// Height of the sidebar viewport in pixels.
+    pub viewport_height: f32,
+    /// DPI used for thumbnail rendering (derived from width).
+    pub thumbnail_dpi: f32,
+    /// Whether the user is currently dragging the resize handle.
+    pub dragging: bool,
+    /// Monotonically increasing counter; incremented on resize to invalidate
+    /// stale thumbnail batches in flight.
+    pub backfill_generation: u64,
+    /// Phase [0, 1) for the shimmer animation on loading placeholders.
+    pub shimmer_phase: f32,
 }
 
 impl Default for SidebarState {
@@ -15,15 +30,19 @@ impl Default for SidebarState {
         Self {
             visible: true,
             thumbnails: HashMap::new(),
+            width: DEFAULT_SIDEBAR_WIDTH,
+            scroll_y: 0.0,
+            viewport_height: 0.0,
+            thumbnail_dpi: 0.0,
+            dragging: false,
+            backfill_generation: 0,
+            shimmer_phase: 0.0,
         }
     }
 }
 
-/// Fixed width of the sidebar in pixels.
-pub const SIDEBAR_WIDTH: f32 = 120.0;
-
-/// Thumbnail rendering DPI.
-pub const THUMBNAIL_DPI: f32 = 72.0;
+/// Default width of the sidebar in pixels.
+pub const DEFAULT_SIDEBAR_WIDTH: f32 = 120.0;
 
 /// Compute the range of pages that should have thumbnails rendered,
 /// based on scroll position, viewport height, and a buffer of extra pages.
@@ -49,12 +68,12 @@ pub fn visible_pages(
 }
 
 /// Compute the thumbnail height for a page, maintaining aspect ratio
-/// within the fixed sidebar width.
-pub fn thumbnail_height(page_width: f32, page_height: f32) -> f32 {
+/// within the given sidebar width.
+pub fn thumbnail_height(page_width: f32, page_height: f32, sidebar_width: f32) -> f32 {
     if page_width <= 0.0 {
-        return SIDEBAR_WIDTH;
+        return sidebar_width;
     }
-    SIDEBAR_WIDTH * (page_height / page_width)
+    sidebar_width * (page_height / page_width)
 }
 
 #[cfg(test)]
@@ -105,7 +124,7 @@ mod tests {
     #[test]
     fn thumbnail_height_letter_page() {
         // US Letter: 612 x 792 points
-        let h = thumbnail_height(612.0, 792.0);
+        let h = thumbnail_height(612.0, 792.0, DEFAULT_SIDEBAR_WIDTH);
         // Expected: 120 * (792/612) ≈ 155.3
         assert!((h - 155.29).abs() < 0.1);
     }
@@ -113,19 +132,31 @@ mod tests {
     #[test]
     fn thumbnail_height_landscape() {
         // Landscape: 792 x 612
-        let h = thumbnail_height(792.0, 612.0);
+        let h = thumbnail_height(792.0, 612.0, DEFAULT_SIDEBAR_WIDTH);
         // Expected: 120 * (612/792) ≈ 92.7
         assert!((h - 92.73).abs() < 0.1);
     }
 
     #[test]
     fn thumbnail_height_zero_width_fallback() {
-        let h = thumbnail_height(0.0, 500.0);
-        assert!((h - SIDEBAR_WIDTH).abs() < f32::EPSILON);
+        let h = thumbnail_height(0.0, 500.0, DEFAULT_SIDEBAR_WIDTH);
+        assert!((h - DEFAULT_SIDEBAR_WIDTH).abs() < f32::EPSILON);
     }
 
     #[test]
     fn sidebar_width_constant() {
-        assert!((SIDEBAR_WIDTH - 120.0).abs() < f32::EPSILON);
+        assert!((DEFAULT_SIDEBAR_WIDTH - 120.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_default_has_new_fields() {
+        let state = SidebarState::default();
+        assert!((state.width - DEFAULT_SIDEBAR_WIDTH).abs() < f32::EPSILON);
+        assert!((state.scroll_y - 0.0).abs() < f32::EPSILON);
+        assert!((state.viewport_height - 0.0).abs() < f32::EPSILON);
+        assert!((state.thumbnail_dpi - 0.0).abs() < f32::EPSILON);
+        assert!(!state.dragging);
+        assert_eq!(state.backfill_generation, 0);
+        assert!((state.shimmer_phase - 0.0).abs() < f32::EPSILON);
     }
 }
