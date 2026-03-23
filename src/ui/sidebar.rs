@@ -158,6 +158,23 @@ impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
             );
         }
 
+        // Draw overlays for this page
+        let thumb_scale = self.thumbnail_dpi / 72.0;
+        for overlay in self.overlays.iter().filter(|o| o.page == self.page) {
+            let screen_x = overlay.position.x * thumb_scale;
+            let screen_y = (self.page_height - overlay.position.y) * thumb_scale;
+            let font_display_size = overlay.font_size * thumb_scale;
+            if font_display_size >= 1.0 && !overlay.text.is_empty() {
+                frame.fill_text(canvas::Text {
+                    content: overlay.text.clone(),
+                    position: iced::Point::new(screen_x, screen_y - font_display_size),
+                    color: self.overlay_color,
+                    size: iced::Pixels(font_display_size),
+                    ..canvas::Text::default()
+                });
+            }
+        }
+
         // Highlight border for current page
         if self.is_current_page {
             let stroke = canvas::Stroke {
@@ -309,6 +326,18 @@ mod tests {
     fn compute_thumbnail_dpi_zero_page_width_returns_minimum() {
         let dpi = compute_thumbnail_dpi(120.0, 1.0, 0.0);
         assert!(dpi > 0.0);
+    }
+
+    #[test]
+    fn thumbnail_overlay_position_scales_correctly() {
+        let scale: f32 = 12.0 / 72.0;
+        let pdf_x: f32 = 306.0;
+        let pdf_y: f32 = 396.0;
+        let page_height: f32 = 792.0;
+        let screen_x = pdf_x * scale;
+        let screen_y = (page_height - pdf_y) * scale;
+        assert!((screen_x - 51.0).abs() < 0.1);
+        assert!((screen_y - 66.0).abs() < 0.1);
     }
 
     #[test]
