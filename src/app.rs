@@ -138,31 +138,31 @@ impl App {
 
             // --- Page navigation ---
             Message::NextPage => {
-                let navigated = if let Some(doc) = &mut self.document
+                let new_page = if let Some(doc) = &mut self.document
                     && doc.current_page < doc.page_count
                 {
                     doc.current_page += 1;
                     self.toolbar.page_input = doc.current_page.to_string();
-                    true
+                    Some(doc.current_page)
                 } else {
-                    false
+                    None
                 };
-                if navigated {
-                    return self.render_if_uncached(self.document.as_ref().unwrap().current_page);
+                if let Some(page) = new_page {
+                    return self.render_if_uncached(page);
                 }
             }
             Message::PreviousPage => {
-                let navigated = if let Some(doc) = &mut self.document
+                let new_page = if let Some(doc) = &mut self.document
                     && doc.current_page > 1
                 {
                     doc.current_page -= 1;
                     self.toolbar.page_input = doc.current_page.to_string();
-                    true
+                    Some(doc.current_page)
                 } else {
-                    false
+                    None
                 };
-                if navigated {
-                    return self.render_if_uncached(self.document.as_ref().unwrap().current_page);
+                if let Some(page) = new_page {
+                    return self.render_if_uncached(page);
                 }
             }
             Message::GoToPage(page) => {
@@ -306,6 +306,8 @@ impl App {
             }
 
             // --- Canvas ---
+            // Zoom triggers immediate re-render. spe-8og.5 will add debounce
+            // so rapid zoom steps don't queue redundant renders.
             Message::ZoomIn => {
                 self.canvas.zoom = canvas::zoom_in(self.canvas.zoom);
                 return self.render_current_page();
