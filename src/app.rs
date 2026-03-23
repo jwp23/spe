@@ -881,6 +881,9 @@ impl App {
         // Sort nearest-first so the most relevant pages render sooner.
         unrendered.sort_by_key(|p| (*p as i64 - center_page as i64).unsigned_abs());
         let batch: Vec<u32> = unrendered.into_iter().take(20).collect();
+        // pdftoppm requires a contiguous page range (-f/-l), so we use
+        // min/max of the nearest-first batch. This may re-render some
+        // already-cached pages in the middle — harmless at thumbnail DPI.
         let range_first = batch.iter().copied().min().unwrap();
         let range_last = batch.iter().copied().max().unwrap();
         self.sidebar.active_batch_tasks += 1;
