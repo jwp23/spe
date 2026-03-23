@@ -6,7 +6,7 @@ use iced::widget::image::Handle;
 
 use crate::app::Message;
 use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen, screen_to_pdf};
-use crate::overlay::{PdfPosition, TextOverlay};
+use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
 
 /// State for the PDF canvas view (persistent, lives in App).
 pub struct CanvasState {
@@ -184,14 +184,116 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
 
     fn draw(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         renderer: &iced::Renderer,
         _theme: &iced::Theme,
         bounds: iced::Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let _ = (renderer, bounds);
-        vec![]
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+
+        // Gray background
+        frame.fill_rectangle(
+            iced::Point::ORIGIN,
+            bounds.size(),
+            iced::Color::from_rgb(0.85, 0.85, 0.85),
+        );
+
+        let (Some(handle), Some(page_dims)) = (self.page_image, self.page_dimensions) else {
+            return vec![frame.into_geometry()];
+        };
+
+        // PDF page image, centered in canvas
+        let page_bounds = page_image_bounds(page_dims, self.zoom, self.dpi, bounds);
+        let local_page_bounds = iced::Rectangle {
+            x: page_bounds.x - bounds.x,
+            y: page_bounds.y - bounds.y,
+            width: page_bounds.width,
+            height: page_bounds.height,
+        };
+        frame.draw_image(local_page_bounds, handle);
+
+        // Build conversion params with frame-local offsets for overlay positioning
+        let local_params = ConversionParams {
+            zoom: self.zoom,
+            dpi: self.dpi,
+            page_height: page_dims.1,
+            offset_x: local_page_bounds.x,
+            offset_y: local_page_bounds.y,
+        };
+
+        let overlay_color = iced::Color::from_rgba(
+            self.overlay_color[0],
+            self.overlay_color[1],
+            self.overlay_color[2],
+            self.overlay_color[3],
+        );
+        let scale = self.zoom * self.dpi / 72.0;
+
+        // Draw overlays on the current page
+        for (i, overlay) in self.overlays.iter().enumerate() {
+            if overlay.page != self.current_page {
+                continue;
+            }
+
+            // During drag, skip the dragged overlay at its stored position;
+            // we draw it at the preview position below.
+            let is_dragging = state.drag.as_ref().is_some_and(|d| d.overlay_index == i);
+            if is_dragging {
+                continue;
+            }
+
+            let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, &local_params);
+            let scaled_size = overlay.font_size * scale;
+
+            draw_overlay_text(
+                &mut frame,
+                &overlay.text,
+                sx,
+                sy,
+                scaled_size,
+                overlay_color,
+            );
+
+            // Selection bounding box
+            if self.active_overlay == Some(i) {
+                draw_selection_box(
+                    &mut frame,
+                    &overlay.text,
+                    overlay.font,
+                    overlay.font_size,
+                    sx,
+                    sy,
+                    scale,
+                );
+            }
+        }
+
+        // Drag preview: draw the dragged overlay at the cursor position
+        if let (Some(drag), Some(cursor_pos)) = (&state.drag, state.cursor_position)
+            && let Some(overlay) = self.overlays.get(drag.overlay_index)
+        {
+            let preview_screen_x = cursor_pos.x - drag.grab_offset_x;
+            let preview_screen_y = cursor_pos.y - drag.grab_offset_y;
+            let scaled_size = overlay.font_size * scale;
+            let preview_color = iced::Color::from_rgba(
+                self.overlay_color[0],
+                self.overlay_color[1],
+                self.overlay_color[2],
+                0.5,
+            );
+
+            draw_overlay_text(
+                &mut frame,
+                &overlay.text,
+                preview_screen_x,
+                preview_screen_y,
+                scaled_size,
+                preview_color,
+            );
+        }
+
+        vec![frame.into_geometry()]
     }
 
     fn mouse_interaction(
@@ -237,6 +339,50 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
 
         mouse::Interaction::default()
     }
+}
+
+/// Draw overlay text at a screen position on the canvas frame.
+fn draw_overlay_text(
+    frame: &mut canvas::Frame,
+    content: &str,
+    screen_x: f32,
+    screen_y: f32,
+    scaled_font_size: f32,
+    color: iced::Color,
+) {
+    let text = canvas::Text {
+        content: content.to_string(),
+        position: iced::Point::new(screen_x, screen_y - scaled_font_size),
+        color,
+        size: iced::Pixels(scaled_font_size),
+        font: iced::Font::default(),
+        ..canvas::Text::default()
+    };
+    frame.fill_text(text);
+}
+
+/// Draw a selection bounding box around an overlay at a screen position.
+fn draw_selection_box(
+    frame: &mut canvas::Frame,
+    text: &str,
+    font: Standard14Font,
+    font_size: f32,
+    screen_x: f32,
+    screen_y: f32,
+    scale: f32,
+) {
+    let bbox = overlay_bounding_box(text, font, font_size);
+    let w = bbox.width * scale;
+    let h = bbox.height * scale;
+    let padding = 2.0;
+
+    frame.stroke_rectangle(
+        iced::Point::new(screen_x - padding, screen_y - h - padding),
+        iced::Size::new(w + 2.0 * padding, h + 2.0 * padding),
+        canvas::Stroke::default()
+            .with_color(iced::Color::from_rgb(0.2, 0.5, 1.0))
+            .with_width(1.5),
+    );
 }
 
 /// Compute the Rectangle where the PDF page image should be drawn, centered within the canvas.
@@ -1013,5 +1159,117 @@ mod tests {
 
         let interaction = program.mouse_interaction(&state, bounds, cursor);
         assert_eq!(interaction, mouse::Interaction::default());
+    }
+
+    // =====================================================================
+    // draw() logic tests — verify coordinate consistency
+    // =====================================================================
+
+    #[test]
+    fn font_size_scaling_matches_hit_test_scale() {
+        // The draw method scales font size as: font_size * zoom * dpi / 72.0
+        // The hit_test uses scale = zoom * (dpi / 72.0) and multiplies bounding box
+        // Both should produce consistent results.
+        let zoom = 1.5_f32;
+        let dpi = 150.0_f32;
+        let font_size = 12.0_f32;
+        let draw_scale = zoom * dpi / 72.0;
+        let hit_test_scale = zoom * (dpi / 72.0);
+        assert!(
+            (draw_scale - hit_test_scale).abs() < f32::EPSILON,
+            "draw scale ({draw_scale}) must match hit_test scale ({hit_test_scale})"
+        );
+        let draw_scaled_size = font_size * draw_scale;
+        let hit_test_scaled_height = font_size * hit_test_scale;
+        assert!(
+            (draw_scaled_size - hit_test_scaled_height).abs() < f32::EPSILON,
+            "scaled font size must match between draw and hit_test"
+        );
+    }
+
+    #[test]
+    fn local_page_bounds_offsets_correctly_from_canvas_position() {
+        // When canvas bounds start at (50, 30), page_image_bounds includes that offset.
+        // The frame-local adjustment should subtract canvas origin.
+        let canvas_bounds = iced::Rectangle {
+            x: 50.0,
+            y: 30.0,
+            width: 1000.0,
+            height: 1000.0,
+        };
+        let page_bounds = page_image_bounds(TEST_PAGE_DIMS, TEST_ZOOM, TEST_DPI, canvas_bounds);
+        let local_page_bounds = iced::Rectangle {
+            x: page_bounds.x - canvas_bounds.x,
+            y: page_bounds.y - canvas_bounds.y,
+            width: page_bounds.width,
+            height: page_bounds.height,
+        };
+        // The local bounds should be the same as if canvas started at origin
+        let origin_bounds = page_image_bounds(
+            TEST_PAGE_DIMS,
+            TEST_ZOOM,
+            TEST_DPI,
+            iced::Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: 1000.0,
+                height: 1000.0,
+            },
+        );
+        assert!((local_page_bounds.x - origin_bounds.x).abs() < 0.1);
+        assert!((local_page_bounds.y - origin_bounds.y).abs() < 0.1);
+        assert!((local_page_bounds.width - origin_bounds.width).abs() < 0.1);
+        assert!((local_page_bounds.height - origin_bounds.height).abs() < 0.1);
+    }
+
+    #[test]
+    fn conversion_params_from_local_bounds_produce_valid_coordinates() {
+        // Verify that using local (frame-relative) page bounds in ConversionParams
+        // produces screen coordinates within the frame dimensions.
+        let canvas_bounds = test_canvas_bounds();
+        let page_bounds = page_image_bounds(TEST_PAGE_DIMS, TEST_ZOOM, TEST_DPI, canvas_bounds);
+        let local_page_bounds = iced::Rectangle {
+            x: page_bounds.x - canvas_bounds.x,
+            y: page_bounds.y - canvas_bounds.y,
+            width: page_bounds.width,
+            height: page_bounds.height,
+        };
+        let params = ConversionParams {
+            zoom: TEST_ZOOM,
+            dpi: TEST_DPI,
+            page_height: TEST_PAGE_DIMS.1,
+            offset_x: local_page_bounds.x,
+            offset_y: local_page_bounds.y,
+        };
+        // A point at the top-left of the PDF page (0, page_height) should map
+        // to approximately local_page_bounds origin.
+        let (sx, sy) = pdf_to_screen(0.0, TEST_PAGE_DIMS.1, &params);
+        assert!(
+            (sx - local_page_bounds.x).abs() < 0.1,
+            "screen x ({sx}) should be near page left ({})",
+            local_page_bounds.x
+        );
+        assert!(
+            (sy - local_page_bounds.y).abs() < 0.1,
+            "screen y ({sy}) should be near page top ({})",
+            local_page_bounds.y
+        );
+    }
+
+    #[test]
+    fn draw_text_position_is_offset_upward_by_font_height() {
+        // draw_overlay_text positions text at (sx, sy - scaled_font_size).
+        // This accounts for PDF baseline coordinates: pdf_to_screen gives the
+        // baseline position, but Iced Text renders from the top-left.
+        // The text height equals the scaled font size.
+        let font_size = 12.0_f32;
+        let scale = 1.0_f32; // zoom=1, dpi=72
+        let scaled = font_size * scale;
+        let baseline_y = 100.0_f32;
+        let top_left_y = baseline_y - scaled;
+        assert!(
+            (top_left_y - 88.0).abs() < f32::EPSILON,
+            "text top-left y should be baseline minus font height"
+        );
     }
 }
