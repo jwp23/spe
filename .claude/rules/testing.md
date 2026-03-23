@@ -1,15 +1,5 @@
 # Testing Rules
 
-## TDD Is Mandatory
-
-Every new function or method follows red/green/refactor:
-
-1. Write the test. Run it. Confirm it FAILS.
-2. Write the minimum implementation to make it pass.
-3. Refactor. Tests must stay green.
-
-If a test passes on first run without new implementation code, the test is wrong. Fix the test.
-
 ## Test Pyramid
 
 - **Unit tests**: Every public function and method must have tests. Test edge cases and error paths.
