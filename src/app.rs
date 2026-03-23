@@ -777,9 +777,13 @@ impl App {
                 );
                 self.sidebar.backfill_generation += 1;
 
+                let scroll_reset = iced::widget::operation::scroll_to(
+                    self.scrollable_id.clone(),
+                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+                );
                 let page_task = self.render_visible_pages();
                 let thumb_task = self.render_visible_thumbnails();
-                iced::Task::batch([page_task, thumb_task])
+                iced::Task::batch([scroll_reset, page_task, thumb_task])
             }
             Err(e) => {
                 eprintln!("Failed to open PDF: {e}");
@@ -1970,12 +1974,9 @@ mod tests {
         assert_eq!(app.sidebar.active_batch_tasks, 0);
     }
 
-    #[test]
-    fn handle_file_opened_resets_active_batch_tasks() {
+    /// Helper: create a minimal one-page PDF in a temp file.
+    fn make_temp_pdf() -> tempfile::NamedTempFile {
         use lopdf::{Dictionary, Object};
-        let mut app = test_app_with_document();
-        app.sidebar.active_batch_tasks = 3;
-        // Build a minimal loadable PDF in a temp file.
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let mut doc = lopdf::Document::with_version("1.5");
         let pages_id = doc.new_object_id();
@@ -2003,6 +2004,28 @@ mod tests {
         let catalog_id = doc.add_object(Object::Dictionary(catalog));
         doc.trailer.set("Root", Object::Reference(catalog_id));
         doc.save(tmp.path()).expect("save temp pdf");
+        tmp
+    }
+
+    #[test]
+    fn handle_file_opened_resets_to_page_one() {
+        let mut app = test_app_with_document();
+        // Simulate being on page 3 of previous document with a non-zero scroll
+        app.document.as_mut().unwrap().current_page = 3;
+        app.canvas.scroll_y = 5000.0;
+
+        let tmp = make_temp_pdf();
+        let _ = app.handle_file_opened(tmp.path().to_path_buf());
+
+        assert_eq!(app.document.as_ref().unwrap().current_page, 1);
+        assert_eq!(app.canvas.scroll_y, 0.0);
+    }
+
+    #[test]
+    fn handle_file_opened_resets_active_batch_tasks() {
+        let mut app = test_app_with_document();
+        app.sidebar.active_batch_tasks = 3;
+        let tmp = make_temp_pdf();
         let _ = app.handle_file_opened(tmp.path().to_path_buf());
         // The counter is reset to 0 at file-open time; any new render tasks
         // spawned immediately after may increment it, but it must stay within
