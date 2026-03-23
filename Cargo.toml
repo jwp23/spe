@@ -11,3 +11,6 @@ rfd = "0.17"
 image = "0.25"
 thiserror = "2"
 tempfile = "3"
+
+[dev-dependencies]
+iced_test = "0.14"
