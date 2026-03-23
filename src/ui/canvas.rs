@@ -407,6 +407,137 @@ fn draw_selection_box(
     );
 }
 
+/// Gap between pages in continuous scrolling mode (pixels).
+pub const PAGE_GAP: f32 = 16.0;
+
+/// Layout of all pages stacked vertically for continuous scrolling.
+pub struct PageLayout {
+    /// Y-offset of each page's top edge in canvas space. Index 0 = page 1.
+    pub page_tops: Vec<f32>,
+    /// Rendered height of each page. Index 0 = page 1.
+    pub page_heights: Vec<f32>,
+    /// Rendered width of each page. Index 0 = page 1.
+    pub page_widths: Vec<f32>,
+    /// Total canvas height (all pages + gaps + top/bottom margins).
+    pub total_height: f32,
+    /// Maximum rendered page width.
+    pub max_width: f32,
+}
+
+/// Compute the vertical layout of all pages at the current zoom/DPI.
+pub fn page_layout(
+    page_dimensions: &std::collections::HashMap<u32, (f32, f32)>,
+    page_count: u32,
+    zoom: f32,
+    dpi: f32,
+) -> PageLayout {
+    let scale = zoom * dpi / 72.0;
+    let mut page_tops = Vec::with_capacity(page_count as usize);
+    let mut page_heights = Vec::with_capacity(page_count as usize);
+    let mut page_widths = Vec::with_capacity(page_count as usize);
+    let mut y = PAGE_GAP / 2.0;
+    let mut max_width: f32 = 0.0;
+
+    for page in 1..=page_count {
+        let (w, h) = page_dimensions
+            .get(&page)
+            .copied()
+            .unwrap_or((612.0, 792.0));
+        let rendered_w = w * scale;
+        let rendered_h = h * scale;
+        page_tops.push(y);
+        page_widths.push(rendered_w);
+        page_heights.push(rendered_h);
+        max_width = max_width.max(rendered_w);
+        y += rendered_h + PAGE_GAP;
+    }
+
+    let total_height = y - PAGE_GAP / 2.0;
+
+    PageLayout {
+        page_tops,
+        page_heights,
+        page_widths,
+        total_height,
+        max_width,
+    }
+}
+
+/// Return the 1-indexed page number at canvas y-coordinate, or None if in a gap or past end.
+pub fn page_at_y(layout: &PageLayout, y: f32) -> Option<u32> {
+    for (i, &top) in layout.page_tops.iter().enumerate() {
+        let bottom = top + layout.page_heights[i];
+        if y >= top && y < bottom {
+            return Some(i as u32 + 1);
+        }
+        if y < top {
+            return None; // in gap before this page
+        }
+    }
+    None
+}
+
+/// Return (first, last) 1-indexed page range whose rendered area overlaps the viewport.
+pub fn visible_pages(layout: &PageLayout, scroll_y: f32, viewport_h: f32) -> (u32, u32) {
+    let view_top = scroll_y;
+    let view_bottom = scroll_y + viewport_h;
+    let page_count = layout.page_tops.len() as u32;
+
+    let mut first = page_count;
+    let mut last = 1;
+
+    for (i, &top) in layout.page_tops.iter().enumerate() {
+        let bottom = top + layout.page_heights[i];
+        if bottom > view_top && top < view_bottom {
+            let page = i as u32 + 1;
+            first = first.min(page);
+            last = last.max(page);
+        }
+    }
+
+    if first > last {
+        (1, 1)
+    } else {
+        (first.max(1), last.min(page_count))
+    }
+}
+
+/// Return the 1-indexed page that occupies the most vertical space in the viewport.
+pub fn dominant_page(layout: &PageLayout, scroll_y: f32, viewport_h: f32) -> u32 {
+    let view_top = scroll_y;
+    let view_bottom = scroll_y + viewport_h;
+    let mut best_page = 1u32;
+    let mut best_overlap = 0.0f32;
+
+    for (i, &top) in layout.page_tops.iter().enumerate() {
+        let bottom = top + layout.page_heights[i];
+        let overlap_top = top.max(view_top);
+        let overlap_bottom = bottom.min(view_bottom);
+        let overlap = (overlap_bottom - overlap_top).max(0.0);
+        if overlap > best_overlap {
+            best_overlap = overlap;
+            best_page = i as u32 + 1;
+        }
+    }
+
+    best_page
+}
+
+/// Compute the Rectangle for a page in canvas coordinates (for drawing).
+pub fn page_rect_in_canvas(layout: &PageLayout, page: u32, canvas_width: f32) -> iced::Rectangle {
+    let idx = (page - 1) as usize;
+    let w = layout.page_widths[idx];
+    let h = layout.page_heights[idx];
+    let x = (canvas_width - w) / 2.0;
+    let y = layout.page_tops[idx];
+    iced::Rectangle {
+        x: x.max(0.0),
+        y,
+        width: w,
+        height: h,
+    }
+}
+
 /// Compute the Rectangle where the PDF page image should be drawn, centered within the canvas.
 pub fn page_image_bounds(
     page_dims: (f32, f32),
@@ -514,6 +645,203 @@ mod tests {
     use crate::coordinate::ConversionParams;
     use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
     use iced::event;
+    use std::collections::HashMap;
+
+    // --- PageLayout tests ---
+
+    fn uniform_page_dims(count: u32) -> HashMap<u32, (f32, f32)> {
+        (1..=count).map(|p| (p, (612.0, 792.0))).collect()
+    }
+
+    #[test]
+    fn page_layout_single_page() {
+        let dims = uniform_page_dims(1);
+        let layout = page_layout(&dims, 1, 1.0, 72.0);
+        assert_eq!(layout.page_tops.len(), 1);
+        assert_eq!(layout.page_heights.len(), 1);
+        // At zoom=1, dpi=72: scale=1.0, rendered=612x792
+        assert!((layout.page_widths[0] - 612.0).abs() < 0.1);
+        assert!((layout.page_heights[0] - 792.0).abs() < 0.1);
+        // First page starts at PAGE_GAP/2
+        assert!((layout.page_tops[0] - PAGE_GAP / 2.0).abs() < 0.1);
+        // Total height = GAP/2 + 792 + GAP/2 = 792 + GAP
+        assert!((layout.total_height - (792.0 + PAGE_GAP)).abs() < 0.1);
+        assert!((layout.max_width - 612.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn page_layout_two_uniform_pages() {
+        let dims = uniform_page_dims(2);
+        let layout = page_layout(&dims, 2, 1.0, 72.0);
+        assert_eq!(layout.page_tops.len(), 2);
+        // Page 1 starts at GAP/2
+        assert!((layout.page_tops[0] - PAGE_GAP / 2.0).abs() < 0.1);
+        // Page 2 starts at GAP/2 + 792 + GAP
+        let expected_top2 = PAGE_GAP / 2.0 + 792.0 + PAGE_GAP;
+        assert!((layout.page_tops[1] - expected_top2).abs() < 0.1);
+        // Total = GAP/2 + 792 + GAP + 792 + GAP/2 = 2*792 + 2*GAP
+        let expected_total = 2.0 * 792.0 + 2.0 * PAGE_GAP;
+        assert!((layout.total_height - expected_total).abs() < 0.1);
+    }
+
+    #[test]
+    fn page_layout_mixed_page_sizes() {
+        let mut dims = HashMap::new();
+        dims.insert(1, (612.0, 792.0)); // Letter
+        dims.insert(2, (842.0, 595.0)); // A4 landscape
+        let layout = page_layout(&dims, 2, 1.0, 72.0);
+        assert!((layout.page_widths[0] - 612.0).abs() < 0.1);
+        assert!((layout.page_widths[1] - 842.0).abs() < 0.1);
+        assert!((layout.page_heights[0] - 792.0).abs() < 0.1);
+        assert!((layout.page_heights[1] - 595.0).abs() < 0.1);
+        assert!((layout.max_width - 842.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn page_layout_respects_zoom_and_dpi() {
+        let dims = uniform_page_dims(1);
+        // zoom=2.0, dpi=150 → scale = 2*150/72 ≈ 4.167
+        let layout = page_layout(&dims, 1, 2.0, 150.0);
+        let scale = 2.0 * 150.0 / 72.0;
+        assert!((layout.page_widths[0] - 612.0 * scale).abs() < 0.1);
+        assert!((layout.page_heights[0] - 792.0 * scale).abs() < 0.1);
+    }
+
+    // --- page_at_y tests ---
+
+    #[test]
+    fn page_at_y_hits_first_page() {
+        let dims = uniform_page_dims(3);
+        let layout = page_layout(&dims, 3, 1.0, 72.0);
+        // Middle of first page
+        let y = layout.page_tops[0] + layout.page_heights[0] / 2.0;
+        assert_eq!(page_at_y(&layout, y), Some(1));
+    }
+
+    #[test]
+    fn page_at_y_hits_second_page() {
+        let dims = uniform_page_dims(3);
+        let layout = page_layout(&dims, 3, 1.0, 72.0);
+        let y = layout.page_tops[1] + 10.0;
+        assert_eq!(page_at_y(&layout, y), Some(2));
+    }
+
+    #[test]
+    fn page_at_y_in_gap_returns_none() {
+        let dims = uniform_page_dims(2);
+        let layout = page_layout(&dims, 2, 1.0, 72.0);
+        // Gap is between page_tops[0]+page_heights[0] and page_tops[1]
+        let gap_y = layout.page_tops[0] + layout.page_heights[0] + PAGE_GAP / 2.0;
+        assert!(page_at_y(&layout, gap_y).is_none());
+    }
+
+    #[test]
+    fn page_at_y_before_first_page_returns_none() {
+        let dims = uniform_page_dims(1);
+        let layout = page_layout(&dims, 1, 1.0, 72.0);
+        assert!(page_at_y(&layout, 0.0).is_none());
+    }
+
+    #[test]
+    fn page_at_y_past_last_page_returns_none() {
+        let dims = uniform_page_dims(1);
+        let layout = page_layout(&dims, 1, 1.0, 72.0);
+        assert!(page_at_y(&layout, layout.total_height + 100.0).is_none());
+    }
+
+    // --- visible_pages tests ---
+
+    #[test]
+    fn visible_pages_all_visible() {
+        let dims = uniform_page_dims(3);
+        let layout = page_layout(&dims, 3, 1.0, 72.0);
+        // Viewport tall enough to see everything
+        let (first, last) = visible_pages(&layout, 0.0, layout.total_height + 100.0);
+        assert_eq!(first, 1);
+        assert_eq!(last, 3);
+    }
+
+    #[test]
+    fn visible_pages_first_page_only() {
+        let dims = uniform_page_dims(3);
+        let layout = page_layout(&dims, 3, 1.0, 72.0);
+        // Viewport covers only first page
+        let (first, last) =
+            visible_pages(&layout, 0.0, layout.page_tops[0] + layout.page_heights[0]);
+        assert_eq!(first, 1);
+        assert_eq!(last, 1);
+    }
+
+    #[test]
+    fn visible_pages_at_boundary() {
+        let dims = uniform_page_dims(3);
+        let layout = page_layout(&dims, 3, 1.0, 72.0);
+        // Scroll to where page 1 bottom and page 2 top are both visible
+        let scroll_y = layout.page_tops[0] + layout.page_heights[0] - 50.0;
+        let (first, last) = visible_pages(&layout, scroll_y, 100.0);
+        assert_eq!(first, 1);
+        assert_eq!(last, 2);
+    }
+
+    #[test]
+    fn visible_pages_last_page_only() {
+        let dims = uniform_page_dims(3);
+        let layout = page_layout(&dims, 3, 1.0, 72.0);
+        let scroll_y = layout.page_tops[2];
+        let (first, last) = visible_pages(&layout, scroll_y, 800.0);
+        assert_eq!(first, 3);
+        assert_eq!(last, 3);
+    }
+
+    // --- dominant_page tests ---
+
+    #[test]
+    fn dominant_page_first_page_at_top() {
+        let dims = uniform_page_dims(3);
+        let layout = page_layout(&dims, 3, 1.0, 72.0);
+        assert_eq!(dominant_page(&layout, 0.0, 800.0), 1);
+    }
+
+    #[test]
+    fn dominant_page_at_boundary_picks_more_visible() {
+        let dims = uniform_page_dims(2);
+        let layout = page_layout(&dims, 2, 1.0, 72.0);
+        // Scroll so page 2 has more visible area than page 1
+        let scroll_y = layout.page_tops[1] - 100.0;
+        let result = dominant_page(&layout, scroll_y, 800.0);
+        assert_eq!(result, 2);
+    }
+
+    #[test]
+    fn dominant_page_fully_on_page_2() {
+        let dims = uniform_page_dims(3);
+        let layout = page_layout(&dims, 3, 1.0, 72.0);
+        let scroll_y = layout.page_tops[1] + 10.0;
+        assert_eq!(dominant_page(&layout, scroll_y, 200.0), 2);
+    }
+
+    // --- page_rect_in_canvas tests ---
+
+    #[test]
+    fn page_rect_in_canvas_centers_horizontally() {
+        let dims = uniform_page_dims(1);
+        let layout = page_layout(&dims, 1, 1.0, 72.0);
+        let rect = page_rect_in_canvas(&layout, 1, 1000.0);
+        // Page is 612px wide in 1000px canvas → x = (1000-612)/2 = 194
+        assert!((rect.x - 194.0).abs() < 0.1);
+        assert!((rect.y - PAGE_GAP / 2.0).abs() < 0.1);
+        assert!((rect.width - 612.0).abs() < 0.1);
+        assert!((rect.height - 792.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn page_rect_in_canvas_second_page_position() {
+        let dims = uniform_page_dims(2);
+        let layout = page_layout(&dims, 2, 1.0, 72.0);
+        let rect = page_rect_in_canvas(&layout, 2, 1000.0);
+        let expected_y = PAGE_GAP / 2.0 + 792.0 + PAGE_GAP;
+        assert!((rect.y - expected_y).abs() < 0.1);
+    }
     use iced::widget::canvas::Program;
 
     fn default_params() -> ConversionParams {
