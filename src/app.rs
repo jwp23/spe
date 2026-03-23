@@ -44,6 +44,7 @@ pub struct App {
     pub redo_stack: Vec<UndoCommand>,
     pub config: AppConfig,
     pub window_size: Option<iced::Size>,
+    pub scale_factor: f32,
     pub scrollable_id: iced::widget::Id,
 }
 
@@ -102,6 +103,7 @@ pub enum Message {
 
     // Window
     WindowResized(iced::Size),
+    ScaleFactorChanged(f32),
 
     // Font loaded
     FontLoaded(Result<(), iced::font::Error>),
@@ -118,6 +120,7 @@ impl App {
             redo_stack: Vec::new(),
             config: AppConfig::default(),
             window_size: None,
+            scale_factor: 1.0,
             scrollable_id: iced::widget::Id::unique(),
         };
         let font_task = iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded);
@@ -436,10 +439,9 @@ impl App {
                                 .fold(0.0f32, f32::max)
                         })
                         .unwrap_or(612.0);
-                    let scale_factor = 1.0;
                     self.sidebar.thumbnail_dpi = crate::ui::sidebar::compute_thumbnail_dpi(
                         self.sidebar.width,
-                        scale_factor,
+                        self.scale_factor,
                         max_page_w,
                     );
                     self.sidebar.thumbnails.clear();
@@ -476,6 +478,9 @@ impl App {
             // --- Window ---
             Message::WindowResized(size) => {
                 self.window_size = Some(size);
+            }
+            Message::ScaleFactorChanged(factor) => {
+                self.scale_factor = factor;
             }
 
             // --- Font loaded ---
@@ -617,6 +622,9 @@ impl App {
                 return match win_event {
                     iced::window::Event::Resized(size) => Some(Message::WindowResized(*size)),
                     iced::window::Event::Opened { size, .. } => Some(Message::WindowResized(*size)),
+                    iced::window::Event::Rescaled(factor) => {
+                        Some(Message::ScaleFactorChanged(*factor))
+                    }
                     _ => None,
                 };
             }
@@ -762,10 +770,9 @@ impl App {
                 }
 
                 // Compute thumbnail DPI for sidebar rendering
-                let scale_factor = 1.0; // TODO: get from Iced window scale factor when available
                 self.sidebar.thumbnail_dpi = crate::ui::sidebar::compute_thumbnail_dpi(
                     self.sidebar.width,
-                    scale_factor,
+                    self.scale_factor,
                     max_page_w,
                 );
                 self.sidebar.backfill_generation += 1;
@@ -1649,6 +1656,19 @@ mod tests {
     fn app_default_has_no_window_size() {
         let (app, _) = App::new();
         assert!(app.window_size.is_none());
+    }
+
+    #[test]
+    fn app_default_scale_factor_is_one() {
+        let (app, _) = App::new();
+        assert!((app.scale_factor - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn scale_factor_changed_updates_state() {
+        let (mut app, _) = App::new();
+        let _ = app.update(Message::ScaleFactorChanged(2.0));
+        assert!((app.scale_factor - 2.0).abs() < f32::EPSILON);
     }
 
     #[test]
