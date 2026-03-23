@@ -74,9 +74,9 @@ tests/
 └── pdf_writing.rs    # integration tests for PDF overlay writing
 ```
 
-## Phosphor Icon Font
+## Phosphor Icon Font (contributors only)
 
-The toolbar uses a subsetted [Phosphor Icons](https://phosphoricons.com/) TTF bundled at `assets/phosphor-subset.ttf`. To regenerate after changing which icons are included:
+The subsetted font is already committed — you do **not** need these tools to build or run the app. This section is only for regenerating the subset after changing which icons are included:
 
 ```bash
 pip install fonttools  # or: pipx install fonttools
