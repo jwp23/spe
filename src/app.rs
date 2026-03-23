@@ -579,6 +579,21 @@ impl App {
                 self.canvas = CanvasState::default();
                 self.sidebar.thumbnails.clear();
                 self.toolbar.page_input = "1".to_string();
+                // Set initial zoom to fit page width in viewport
+                if let Some(win) = self.window_size
+                    && let Some(&(page_w, _)) = self
+                        .document
+                        .as_ref()
+                        .and_then(|d| d.page_dimensions.get(&1))
+                {
+                    let sidebar_w = if self.sidebar.visible {
+                        crate::ui::sidebar::SIDEBAR_WIDTH
+                    } else {
+                        0.0
+                    };
+                    let available_w = (win.width - sidebar_w - 16.0).max(1.0);
+                    self.canvas.zoom = canvas::fit_to_width_zoom(page_w, available_w);
+                }
                 let dpi = canvas::effective_dpi(self.canvas.zoom) as u32;
                 render_page_task(path, 1, dpi)
             }
