@@ -9,7 +9,8 @@ use iced::widget::image::Handle;
 use crate::command::Command as UndoCommand;
 use crate::config::AppConfig;
 use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
-use crate::ui::canvas::{self, CanvasState};
+use crate::pdf::renderer::{PageRenderer, PdftoppmRenderer};
+use crate::ui::canvas::{self, CanvasState, PdfCanvasProgram};
 use crate::ui::sidebar::SidebarState;
 use crate::ui::toolbar::{self, ToolbarContext, ToolbarState};
 
@@ -123,7 +124,7 @@ impl App {
                 return self.handle_open_file();
             }
             Message::FileOpened(path) => {
-                self.handle_file_opened(path);
+                return self.handle_file_opened(path);
             }
             Message::Save => {
                 return self.handle_save();
@@ -137,33 +138,52 @@ impl App {
 
             // --- Page navigation ---
             Message::NextPage => {
-                if let Some(doc) = &mut self.document
+                let navigated = if let Some(doc) = &mut self.document
                     && doc.current_page < doc.page_count
                 {
                     doc.current_page += 1;
                     self.toolbar.page_input = doc.current_page.to_string();
+                    true
+                } else {
+                    false
+                };
+                if navigated {
+                    return self.render_if_uncached(self.document.as_ref().unwrap().current_page);
                 }
             }
             Message::PreviousPage => {
-                if let Some(doc) = &mut self.document
+                let navigated = if let Some(doc) = &mut self.document
                     && doc.current_page > 1
                 {
                     doc.current_page -= 1;
                     self.toolbar.page_input = doc.current_page.to_string();
+                    true
+                } else {
+                    false
+                };
+                if navigated {
+                    return self.render_if_uncached(self.document.as_ref().unwrap().current_page);
                 }
             }
             Message::GoToPage(page) => {
-                if let Some(doc) = &mut self.document
+                let navigated = if let Some(doc) = &mut self.document
                     && page >= 1
                     && page <= doc.page_count
                 {
                     doc.current_page = page;
                     self.toolbar.page_input = page.to_string();
+                    true
+                } else {
+                    false
+                };
+                if navigated {
+                    return self.render_if_uncached(page);
                 }
             }
             Message::PageRendered(page, handle) => {
                 if let Some(doc) = &mut self.document {
                     doc.page_images.insert(page, handle);
+                    return self.prerender_neighbors();
                 }
             }
 
@@ -288,12 +308,15 @@ impl App {
             // --- Canvas ---
             Message::ZoomIn => {
                 self.canvas.zoom = canvas::zoom_in(self.canvas.zoom);
+                return self.render_current_page();
             }
             Message::ZoomOut => {
                 self.canvas.zoom = canvas::zoom_out(self.canvas.zoom);
+                return self.render_current_page();
             }
             Message::ZoomReset => {
                 self.canvas.zoom = 1.0;
+                return self.render_current_page();
             }
 
             // --- Sidebar ---
@@ -341,8 +364,22 @@ impl App {
         };
         let toolbar = toolbar::toolbar_view(&self.toolbar, &toolbar_ctx).map(Message::Toolbar);
 
-        let content: iced::Element<Message> = if self.document.is_some() {
-            let canvas_area: iced::Element<Message> = iced::widget::text("PDF canvas area").into();
+        let content: iced::Element<Message> = if let Some(doc) = &self.document {
+            let program = PdfCanvasProgram {
+                page_image: doc.page_images.get(&doc.current_page),
+                page_dimensions: doc.page_dimensions.get(&doc.current_page).copied(),
+                overlays: &doc.overlays,
+                current_page: doc.current_page,
+                zoom: self.canvas.zoom,
+                dpi: canvas::effective_dpi(self.canvas.zoom),
+                active_overlay: self.canvas.active_overlay,
+                editing: self.canvas.editing,
+                overlay_color: self.config.overlay_color,
+            };
+            let canvas_area: iced::Element<Message> = iced::widget::canvas(program)
+                .width(iced::Length::Fill)
+                .height(iced::Length::Fill)
+                .into();
 
             if self.sidebar.visible {
                 let sidebar: iced::Element<Message> =
@@ -429,13 +466,13 @@ impl App {
         )
     }
 
-    fn handle_file_opened(&mut self, path: PathBuf) {
+    fn handle_file_opened(&mut self, path: PathBuf) -> iced::Task<Message> {
         match lopdf::Document::load(&path) {
             Ok(doc) => {
                 let page_dims = crate::pdf::page_dimensions(&doc);
                 let page_count = doc.get_pages().len() as u32;
                 self.document = Some(DocumentState {
-                    source_path: path,
+                    source_path: path.clone(),
                     save_path: None,
                     page_count,
                     current_page: 1,
@@ -448,9 +485,12 @@ impl App {
                 self.canvas = CanvasState::default();
                 self.sidebar.thumbnails.clear();
                 self.toolbar.page_input = "1".to_string();
+                let dpi = canvas::effective_dpi(self.canvas.zoom) as u32;
+                render_page_task(path, 1, dpi)
             }
             Err(e) => {
                 eprintln!("Failed to open PDF: {e}");
+                iced::Task::none()
             }
         }
     }
@@ -503,6 +543,65 @@ impl App {
             }
         }
     }
+
+    /// Render the given page if it is not already cached.
+    fn render_if_uncached(&self, page: u32) -> iced::Task<Message> {
+        if let Some(doc) = &self.document
+            && !doc.page_images.contains_key(&page)
+        {
+            let dpi = canvas::effective_dpi(self.canvas.zoom) as u32;
+            render_page_task(doc.source_path.clone(), page, dpi)
+        } else {
+            iced::Task::none()
+        }
+    }
+
+    /// Pre-render neighbor pages (current ± 1) that are not already cached.
+    fn prerender_neighbors(&self) -> iced::Task<Message> {
+        let Some(doc) = &self.document else {
+            return iced::Task::none();
+        };
+        let dpi = canvas::effective_dpi(self.canvas.zoom) as u32;
+        let mut tasks = Vec::new();
+        let current = doc.current_page;
+        if current > 1 && !doc.page_images.contains_key(&(current - 1)) {
+            tasks.push(render_page_task(doc.source_path.clone(), current - 1, dpi));
+        }
+        if current < doc.page_count && !doc.page_images.contains_key(&(current + 1)) {
+            tasks.push(render_page_task(doc.source_path.clone(), current + 1, dpi));
+        }
+        iced::Task::batch(tasks)
+    }
+
+    /// Re-render the current page at the current zoom/DPI.
+    fn render_current_page(&self) -> iced::Task<Message> {
+        if let Some(doc) = &self.document {
+            let dpi = canvas::effective_dpi(self.canvas.zoom) as u32;
+            render_page_task(doc.source_path.clone(), doc.current_page, dpi)
+        } else {
+            iced::Task::none()
+        }
+    }
+}
+
+/// Launch an async task to render a single PDF page via pdftoppm.
+fn render_page_task(pdf_path: PathBuf, page: u32, dpi: u32) -> iced::Task<Message> {
+    iced::Task::perform(
+        async move {
+            let renderer = PdftoppmRenderer;
+            match renderer.render_page(&pdf_path, page, dpi) {
+                Ok(img) => Some((page, canvas::image_to_handle(img))),
+                Err(e) => {
+                    eprintln!("Failed to render page {page}: {e}");
+                    None
+                }
+            }
+        },
+        |result| match result {
+            Some((page, handle)) => Message::PageRendered(page, handle),
+            None => Message::DeselectOverlay,
+        },
+    )
 }
 
 /// Map a keyboard event to an application message.
@@ -835,5 +934,57 @@ mod tests {
         let mut app = test_app_with_document();
         app.document.as_mut().unwrap().source_path = PathBuf::from("/tmp/report.pdf");
         assert_eq!(app.title(), "report.pdf - SPE");
+    }
+
+    #[test]
+    fn view_with_document_renders_canvas_widget() {
+        let app = test_app_with_document();
+        // Should not panic — constructs PdfCanvasProgram and renders canvas
+        let _element = app.view();
+    }
+
+    #[test]
+    fn view_with_document_and_page_image_does_not_panic() {
+        let mut app = test_app_with_document();
+        let doc = app.document.as_mut().unwrap();
+        doc.page_dimensions.insert(1, (612.0, 792.0));
+        // Insert a dummy Handle
+        let handle = Handle::from_rgba(1, 1, vec![0, 0, 0, 255]);
+        doc.page_images.insert(1, handle);
+        let _element = app.view();
+    }
+
+    #[test]
+    fn page_rendered_inserts_into_cache() {
+        let mut app = test_app_with_document();
+        let handle = Handle::from_rgba(1, 1, vec![255, 0, 0, 255]);
+        let _ = app.update(Message::PageRendered(1, handle));
+        assert!(app.document.as_ref().unwrap().page_images.contains_key(&1));
+    }
+
+    #[test]
+    fn page_rendered_replaces_existing_cached_image() {
+        let mut app = test_app_with_document();
+        let handle1 = Handle::from_rgba(1, 1, vec![255, 0, 0, 255]);
+        let handle2 = Handle::from_rgba(1, 1, vec![0, 255, 0, 255]);
+        let _ = app.update(Message::PageRendered(1, handle1));
+        let _ = app.update(Message::PageRendered(1, handle2));
+        assert!(app.document.as_ref().unwrap().page_images.contains_key(&1));
+    }
+
+    #[test]
+    fn zoom_in_updates_zoom_with_document() {
+        let mut app = test_app_with_document();
+        let initial = app.canvas.zoom;
+        let _ = app.update(Message::ZoomIn);
+        assert!(app.canvas.zoom > initial);
+    }
+
+    #[test]
+    fn zoom_reset_with_document() {
+        let mut app = test_app_with_document();
+        let _ = app.update(Message::ZoomIn);
+        let _ = app.update(Message::ZoomReset);
+        assert!((app.canvas.zoom - 1.0).abs() < f32::EPSILON);
     }
 }
