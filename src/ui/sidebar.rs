@@ -130,7 +130,6 @@ const CURRENT_PAGE_BORDER_WIDTH: f32 = 3.0;
 pub struct ThumbnailProgram<'a> {
     pub page: u32,
     pub thumbnail: Option<&'a Handle>,
-    pub is_current_page: bool,
     pub overlays: &'a [TextOverlay],
     pub page_width: f32,
     pub page_height: f32,
@@ -196,30 +195,6 @@ impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
             }
         }
 
-        // Highlight border for current page
-        if self.is_current_page {
-            // Semi-transparent overlay tint so the highlight is obvious
-            frame.fill_rectangle(
-                iced::Point::ORIGIN,
-                bounds.size(),
-                iced::Color::from_rgba(0.310, 0.765, 0.969, 0.12),
-            );
-            let stroke = canvas::Stroke {
-                style: canvas::Style::Solid(CURRENT_PAGE_BORDER_COLOR),
-                width: CURRENT_PAGE_BORDER_WIDTH,
-                ..canvas::Stroke::default()
-            };
-            let half = CURRENT_PAGE_BORDER_WIDTH / 2.0;
-            frame.stroke_rectangle(
-                iced::Point::new(half, half),
-                iced::Size::new(
-                    bounds.width - CURRENT_PAGE_BORDER_WIDTH,
-                    bounds.height - CURRENT_PAGE_BORDER_WIDTH,
-                ),
-                stroke,
-            );
-        }
-
         vec![frame.into_geometry()]
     }
 
@@ -279,7 +254,6 @@ pub fn sidebar_view<'a>(
         let program = ThumbnailProgram {
             page,
             thumbnail: state.thumbnails.get(&page),
-            is_current_page: page == current_page,
             overlays,
             page_width: pw,
             page_height: ph,
@@ -293,9 +267,33 @@ pub fn sidebar_view<'a>(
             .height(Length::Fixed(thumb_h))
             .into();
 
-        let label = text(format!("{page}")).size(10).center();
+        // Highlight border is applied via container styling (not canvas drawing)
+        // so it updates immediately when current_page changes, bypassing
+        // canvas geometry caching.
+        let is_current = page == current_page;
+        let thumb_container = container(thumb_canvas).style(move |_theme| {
+            if is_current {
+                container::Style {
+                    border: iced::Border {
+                        color: CURRENT_PAGE_BORDER_COLOR,
+                        width: CURRENT_PAGE_BORDER_WIDTH,
+                        radius: 0.0.into(),
+                    },
+                    ..container::Style::default()
+                }
+            } else {
+                container::Style::default()
+            }
+        });
 
-        let thumb_col = column![thumb_canvas, label].align_x(iced::Alignment::Center);
+        let label_color = if is_current {
+            CURRENT_PAGE_BORDER_COLOR
+        } else {
+            iced::Color::from_rgb(0.53, 0.60, 0.67)
+        };
+        let label = text(format!("{page}")).size(10).center().color(label_color);
+
+        let thumb_col = column![thumb_container, label].align_x(iced::Alignment::Center);
 
         let page_num = page;
         let thumb_button = button(thumb_col)
@@ -328,7 +326,6 @@ mod tests {
         let program = ThumbnailProgram {
             page: 1,
             thumbnail: None,
-            is_current_page: false,
             overlays: &[],
             page_width: 612.0,
             page_height: 792.0,
@@ -344,7 +341,6 @@ mod tests {
         let program = ThumbnailProgram {
             page: 1,
             thumbnail: None,
-            is_current_page: false,
             overlays: &[],
             page_width: 612.0,
             page_height: 792.0,
