@@ -13,3 +13,6 @@
 
 # Git worktrees (isolated workspaces)
 .worktrees/
+
+# Claude brainstorming session artifacts
+.claude/brainstorm/
