@@ -25,7 +25,20 @@ cargo test  # or project-appropriate command
 
 **If tests fail:** Stop. Fix failures before proceeding.
 
-**If tests pass:** Continue to Step 2.
+**If tests pass:** Continue to Step 1.5.
+
+### Step 1.5: Security Review
+
+Run a security review of changes on this branch:
+
+1. Determine git range:
+```bash
+BASE=$(git merge-base HEAD main)
+```
+2. Dispatch security-reviewer subagent (from `security-review/security-reviewer.md`) with the git range
+3. **If Critical findings:** Stop. Fix before proceeding.
+4. **If Important findings:** Fix before proceeding, or get explicit approval from Joe to defer.
+5. **If Minor only or clean:** Continue to Step 2.
 
 ### Step 2: Determine Base Branch
 
@@ -100,6 +113,7 @@ Clean up worktree if applicable.
 | Step | Action |
 |------|--------|
 | 1. Verify | Run tests, stop if failing |
+| 1.5 Security | Run security review, fix Critical/Important |
 | 2. Base branch | Confirm target branch |
 | 3. Push + PR | Push branch, create PR with summary |
 | 4. CI | Watch checks, fix failures |
@@ -148,4 +162,5 @@ Clean up worktree if applicable.
 - **executing-plans** (Step 5) - After all batches complete
 
 **Pairs with:**
+- **security-review** - Runs security audit before push (Step 1.5)
 - **using-git-worktrees** - Cleans up worktree created by that skill

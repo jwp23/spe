@@ -20,6 +20,11 @@ jobs:
       - name: Install system utilities
         run: sudo apt-get update && sudo apt-get install -y poppler-utils fontconfig
 
+      - name: Audit dependencies
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Check formatting
         run: cargo fmt --check
 
