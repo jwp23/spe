@@ -2,7 +2,12 @@
 
 use std::collections::HashMap;
 
+use iced::mouse;
+use iced::widget::canvas;
 use iced::widget::image::Handle;
+
+use crate::app::Message;
+use crate::overlay::TextOverlay;
 
 /// State for the thumbnail sidebar.
 pub struct SidebarState {
@@ -99,9 +104,113 @@ pub fn thumbnail_height(page_width: f32, page_height: f32, sidebar_width: f32) -
     sidebar_width * (page_height / page_width)
 }
 
+/// Highlight border color for the current page thumbnail (#4fc3f7).
+const CURRENT_PAGE_BORDER_COLOR: iced::Color = iced::Color {
+    r: 0.310,
+    g: 0.765,
+    b: 0.969,
+    a: 1.0,
+};
+
+/// Width of the current-page highlight border in pixels.
+const CURRENT_PAGE_BORDER_WIDTH: f32 = 2.0;
+
+/// Canvas program that draws a single page thumbnail: white background,
+/// cached image or gray placeholder, and a highlight border for the current page.
+pub struct ThumbnailProgram<'a> {
+    pub page: u32,
+    pub thumbnail: Option<&'a Handle>,
+    pub is_current_page: bool,
+    pub overlays: &'a [TextOverlay],
+    pub page_width: f32,
+    pub page_height: f32,
+    pub thumbnail_dpi: f32,
+    pub overlay_color: iced::Color,
+}
+
+impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &iced::Theme,
+        bounds: iced::Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+
+        // White page background
+        frame.fill_rectangle(iced::Point::ORIGIN, bounds.size(), iced::Color::WHITE);
+
+        // Draw cached thumbnail or gray placeholder
+        if let Some(handle) = self.thumbnail {
+            frame.draw_image(
+                iced::Rectangle::new(iced::Point::ORIGIN, bounds.size()),
+                handle,
+            );
+        } else {
+            frame.fill_rectangle(
+                iced::Point::ORIGIN,
+                bounds.size(),
+                iced::Color::from_rgb(0.85, 0.85, 0.85),
+            );
+        }
+
+        // Highlight border for current page
+        if self.is_current_page {
+            let stroke = canvas::Stroke {
+                style: canvas::Style::Solid(CURRENT_PAGE_BORDER_COLOR),
+                width: CURRENT_PAGE_BORDER_WIDTH,
+                ..canvas::Stroke::default()
+            };
+            let half = CURRENT_PAGE_BORDER_WIDTH / 2.0;
+            frame.stroke_rectangle(
+                iced::Point::new(half, half),
+                iced::Size::new(
+                    bounds.width - CURRENT_PAGE_BORDER_WIDTH,
+                    bounds.height - CURRENT_PAGE_BORDER_WIDTH,
+                ),
+                stroke,
+            );
+        }
+
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(
+        &self,
+        _state: &Self::State,
+        bounds: iced::Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if cursor.is_over(bounds) {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thumbnail_program_construction() {
+        let program = ThumbnailProgram {
+            page: 1,
+            thumbnail: None,
+            is_current_page: false,
+            overlays: &[],
+            page_width: 612.0,
+            page_height: 792.0,
+            thumbnail_dpi: 12.0,
+            overlay_color: iced::Color::from_rgb(0.0, 0.0, 1.0),
+        };
+        assert_eq!(program.page, 1);
+    }
 
     #[test]
     fn sidebar_default_is_visible() {
