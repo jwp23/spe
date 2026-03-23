@@ -9,7 +9,7 @@ use iced::widget::image::Handle;
 use crate::command::Command as UndoCommand;
 use crate::config::AppConfig;
 use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
-use crate::pdf::renderer::{PageRenderer, PdftoppmRenderer};
+use crate::pdf::renderer::PdftoppmRenderer;
 use crate::ui::canvas::{self, CanvasState, PdfCanvasProgram};
 use crate::ui::sidebar::SidebarState;
 use crate::ui::toolbar::{self, ToolbarContext, ToolbarState};
@@ -62,7 +62,7 @@ pub enum Message {
     GoToPage(u32),
     NextPage,
     PreviousPage,
-    PageRendered(u32, Handle),
+    PageBatchRendered(Vec<(u32, Handle)>),
 
     // Overlay editing (undoable)
     PlaceOverlay { page: u32, position: PdfPosition },
@@ -188,9 +188,11 @@ impl App {
                     return self.scroll_to_page(page);
                 }
             }
-            Message::PageRendered(page, handle) => {
+            Message::PageBatchRendered(pages) => {
                 if let Some(doc) = &mut self.document {
-                    doc.page_images.insert(page, handle);
+                    for (page, handle) in pages {
+                        doc.page_images.insert(page, handle);
+                    }
                     return self.render_visible_pages();
                 }
             }
@@ -855,14 +857,16 @@ impl App {
         let buffer_first = first.saturating_sub(1).max(1);
         let buffer_last = (last + 1).min(doc.page_count);
 
-        let dpi_u32 = dpi as u32;
-        let mut tasks = Vec::new();
-        for page in buffer_first..=buffer_last {
-            if !doc.page_images.contains_key(&page) {
-                tasks.push(render_page_task(doc.source_path.clone(), page, dpi_u32));
-            }
+        let uncached: Vec<u32> = (buffer_first..=buffer_last)
+            .filter(|p| !doc.page_images.contains_key(p))
+            .collect();
+        if uncached.is_empty() {
+            return iced::Task::none();
         }
-        iced::Task::batch(tasks)
+        // Render the full contiguous range in one pdftoppm call.
+        let range_first = *uncached.first().unwrap();
+        let range_last = *uncached.last().unwrap();
+        render_page_batch_task(doc.source_path.clone(), range_first, range_last, dpi as u32)
     }
 
     /// Backfill thumbnails for pages not yet rendered, working outward from
@@ -1004,21 +1008,32 @@ impl App {
     }
 }
 
-/// Launch an async task to render a single PDF page via pdftoppm.
-fn render_page_task(pdf_path: PathBuf, page: u32, dpi: u32) -> iced::Task<Message> {
+/// Launch an async task to render a batch of PDF pages via pdftoppm.
+fn render_page_batch_task(
+    pdf_path: PathBuf,
+    first_page: u32,
+    last_page: u32,
+    dpi: u32,
+) -> iced::Task<Message> {
     iced::Task::perform(
         async move {
             let renderer = PdftoppmRenderer;
-            match renderer.render_page(&pdf_path, page, dpi) {
-                Ok(img) => Some((page, canvas::image_to_handle(img))),
+            match renderer.render_page_batch(&pdf_path, first_page, last_page, dpi) {
+                Ok(images) => {
+                    let handles: Vec<(u32, Handle)> = images
+                        .into_iter()
+                        .map(|(page, img)| (page, canvas::image_to_handle(img)))
+                        .collect();
+                    Some(handles)
+                }
                 Err(e) => {
-                    eprintln!("Failed to render page {page}: {e}");
+                    eprintln!("Failed to render page batch {first_page}-{last_page}: {e}");
                     None
                 }
             }
         },
         |result| match result {
-            Some((page, handle)) => Message::PageRendered(page, handle),
+            Some(handles) => Message::PageBatchRendered(handles),
             None => Message::DeselectOverlay,
         },
     )
@@ -1503,20 +1518,33 @@ mod tests {
     }
 
     #[test]
-    fn page_rendered_inserts_into_cache() {
+    fn page_batch_rendered_inserts_into_cache() {
         let mut app = test_app_with_document();
-        let handle = Handle::from_rgba(1, 1, vec![255, 0, 0, 255]);
-        let _ = app.update(Message::PageRendered(1, handle));
+        let handles = vec![(1u32, Handle::from_rgba(1, 1, vec![255, 0, 0, 255]))];
+        let _ = app.update(Message::PageBatchRendered(handles));
         assert!(app.document.as_ref().unwrap().page_images.contains_key(&1));
     }
 
     #[test]
-    fn page_rendered_replaces_existing_cached_image() {
+    fn page_batch_rendered_inserts_all_pages() {
         let mut app = test_app_with_document();
-        let handle1 = Handle::from_rgba(1, 1, vec![255, 0, 0, 255]);
-        let handle2 = Handle::from_rgba(1, 1, vec![0, 255, 0, 255]);
-        let _ = app.update(Message::PageRendered(1, handle1));
-        let _ = app.update(Message::PageRendered(1, handle2));
+        let handles = vec![
+            (1u32, Handle::from_rgba(1, 1, vec![255, 0, 0, 255])),
+            (2u32, Handle::from_rgba(1, 1, vec![0, 255, 0, 255])),
+        ];
+        let _ = app.update(Message::PageBatchRendered(handles));
+        let doc = app.document.as_ref().unwrap();
+        assert!(doc.page_images.contains_key(&1));
+        assert!(doc.page_images.contains_key(&2));
+    }
+
+    #[test]
+    fn page_batch_rendered_replaces_existing_cached_image() {
+        let mut app = test_app_with_document();
+        let handles1 = vec![(1u32, Handle::from_rgba(1, 1, vec![255, 0, 0, 255]))];
+        let handles2 = vec![(1u32, Handle::from_rgba(1, 1, vec![0, 255, 0, 255]))];
+        let _ = app.update(Message::PageBatchRendered(handles1));
+        let _ = app.update(Message::PageBatchRendered(handles2));
         assert!(app.document.as_ref().unwrap().page_images.contains_key(&1));
     }
 
