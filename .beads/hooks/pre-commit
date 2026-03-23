@@ -66,4 +66,9 @@ if ! cargo test 2>/dev/null; then
     echo >&2 "pre-commit: tests failed."
     exit 1
 fi
+
+if ! cargo test -- --ignored 2>/dev/null; then
+    echo >&2 "pre-commit: integration tests failed."
+    exit 1
+fi
 # --- END PROJECT CHECKS ---
