@@ -175,6 +175,125 @@ fn delete_overlay_with_selection() {
     verify_view_renders(&app);
 }
 
+// --- Thumbnail sidebar tests ---
+
+/// Create a multi-page DocumentState for sidebar tests.
+fn test_document_multipage(page_count: u32) -> spe::app::DocumentState {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    let mut page_images = HashMap::new();
+    let mut page_dimensions = HashMap::new();
+    for p in 1..=page_count {
+        let pixels = vec![255u8; 100 * 130 * 4];
+        page_images.insert(p, iced::widget::image::Handle::from_rgba(100, 130, pixels));
+        page_dimensions.insert(p, (612.0, 792.0));
+    }
+
+    spe::app::DocumentState {
+        source_path: PathBuf::from("/tmp/test.pdf"),
+        save_path: None,
+        page_count,
+        current_page: 1,
+        page_images,
+        page_dimensions,
+        overlays: Vec::new(),
+    }
+}
+
+#[test]
+#[ignore]
+fn sidebar_renders_with_thumbnails() {
+    let (mut app, _) = App::new();
+    app.document = Some(test_document_multipage(3));
+    // Simulate thumbnails already rendered
+    for p in 1..=3 {
+        let pixels = vec![200u8; 50 * 65 * 4];
+        app.sidebar
+            .thumbnails
+            .insert(p, iced::widget::image::Handle::from_rgba(50, 65, pixels));
+    }
+    app.sidebar.thumbnail_dpi = 12.0;
+    verify_view_renders(&app);
+}
+
+#[test]
+#[ignore]
+fn sidebar_click_navigates_to_page() {
+    let (mut app, _) = App::new();
+    app.document = Some(test_document_multipage(5));
+    app.sidebar.thumbnail_dpi = 12.0;
+
+    // Clicking page 3 thumbnail should navigate canvas
+    let _ = app.update(Message::SidebarPageClicked(3));
+    // GoToPage fires scroll_to — verify state is consistent
+    verify_view_renders(&app);
+}
+
+#[test]
+#[ignore]
+fn sidebar_scroll_independent_of_canvas() {
+    let (mut app, _) = App::new();
+    app.document = Some(test_document_multipage(10));
+    app.sidebar.thumbnail_dpi = 12.0;
+    app.canvas.scroll_y = 0.0;
+
+    // Scroll sidebar without affecting canvas
+    let _ = app.update(Message::SidebarScrolled(200.0, 600.0));
+    assert!((app.sidebar.scroll_y - 200.0).abs() < f32::EPSILON);
+    assert!((app.canvas.scroll_y - 0.0).abs() < f32::EPSILON);
+    verify_view_renders(&app);
+}
+
+#[test]
+#[ignore]
+fn sidebar_current_page_tracks_canvas_navigation() {
+    let (mut app, _) = App::new();
+    let mut doc = test_document_multipage(3);
+    doc.current_page = 1;
+    app.document = Some(doc);
+    app.sidebar.thumbnail_dpi = 12.0;
+    verify_view_renders(&app);
+
+    // Simulate scrolling to page 2
+    let dpi = spe::ui::canvas::effective_dpi(app.canvas.zoom);
+    let layout = spe::ui::canvas::page_layout(
+        &app.document.as_ref().unwrap().page_dimensions,
+        3,
+        app.canvas.zoom,
+        dpi,
+    );
+    let _ = app.update(Message::CanvasScrolled(layout.page_tops[1], 800.0));
+    assert_eq!(app.document.as_ref().unwrap().current_page, 2);
+    // Sidebar should render with page 2 highlighted
+    verify_view_renders(&app);
+}
+
+#[test]
+#[ignore]
+fn sidebar_resize_updates_width_and_renders() {
+    let (mut app, _) = App::new();
+    app.document = Some(test_document_multipage(3));
+    app.sidebar.thumbnail_dpi = 12.0;
+    verify_view_renders(&app);
+
+    // Start drag
+    let _ = app.update(Message::SidebarDragStart(120.0));
+    assert!(app.sidebar.dragging);
+
+    // Drag to widen sidebar — first move captures start X
+    let _ = app.update(Message::SidebarResized(120.0));
+    // Second move actually resizes
+    let _ = app.update(Message::SidebarResized(200.0));
+    assert!(app.sidebar.width > 120.0);
+    verify_view_renders(&app);
+
+    // End drag
+    let _ = app.update(Message::SidebarResizeEnd);
+    assert!(!app.sidebar.dragging);
+    verify_view_renders(&app);
+}
+
 // --- Tests with loaded page images (canvas rendering) ---
 
 /// Create a DocumentState with a synthetic page image for the given page.

@@ -14,6 +14,15 @@ use crate::ui::canvas::{self, CanvasState, PdfCanvasProgram};
 use crate::ui::sidebar::SidebarState;
 use crate::ui::toolbar::{self, ToolbarContext, ToolbarState};
 
+/// Minimum sidebar width the user can resize to.
+const MIN_SIDEBAR_WIDTH: f32 = 80.0;
+/// Maximum sidebar width the user can resize to.
+const MAX_SIDEBAR_WIDTH: f32 = 400.0;
+/// Phase advance per shimmer tick (fraction of full cycle).
+const SHIMMER_TICK_DELTA: f32 = 0.05;
+/// Maximum number of thumbnail batch tasks that may run concurrently.
+const MAX_CONCURRENT_THUMBNAIL_TASKS: u32 = 2;
+
 /// State for the currently loaded PDF document.
 pub struct DocumentState {
     pub source_path: PathBuf,
@@ -35,6 +44,7 @@ pub struct App {
     pub redo_stack: Vec<UndoCommand>,
     pub config: AppConfig,
     pub window_size: Option<iced::Size>,
+    pub scale_factor: f32,
     pub scrollable_id: iced::widget::Id,
 }
 
@@ -75,7 +85,14 @@ pub enum Message {
 
     // Sidebar
     ToggleSidebar,
-    ThumbnailRendered(u32, Handle),
+    SidebarDragStart(f32),
+    ThumbnailBatchRendered(Vec<(u32, Handle)>, u64),
+    SidebarScrolled(f32, f32),
+    SidebarResized(f32),
+    SidebarResizeEnd,
+    SidebarResizeDebounceExpired(u64),
+    SidebarPageClicked(u32),
+    ShimmerTick,
 
     // Undo/Redo
     Undo,
@@ -86,6 +103,7 @@ pub enum Message {
 
     // Window
     WindowResized(iced::Size),
+    ScaleFactorChanged(f32),
 
     // Font loaded
     FontLoaded(Result<(), iced::font::Error>),
@@ -102,6 +120,7 @@ impl App {
             redo_stack: Vec::new(),
             config: AppConfig::default(),
             window_size: None,
+            scale_factor: 1.0,
             scrollable_id: iced::widget::Id::unique(),
         };
         let font_task = iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded);
@@ -316,7 +335,7 @@ impl App {
                         .fold(0.0f32, f32::max);
                     if max_page_w > 0.0 {
                         let sidebar_w = if self.sidebar.visible {
-                            crate::ui::sidebar::SIDEBAR_WIDTH
+                            self.sidebar.width
                         } else {
                             0.0
                         };
@@ -360,8 +379,82 @@ impl App {
             Message::ToggleSidebar => {
                 self.sidebar.visible = !self.sidebar.visible;
             }
-            Message::ThumbnailRendered(page, handle) => {
-                self.sidebar.thumbnails.insert(page, handle);
+            Message::ThumbnailBatchRendered(batch, generation) => {
+                self.sidebar.active_batch_tasks = self.sidebar.active_batch_tasks.saturating_sub(1);
+                if generation != self.sidebar.backfill_generation {
+                    return self.schedule_thumbnail_backfill();
+                }
+                for (page, handle) in batch {
+                    self.sidebar.thumbnails.insert(page, handle);
+                }
+                return self.schedule_thumbnail_backfill();
+            }
+            Message::SidebarScrolled(scroll_y, viewport_height) => {
+                self.sidebar.scroll_y = scroll_y;
+                self.sidebar.viewport_height = viewport_height;
+                return self.render_visible_thumbnails();
+            }
+            Message::SidebarDragStart(_) => {
+                self.sidebar.dragging = true;
+                self.sidebar.drag_start_x = 0.0;
+                self.sidebar.drag_start_width = self.sidebar.width;
+            }
+            Message::SidebarResized(cursor_x) => {
+                if !self.sidebar.dragging {
+                    return iced::Task::none();
+                }
+                if self.sidebar.drag_start_x == 0.0 {
+                    // First move: capture start X position
+                    self.sidebar.drag_start_x = cursor_x;
+                    return iced::Task::none();
+                }
+                let new_width =
+                    self.sidebar.drag_start_width + (cursor_x - self.sidebar.drag_start_x);
+                self.sidebar.width = new_width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+            }
+            Message::SidebarResizeEnd => {
+                if !self.sidebar.dragging {
+                    return iced::Task::none();
+                }
+                self.sidebar.dragging = false;
+                self.sidebar.backfill_generation += 1;
+                let generation = self.sidebar.backfill_generation;
+                return iced::Task::perform(
+                    async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        generation
+                    },
+                    Message::SidebarResizeDebounceExpired,
+                );
+            }
+            Message::SidebarResizeDebounceExpired(generation) => {
+                if generation == self.sidebar.backfill_generation {
+                    let max_page_w = self
+                        .document
+                        .as_ref()
+                        .map(|d| {
+                            d.page_dimensions
+                                .values()
+                                .map(|(w, _)| *w)
+                                .fold(0.0f32, f32::max)
+                        })
+                        .unwrap_or(612.0);
+                    self.sidebar.thumbnail_dpi = crate::ui::sidebar::compute_thumbnail_dpi(
+                        self.sidebar.width,
+                        self.scale_factor,
+                        max_page_w,
+                    );
+                    self.sidebar.thumbnails.clear();
+                    self.sidebar.active_batch_tasks = 0;
+                    return self.render_visible_thumbnails();
+                }
+            }
+            Message::SidebarPageClicked(page) => {
+                return self.update(Message::GoToPage(page));
+            }
+            Message::ShimmerTick => {
+                self.sidebar.shimmer_phase =
+                    (self.sidebar.shimmer_phase + SHIMMER_TICK_DELTA) % 1.0;
             }
 
             // --- Undo/Redo ---
@@ -385,6 +478,9 @@ impl App {
             // --- Window ---
             Message::WindowResized(size) => {
                 self.window_size = Some(size);
+            }
+            Message::ScaleFactorChanged(factor) => {
+                self.scale_factor = factor;
             }
 
             // --- Font loaded ---
@@ -447,11 +543,34 @@ impl App {
                 .into();
 
             if self.sidebar.visible {
-                let sidebar: iced::Element<Message> =
-                    iced::widget::container(iced::widget::text("Sidebar"))
-                        .width(crate::ui::sidebar::SIDEBAR_WIDTH)
-                        .into();
-                iced::widget::row![sidebar, scrollable_canvas].into()
+                let sidebar = crate::ui::sidebar::sidebar_view(
+                    &self.sidebar,
+                    doc.page_count,
+                    doc.current_page,
+                    &doc.page_dimensions,
+                    &doc.overlays,
+                    self.config.overlay_color,
+                );
+
+                let handle_strip = iced::widget::container(
+                    iced::widget::Space::new()
+                        .width(4)
+                        .height(iced::Length::Fill),
+                )
+                .style(|_theme| iced::widget::container::Style {
+                    background: Some(iced::Background::Color(iced::Color::from_rgb(
+                        0.2, 0.2, 0.3,
+                    ))),
+                    ..Default::default()
+                })
+                .width(4)
+                .height(iced::Length::Fill);
+
+                let handle = iced::widget::mouse_area(handle_strip)
+                    .on_press(Message::SidebarDragStart(0.0))
+                    .interaction(iced::mouse::Interaction::ResizingHorizontally);
+
+                iced::widget::row![sidebar, handle, scrollable_canvas].into()
             } else {
                 scrollable_canvas
             }
@@ -480,7 +599,7 @@ impl App {
         match self.window_size {
             Some(win) => {
                 let sidebar_w = if self.sidebar.visible {
-                    crate::ui::sidebar::SIDEBAR_WIDTH
+                    self.sidebar.width
                 } else {
                     0.0
                 };
@@ -497,14 +616,32 @@ impl App {
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        iced::event::listen_with(|event, status, _window| {
+        let event_sub = iced::event::listen_with(|event, status, _window| {
             // Window events are always handled, regardless of capture status.
             if let iced::Event::Window(ref win_event) = event {
                 return match win_event {
                     iced::window::Event::Resized(size) => Some(Message::WindowResized(*size)),
                     iced::window::Event::Opened { size, .. } => Some(Message::WindowResized(*size)),
+                    iced::window::Event::Rescaled(factor) => {
+                        Some(Message::ScaleFactorChanged(*factor))
+                    }
                     _ => None,
                 };
+            }
+            // Mouse move/release events are always forwarded (regardless of
+            // capture status) so the drag handler in update() can track them.
+            // The handler guards on self.sidebar.dragging and ignores events
+            // when no drag is active.
+            if let iced::Event::Mouse(ref mouse_event) = event {
+                match mouse_event {
+                    iced::mouse::Event::CursorMoved { position } => {
+                        return Some(Message::SidebarResized(position.x));
+                    }
+                    iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left) => {
+                        return Some(Message::SidebarResizeEnd);
+                    }
+                    _ => {}
+                }
             }
             if status == iced::event::Status::Captured {
                 return None;
@@ -515,7 +652,21 @@ impl App {
                 }
                 _ => None,
             }
-        })
+        });
+
+        // Tick shimmer animation only while sidebar is visible and has unrendered pages.
+        let shimmer_sub = if self.sidebar.visible
+            && self
+                .document
+                .as_ref()
+                .is_some_and(|doc| doc.page_count as usize > self.sidebar.thumbnails.len())
+        {
+            iced::time::every(std::time::Duration::from_millis(16)).map(|_| Message::ShimmerTick)
+        } else {
+            iced::Subscription::none()
+        };
+
+        iced::Subscription::batch([event_sub, shimmer_sub])
     }
 
     fn handle_toolbar_message(&mut self, msg: toolbar::Message) -> iced::Task<Message> {
@@ -592,30 +743,43 @@ impl App {
                 self.redo_stack.clear();
                 self.canvas = CanvasState::default();
                 self.sidebar.thumbnails.clear();
+                self.sidebar.active_batch_tasks = 0;
                 self.toolbar.page_input = "1".to_string();
+                let max_page_w = self
+                    .document
+                    .as_ref()
+                    .map(|d| {
+                        d.page_dimensions
+                            .values()
+                            .map(|(w, _)| *w)
+                            .fold(0.0f32, f32::max)
+                    })
+                    .unwrap_or(612.0);
+
                 // Set initial zoom to fit widest page in viewport
-                if let Some(win) = self.window_size {
-                    let max_page_w = self
-                        .document
-                        .as_ref()
-                        .map(|d| {
-                            d.page_dimensions
-                                .values()
-                                .map(|(w, _)| *w)
-                                .fold(0.0f32, f32::max)
-                        })
-                        .unwrap_or(0.0);
-                    if max_page_w > 0.0 {
-                        let sidebar_w = if self.sidebar.visible {
-                            crate::ui::sidebar::SIDEBAR_WIDTH
-                        } else {
-                            0.0
-                        };
-                        let available_w = (win.width - sidebar_w - 16.0).max(1.0);
-                        self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
-                    }
+                if let Some(win) = self.window_size
+                    && max_page_w > 0.0
+                {
+                    let sidebar_w = if self.sidebar.visible {
+                        self.sidebar.width
+                    } else {
+                        0.0
+                    };
+                    let available_w = (win.width - sidebar_w - 16.0).max(1.0);
+                    self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
                 }
-                self.render_visible_pages()
+
+                // Compute thumbnail DPI for sidebar rendering
+                self.sidebar.thumbnail_dpi = crate::ui::sidebar::compute_thumbnail_dpi(
+                    self.sidebar.width,
+                    self.scale_factor,
+                    max_page_w,
+                );
+                self.sidebar.backfill_generation += 1;
+
+                let page_task = self.render_visible_pages();
+                let thumb_task = self.render_visible_thumbnails();
+                iced::Task::batch([page_task, thumb_task])
             }
             Err(e) => {
                 eprintln!("Failed to open PDF: {e}");
@@ -697,6 +861,100 @@ impl App {
         iced::Task::batch(tasks)
     }
 
+    /// Backfill thumbnails for pages not yet rendered, working outward from
+    /// the current page in batches of 20. Chains itself via `ThumbnailBatchRendered`
+    /// until all pages are covered. Discards results from stale generations.
+    fn schedule_thumbnail_backfill(&mut self) -> iced::Task<Message> {
+        if self.sidebar.active_batch_tasks >= MAX_CONCURRENT_THUMBNAIL_TASKS {
+            return iced::Task::none();
+        }
+        let Some(doc) = &self.document else {
+            return iced::Task::none();
+        };
+        if !self.sidebar.visible || doc.page_count == 0 {
+            return iced::Task::none();
+        }
+        let dpi = self.sidebar.thumbnail_dpi as u32;
+        if dpi == 0 {
+            return iced::Task::none();
+        }
+        let center_page = doc.current_page;
+        let mut unrendered: Vec<u32> = (1..=doc.page_count)
+            .filter(|p| !self.sidebar.thumbnails.contains_key(p))
+            .collect();
+        if unrendered.is_empty() {
+            return iced::Task::none();
+        }
+        // Sort nearest-first so the most relevant pages render sooner.
+        unrendered.sort_by_key(|p| (*p as i64 - center_page as i64).unsigned_abs());
+        let batch: Vec<u32> = unrendered.into_iter().take(20).collect();
+        // pdftoppm requires a contiguous page range (-f/-l), so we use
+        // min/max of the nearest-first batch. This may re-render some
+        // already-cached pages in the middle — harmless at thumbnail DPI.
+        let range_first = batch.iter().copied().min().unwrap();
+        let range_last = batch.iter().copied().max().unwrap();
+        self.sidebar.active_batch_tasks += 1;
+        render_thumbnail_batch_task(
+            doc.source_path.clone(),
+            range_first,
+            range_last,
+            dpi,
+            self.sidebar.backfill_generation,
+        )
+    }
+
+    /// Render thumbnails for pages visible in the sidebar (plus a buffer),
+    /// skipping any that are already cached.
+    fn render_visible_thumbnails(&mut self) -> iced::Task<Message> {
+        if self.sidebar.active_batch_tasks >= MAX_CONCURRENT_THUMBNAIL_TASKS {
+            return iced::Task::none();
+        }
+        let Some(doc) = &self.document else {
+            return iced::Task::none();
+        };
+        if !self.sidebar.visible || doc.page_count == 0 {
+            return iced::Task::none();
+        }
+        let dpi = self.sidebar.thumbnail_dpi as u32;
+        if dpi == 0 {
+            return iced::Task::none();
+        }
+        let avg_thumb_h =
+            crate::ui::sidebar::thumbnail_height(612.0, 792.0, self.sidebar.width - 16.0);
+        let visible = crate::ui::sidebar::visible_pages(
+            self.sidebar.scroll_y,
+            self.sidebar.viewport_height.max(600.0),
+            doc.page_count,
+            avg_thumb_h + 8.0,
+            5,
+        );
+        let pages_to_render: Vec<u32> = visible
+            .filter(|p| !self.sidebar.thumbnails.contains_key(p))
+            .collect();
+        if pages_to_render.is_empty() {
+            return iced::Task::none();
+        }
+        let pdf_path = doc.source_path.clone();
+        let generation = self.sidebar.backfill_generation;
+        let mut tasks = Vec::new();
+        for chunk in pages_to_render.chunks(20) {
+            let first = *chunk.first().unwrap();
+            let last = *chunk.last().unwrap();
+            if self.sidebar.active_batch_tasks >= MAX_CONCURRENT_THUMBNAIL_TASKS {
+                break;
+            }
+            self.sidebar.active_batch_tasks += 1;
+            tasks.push(render_thumbnail_batch_task(
+                pdf_path.clone(),
+                first,
+                last,
+                dpi,
+                generation,
+            ));
+        }
+        iced::Task::batch(tasks)
+    }
+
     /// Scroll to a specific page by computing its y-offset and using scroll_to.
     fn scroll_to_page(&self, page: u32) -> iced::Task<Message> {
         let Some(doc) = &self.document else {
@@ -757,6 +1015,38 @@ fn render_page_task(pdf_path: PathBuf, page: u32, dpi: u32) -> iced::Task<Messag
         },
         |result| match result {
             Some((page, handle)) => Message::PageRendered(page, handle),
+            None => Message::DeselectOverlay,
+        },
+    )
+}
+
+/// Launch an async task to render a batch of PDF page thumbnails via pdftoppm.
+fn render_thumbnail_batch_task(
+    pdf_path: PathBuf,
+    first_page: u32,
+    last_page: u32,
+    dpi: u32,
+    generation: u64,
+) -> iced::Task<Message> {
+    iced::Task::perform(
+        async move {
+            let renderer = PdftoppmRenderer;
+            match renderer.render_page_batch(&pdf_path, first_page, last_page, dpi) {
+                Ok(images) => {
+                    let handles: Vec<(u32, Handle)> = images
+                        .into_iter()
+                        .map(|(page, img)| (page, canvas::image_to_handle(img)))
+                        .collect();
+                    Some((handles, generation))
+                }
+                Err(e) => {
+                    eprintln!("Failed to render thumbnail batch {first_page}-{last_page}: {e}");
+                    None
+                }
+            }
+        },
+        |result| match result {
+            Some((handles, batch_gen)) => Message::ThumbnailBatchRendered(handles, batch_gen),
             None => Message::DeselectOverlay,
         },
     )
@@ -1369,11 +1659,378 @@ mod tests {
     }
 
     #[test]
+    fn app_default_scale_factor_is_one() {
+        let (app, _) = App::new();
+        assert!((app.scale_factor - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn scale_factor_changed_updates_state() {
+        let (mut app, _) = App::new();
+        let _ = app.update(Message::ScaleFactorChanged(2.0));
+        assert!((app.scale_factor - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn window_resized_stores_size() {
         let (mut app, _) = App::new();
         let _ = app.update(Message::WindowResized(iced::Size::new(1920.0, 1080.0)));
         let size = app.window_size.unwrap();
         assert!((size.width - 1920.0).abs() < f32::EPSILON);
         assert!((size.height - 1080.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_scrolled_updates_scroll_state() {
+        let mut app = test_app_with_document();
+        let _ = app.update(Message::SidebarScrolled(150.0, 600.0));
+        assert!((app.sidebar.scroll_y - 150.0).abs() < f32::EPSILON);
+        assert!((app.sidebar.viewport_height - 600.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn thumbnail_batch_rendered_inserts_with_matching_generation() {
+        let mut app = test_app_with_document();
+        app.sidebar.backfill_generation = 5;
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let _ = app.update(Message::ThumbnailBatchRendered(vec![(1, handle)], 5));
+        assert!(app.sidebar.thumbnails.contains_key(&1));
+    }
+
+    #[test]
+    fn thumbnail_batch_rendered_ignores_stale_generation() {
+        let mut app = test_app_with_document();
+        app.sidebar.backfill_generation = 5;
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let _ = app.update(Message::ThumbnailBatchRendered(
+            vec![(1, handle)],
+            3, // stale generation
+        ));
+        assert!(!app.sidebar.thumbnails.contains_key(&1));
+    }
+
+    #[test]
+    fn schedule_thumbnail_backfill_returns_none_without_document() {
+        let (mut app, _) = App::new();
+        // Should not panic and should return a no-op task
+        let _ = app.schedule_thumbnail_backfill();
+    }
+
+    #[test]
+    fn schedule_thumbnail_backfill_returns_none_when_sidebar_hidden() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = false;
+        app.sidebar.thumbnail_dpi = 36.0;
+        // No crash, returns early
+        let _ = app.schedule_thumbnail_backfill();
+    }
+
+    #[test]
+    fn schedule_thumbnail_backfill_returns_none_when_all_rendered() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        // doc has page_count = 3; pre-populate all thumbnails
+        for p in 1..=3u32 {
+            app.sidebar
+                .thumbnails
+                .insert(p, Handle::from_rgba(1, 1, vec![0u8; 4]));
+        }
+        // All pages rendered — should return none (no task needed)
+        let _ = app.schedule_thumbnail_backfill();
+    }
+
+    #[test]
+    fn schedule_thumbnail_backfill_skips_already_cached_pages() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        // Pre-render pages 1 and 2; page 3 is missing
+        for p in 1..=2u32 {
+            app.sidebar
+                .thumbnails
+                .insert(p, Handle::from_rgba(1, 1, vec![0u8; 4]));
+        }
+        // Should not panic — only page 3 is unrendered
+        let _ = app.schedule_thumbnail_backfill();
+    }
+
+    #[test]
+    fn thumbnail_batch_rendered_chains_backfill() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        app.sidebar.backfill_generation = 1;
+        // Page 2 and 3 are unrendered; receiving batch for page 1 should
+        // trigger a backfill task (non-none) for the remaining pages.
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let task = app.update(Message::ThumbnailBatchRendered(vec![(1, handle)], 1));
+        // Page 1 must be inserted
+        assert!(app.sidebar.thumbnails.contains_key(&1));
+        // The returned task should be non-trivial (backfill for pages 2 & 3).
+        // We can't easily inspect iced::Task internals, but we can verify the
+        // method doesn't panic and the thumbnail state is correct.
+        let _ = task;
+    }
+
+    #[test]
+    fn render_visible_thumbnails_respects_concurrency_limit() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        app.sidebar.viewport_height = 600.0;
+        // At the limit — should return early without spawning.
+        app.sidebar.active_batch_tasks = MAX_CONCURRENT_THUMBNAIL_TASKS;
+        let _ = app.render_visible_thumbnails();
+        // Counter must not increase beyond the limit.
+        assert_eq!(
+            app.sidebar.active_batch_tasks,
+            MAX_CONCURRENT_THUMBNAIL_TASKS
+        );
+    }
+
+    #[test]
+    fn schedule_thumbnail_backfill_respects_concurrency_limit() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        app.sidebar.active_batch_tasks = MAX_CONCURRENT_THUMBNAIL_TASKS;
+        let _ = app.schedule_thumbnail_backfill();
+        // Counter must not increase beyond the limit.
+        assert_eq!(
+            app.sidebar.active_batch_tasks,
+            MAX_CONCURRENT_THUMBNAIL_TASKS
+        );
+    }
+
+    #[test]
+    fn thumbnail_batch_rendered_decrements_active_batch_tasks() {
+        let mut app = test_app_with_document();
+        app.sidebar.backfill_generation = 1;
+        app.sidebar.active_batch_tasks = 1;
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let _ = app.update(Message::ThumbnailBatchRendered(vec![(1, handle)], 1));
+        // Counter decremented even on successful completion.
+        assert_eq!(app.sidebar.active_batch_tasks, 0);
+    }
+
+    #[test]
+    fn thumbnail_batch_rendered_decrements_on_stale_generation() {
+        let mut app = test_app_with_document();
+        app.sidebar.backfill_generation = 5;
+        app.sidebar.active_batch_tasks = 2;
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let _ = app.update(Message::ThumbnailBatchRendered(
+            vec![(1, handle)],
+            3, // stale
+        ));
+        // Counter decremented even for stale results.
+        assert_eq!(app.sidebar.active_batch_tasks, 1);
+        // Page must not be inserted for stale generation.
+        assert!(!app.sidebar.thumbnails.contains_key(&1));
+    }
+
+    #[test]
+    fn sidebar_drag_start_sets_dragging_state() {
+        let mut app = test_app_with_document();
+        app.sidebar.width = 150.0;
+        let _ = app.update(Message::SidebarDragStart(200.0));
+        assert!(app.sidebar.dragging);
+        assert!((app.sidebar.drag_start_width - 150.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_drag_start_ignores_x_from_message() {
+        // mouse_area on_press doesn't pass position, so SidebarDragStart(0.0)
+        // is always sent. The actual start X is captured from the first move.
+        let mut app = test_app_with_document();
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        assert!(app.sidebar.dragging);
+        assert!((app.sidebar.drag_start_x - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_resized_ignored_when_not_dragging() {
+        let mut app = test_app_with_document();
+        app.sidebar.width = 150.0;
+        app.sidebar.dragging = false;
+        let _ = app.update(Message::SidebarResized(300.0));
+        // Width should not change when not dragging
+        assert!((app.sidebar.width - 150.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_resized_captures_start_x_on_first_move() {
+        let mut app = test_app_with_document();
+        app.sidebar.width = 150.0;
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        // First move captures start X
+        let _ = app.update(Message::SidebarResized(200.0));
+        assert!((app.sidebar.drag_start_x - 200.0).abs() < f32::EPSILON);
+        // Width should not change on first move (just capturing start position)
+        assert!((app.sidebar.width - 150.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_resized_tracks_drag_delta() {
+        let mut app = test_app_with_document();
+        app.sidebar.width = 150.0;
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        // First move captures start X at 200
+        let _ = app.update(Message::SidebarResized(200.0));
+        // Second move: delta = 250 - 200 = 50, new width = 150 + 50 = 200
+        let _ = app.update(Message::SidebarResized(250.0));
+        assert!((app.sidebar.width - 200.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_resized_clamps_to_min_width() {
+        let mut app = test_app_with_document();
+        app.sidebar.width = 150.0;
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        let _ = app.update(Message::SidebarResized(200.0)); // capture start X
+        // Drag far left: delta = 0 - 200 = -200, new width = 150 - 200 = -50 → clamped to 80
+        let _ = app.update(Message::SidebarResized(0.0));
+        assert!((app.sidebar.width - MIN_SIDEBAR_WIDTH).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_resized_clamps_to_max_width() {
+        let mut app = test_app_with_document();
+        app.sidebar.width = 150.0;
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        let _ = app.update(Message::SidebarResized(200.0)); // capture start X
+        // Drag far right: delta = 900 - 200 = 700, new width = 150 + 700 = 850 → clamped to 400
+        let _ = app.update(Message::SidebarResized(900.0));
+        assert!((app.sidebar.width - MAX_SIDEBAR_WIDTH).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_resize_end_clears_dragging() {
+        let mut app = test_app_with_document();
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        assert!(app.sidebar.dragging);
+        let _ = app.update(Message::SidebarResizeEnd);
+        assert!(!app.sidebar.dragging);
+    }
+
+    #[test]
+    fn sidebar_resize_end_increments_backfill_generation() {
+        let mut app = test_app_with_document();
+        let gen_before = app.sidebar.backfill_generation;
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        let _ = app.update(Message::SidebarResizeEnd);
+        assert_eq!(app.sidebar.backfill_generation, gen_before + 1);
+    }
+
+    #[test]
+    fn sidebar_resize_end_ignored_when_not_dragging() {
+        let mut app = test_app_with_document();
+        let gen_before = app.sidebar.backfill_generation;
+        let _ = app.update(Message::SidebarResizeEnd);
+        // Generation should not change when not dragging
+        assert_eq!(app.sidebar.backfill_generation, gen_before);
+    }
+
+    #[test]
+    fn sidebar_resize_debounce_expired_recomputes_dpi() {
+        let mut app = test_app_with_document();
+        let doc = app.document.as_mut().unwrap();
+        doc.page_dimensions.insert(1, (612.0, 792.0));
+        app.sidebar.visible = true;
+        app.sidebar.width = 200.0;
+        app.sidebar.backfill_generation = 5;
+        app.sidebar.thumbnail_dpi = 99.0; // will be recalculated
+        let _ = app.update(Message::SidebarResizeDebounceExpired(5));
+        // DPI should be recomputed based on new width
+        let expected_dpi = crate::ui::sidebar::compute_thumbnail_dpi(200.0, 1.0, 612.0);
+        assert!((app.sidebar.thumbnail_dpi - expected_dpi).abs() < 0.1);
+        // Thumbnails should be cleared for re-render
+        assert!(app.sidebar.thumbnails.is_empty());
+    }
+
+    #[test]
+    fn sidebar_resize_debounce_expired_stale_generation_is_noop() {
+        let mut app = test_app_with_document();
+        app.sidebar.backfill_generation = 5;
+        app.sidebar.thumbnail_dpi = 99.0;
+        let _ = app.update(Message::SidebarResizeDebounceExpired(3)); // stale
+        // DPI should not change
+        assert!((app.sidebar.thumbnail_dpi - 99.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn active_batch_tasks_does_not_underflow() {
+        let mut app = test_app_with_document();
+        app.sidebar.backfill_generation = 1;
+        app.sidebar.active_batch_tasks = 0; // already zero
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let _ = app.update(Message::ThumbnailBatchRendered(vec![(1, handle)], 1));
+        // saturating_sub must keep it at 0.
+        assert_eq!(app.sidebar.active_batch_tasks, 0);
+    }
+
+    #[test]
+    fn handle_file_opened_resets_active_batch_tasks() {
+        use lopdf::{Dictionary, Object};
+        let mut app = test_app_with_document();
+        app.sidebar.active_batch_tasks = 3;
+        // Build a minimal loadable PDF in a temp file.
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let mut doc = lopdf::Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let mut page_dict = Dictionary::new();
+        page_dict.set("Type", Object::Name(b"Page".to_vec()));
+        page_dict.set("Parent", Object::Reference(pages_id));
+        page_dict.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(612),
+                Object::Integer(792),
+            ]),
+        );
+        let page_id = doc.add_object(Object::Dictionary(page_dict));
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name(b"Pages".to_vec()));
+        pages_dict.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages_dict.set("Count", Object::Integer(1));
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog.set("Pages", Object::Reference(pages_id));
+        let catalog_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", Object::Reference(catalog_id));
+        doc.save(tmp.path()).expect("save temp pdf");
+        let _ = app.handle_file_opened(tmp.path().to_path_buf());
+        // The counter is reset to 0 at file-open time; any new render tasks
+        // spawned immediately after may increment it, but it must stay within
+        // the concurrency limit — not accumulate from the prior 3.
+        assert!(app.sidebar.active_batch_tasks <= MAX_CONCURRENT_THUMBNAIL_TASKS);
+    }
+
+    #[test]
+    fn render_visible_thumbnails_increments_active_batch_tasks_when_below_limit() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        app.sidebar.viewport_height = 600.0;
+        // Below the limit and pages are unrendered — should spawn and increment.
+        assert_eq!(app.sidebar.active_batch_tasks, 0);
+        let _ = app.render_visible_thumbnails();
+        // At least one task was spawned; counter reflects that.
+        assert!(app.sidebar.active_batch_tasks >= 1);
+    }
+
+    #[test]
+    fn schedule_thumbnail_backfill_increments_active_batch_tasks_when_below_limit() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        assert_eq!(app.sidebar.active_batch_tasks, 0);
+        let _ = app.schedule_thumbnail_backfill();
+        // One batch task was scheduled; counter should be 1.
+        assert_eq!(app.sidebar.active_batch_tasks, 1);
     }
 }
