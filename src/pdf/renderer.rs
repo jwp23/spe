@@ -75,8 +75,8 @@ impl PdftoppmRenderer {
 
         let tmp_dir = self.invoke_pdftoppm(pdf_path, first_page, last_page, dpi)?;
 
-        // Collect all PNG files and sort by name; pdftoppm names them sequentially.
-        let mut png_paths: Vec<_> = std::fs::read_dir(tmp_dir.path())
+        // Collect all PPM files and sort by name; pdftoppm names them sequentially.
+        let mut ppm_paths: Vec<_> = std::fs::read_dir(tmp_dir.path())
             .map_err(|e| RendererError::RenderFailed {
                 page: first_page,
                 path: pdf_path.to_path_buf(),
@@ -84,14 +84,14 @@ impl PdftoppmRenderer {
             })?
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("png"))
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("ppm"))
             .collect();
-        png_paths.sort();
+        ppm_paths.sort();
 
         let mut results = Vec::new();
-        for (i, png_path) in png_paths.into_iter().enumerate() {
+        for (i, ppm_path) in ppm_paths.into_iter().enumerate() {
             let page_num = first_page + i as u32;
-            let img = image::open(&png_path)
+            let img = image::open(&ppm_path)
                 .map_err(|e| RendererError::ImageDecodeFailed(e.to_string()))?;
             results.push((page_num, img));
         }
@@ -129,7 +129,7 @@ impl PdftoppmRenderer {
 
         let prefix = tmp_dir.path().join("page");
 
-        // Invoke: pdftoppm -f <first> -l <last> -r <dpi> -png <pdf> <prefix>
+        // Invoke: pdftoppm -f <first> -l <last> -r <dpi> <pdf> <prefix>
         let output = Command::new("pdftoppm")
             .args([
                 "-f",
@@ -138,7 +138,6 @@ impl PdftoppmRenderer {
                 &last_page.to_string(),
                 "-r",
                 &dpi.to_string(),
-                "-png",
             ])
             .arg(pdf_path)
             .arg(&prefix)
