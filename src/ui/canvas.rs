@@ -46,6 +46,7 @@ pub struct PdfCanvasProgram<'a> {
 pub struct ProgramState {
     pub cursor_position: Option<iced::Point>,
     pub drag: Option<LocalDragState>,
+    pub keyboard_modifiers: iced::keyboard::Modifiers,
 }
 
 /// Tracks an in-progress overlay drag within the canvas widget.
@@ -179,6 +180,28 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 } else {
                     Some(canvas::Action::capture())
                 }
+            }
+
+            canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                if state.keyboard_modifiers.command() {
+                    let y = match delta {
+                        mouse::ScrollDelta::Lines { y, .. } => *y,
+                        mouse::ScrollDelta::Pixels { y, .. } => *y,
+                    };
+                    let msg = if y > 0.0 {
+                        Message::ZoomIn
+                    } else {
+                        Message::ZoomOut
+                    };
+                    Some(canvas::Action::publish(msg).and_capture())
+                } else {
+                    None
+                }
+            }
+
+            canvas::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
+                state.keyboard_modifiers = *modifiers;
+                None
             }
 
             _ => None,
@@ -1232,5 +1255,85 @@ mod tests {
             "screen y ({sy}) should be near page top ({})",
             local_page_bounds.y
         );
+    }
+
+    // =====================================================================
+    // Keyboard modifier tracking tests
+    // =====================================================================
+
+    fn modifiers_changed_event(modifiers: iced::keyboard::Modifiers) -> canvas::Event {
+        canvas::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers))
+    }
+
+    #[test]
+    fn modifiers_changed_updates_program_state() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(0.0, 0.0);
+
+        assert!(!state.keyboard_modifiers.command());
+
+        let event = modifiers_changed_event(iced::keyboard::Modifiers::COMMAND);
+        let action = program.update(&mut state, &event, bounds, cursor);
+        let (_msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Ignored);
+        assert!(state.keyboard_modifiers.command());
+    }
+
+    // =====================================================================
+    // Scroll wheel tests
+    // =====================================================================
+
+    fn scroll_event(delta_y: f32) -> canvas::Event {
+        canvas::Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: delta_y },
+        })
+    }
+
+    #[test]
+    fn ctrl_scroll_up_publishes_zoom_in() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        state.keyboard_modifiers = iced::keyboard::Modifiers::COMMAND;
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(500.0, 500.0);
+
+        let action = program.update(&mut state, &scroll_event(1.0), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(matches!(msg, Some(Message::ZoomIn)));
+    }
+
+    #[test]
+    fn ctrl_scroll_down_publishes_zoom_out() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        state.keyboard_modifiers = iced::keyboard::Modifiers::COMMAND;
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(500.0, 500.0);
+
+        let action = program.update(&mut state, &scroll_event(-1.0), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(matches!(msg, Some(Message::ZoomOut)));
+    }
+
+    #[test]
+    fn bare_scroll_is_not_captured() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        // No modifiers set
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(500.0, 500.0);
+
+        let action = program.update(&mut state, &scroll_event(1.0), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Ignored);
+        assert!(msg.is_none());
     }
 }

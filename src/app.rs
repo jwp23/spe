@@ -34,6 +34,7 @@ pub struct App {
     pub undo_stack: Vec<UndoCommand>,
     pub redo_stack: Vec<UndoCommand>,
     pub config: AppConfig,
+    pub window_size: Option<iced::Size>,
 }
 
 /// All messages the application can process.
@@ -80,6 +81,9 @@ pub enum Message {
     // Toolbar forwarding
     Toolbar(toolbar::Message),
 
+    // Window
+    WindowResized(iced::Size),
+
     // Font loaded
     FontLoaded(Result<(), iced::font::Error>),
 }
@@ -94,6 +98,7 @@ impl App {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             config: AppConfig::default(),
+            window_size: None,
         };
         let font_task = iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded);
         (app, font_task)
@@ -356,6 +361,11 @@ impl App {
                 }
             }
 
+            // --- Window ---
+            Message::WindowResized(size) => {
+                self.window_size = Some(size);
+            }
+
             // --- Font loaded ---
             Message::FontLoaded(_) => {}
         }
@@ -410,6 +420,14 @@ impl App {
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
         iced::event::listen_with(|event, status, _window| {
+            // Window events are always handled, regardless of capture status.
+            if let iced::Event::Window(ref win_event) = event {
+                return match win_event {
+                    iced::window::Event::Resized(size) => Some(Message::WindowResized(*size)),
+                    iced::window::Event::Opened { size, .. } => Some(Message::WindowResized(*size)),
+                    _ => None,
+                };
+            }
             if status == iced::event::Status::Captured {
                 return None;
             }
@@ -1084,5 +1102,20 @@ mod tests {
         let _ = app.update(Message::ZoomIn);
         let _ = app.update(Message::ZoomReset);
         assert!((app.canvas.zoom - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn app_default_has_no_window_size() {
+        let (app, _) = App::new();
+        assert!(app.window_size.is_none());
+    }
+
+    #[test]
+    fn window_resized_stores_size() {
+        let (mut app, _) = App::new();
+        let _ = app.update(Message::WindowResized(iced::Size::new(1920.0, 1080.0)));
+        let size = app.window_size.unwrap();
+        assert!((size.width - 1920.0).abs() < f32::EPSILON);
+        assert!((size.height - 1080.0).abs() < f32::EPSILON);
     }
 }
