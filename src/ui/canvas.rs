@@ -13,6 +13,8 @@ pub struct CanvasState {
     pub zoom: f32,
     pub active_overlay: Option<usize>,
     pub editing: bool,
+    /// Counter incremented on each zoom change; used to debounce re-renders.
+    pub zoom_generation: u64,
 }
 
 impl Default for CanvasState {
@@ -21,6 +23,7 @@ impl Default for CanvasState {
             zoom: 1.0,
             active_overlay: None,
             editing: false,
+            zoom_generation: 0,
         }
     }
 }
@@ -563,6 +566,7 @@ mod tests {
         assert!((state.zoom - 1.0).abs() < f32::EPSILON);
         assert!(state.active_overlay.is_none());
         assert!(!state.editing);
+        assert_eq!(state.zoom_generation, 0);
     }
 
     // --- ProgramState tests ---

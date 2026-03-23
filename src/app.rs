@@ -67,6 +67,7 @@ pub enum Message {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    ZoomDebounceExpired(u64),
 
     // Sidebar
     ToggleSidebar,
@@ -305,20 +306,23 @@ impl App {
                 self.canvas.editing = false;
             }
 
-            // --- Canvas ---
-            // Zoom triggers immediate re-render. spe-8og.5 will add debounce
-            // so rapid zoom steps don't queue redundant renders.
+            // --- Canvas (zoom with debounce) ---
             Message::ZoomIn => {
                 self.canvas.zoom = canvas::zoom_in(self.canvas.zoom);
-                return self.render_current_page();
+                return self.apply_zoom_change();
             }
             Message::ZoomOut => {
                 self.canvas.zoom = canvas::zoom_out(self.canvas.zoom);
-                return self.render_current_page();
+                return self.apply_zoom_change();
             }
             Message::ZoomReset => {
                 self.canvas.zoom = 1.0;
-                return self.render_current_page();
+                return self.apply_zoom_change();
+            }
+            Message::ZoomDebounceExpired(generation) => {
+                if generation == self.canvas.zoom_generation {
+                    return self.render_current_page();
+                }
             }
 
             // --- Sidebar ---
@@ -584,6 +588,30 @@ impl App {
             iced::Task::none()
         }
     }
+
+    /// Common post-zoom logic: increment generation, clear page cache,
+    /// and schedule a debounced re-render.
+    fn apply_zoom_change(&mut self) -> iced::Task<Message> {
+        self.canvas.zoom_generation += 1;
+        if let Some(doc) = &mut self.document {
+            doc.page_images.clear();
+        }
+        self.schedule_zoom_render()
+    }
+
+    /// Schedule a debounced re-render after zoom changes.
+    /// Waits 300ms, then fires `ZoomDebounceExpired` with the current generation.
+    /// If the generation has changed by then, the handler ignores the stale event.
+    fn schedule_zoom_render(&self) -> iced::Task<Message> {
+        let generation = self.canvas.zoom_generation;
+        iced::Task::perform(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                generation
+            },
+            Message::ZoomDebounceExpired,
+        )
+    }
 }
 
 /// Launch an async task to render a single PDF page via pdftoppm.
@@ -787,6 +815,69 @@ mod tests {
         app.update(Message::ZoomIn);
         app.update(Message::ZoomReset);
         assert!((app.canvas.zoom - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn zoom_in_increments_generation() {
+        let (mut app, _) = App::new();
+        assert_eq!(app.canvas.zoom_generation, 0);
+        app.update(Message::ZoomIn);
+        assert_eq!(app.canvas.zoom_generation, 1);
+        app.update(Message::ZoomIn);
+        assert_eq!(app.canvas.zoom_generation, 2);
+    }
+
+    #[test]
+    fn zoom_out_increments_generation() {
+        let (mut app, _) = App::new();
+        app.update(Message::ZoomIn); // go above 1.0 so ZoomOut has room
+        let gen_before = app.canvas.zoom_generation;
+        app.update(Message::ZoomOut);
+        assert_eq!(app.canvas.zoom_generation, gen_before + 1);
+    }
+
+    #[test]
+    fn zoom_reset_increments_generation() {
+        let (mut app, _) = App::new();
+        app.update(Message::ZoomIn);
+        let gen_before = app.canvas.zoom_generation;
+        app.update(Message::ZoomReset);
+        assert_eq!(app.canvas.zoom_generation, gen_before + 1);
+    }
+
+    #[test]
+    fn zoom_clears_page_image_cache() {
+        let mut app = test_app_with_document();
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        app.document.as_mut().unwrap().page_images.insert(1, handle);
+        assert!(!app.document.as_ref().unwrap().page_images.is_empty());
+        app.update(Message::ZoomIn);
+        assert!(app.document.as_ref().unwrap().page_images.is_empty());
+    }
+
+    #[test]
+    fn zoom_debounce_expired_matching_generation_does_not_panic() {
+        let mut app = test_app_with_document();
+        app.update(Message::ZoomIn);
+        let generation = app.canvas.zoom_generation;
+        // Matching generation should trigger a re-render (returns a Task,
+        // but we just verify it doesn't panic and state is consistent)
+        app.update(Message::ZoomDebounceExpired(generation));
+    }
+
+    #[test]
+    fn zoom_debounce_expired_stale_generation_is_noop() {
+        let mut app = test_app_with_document();
+        app.update(Message::ZoomIn);
+        let stale_gen = app.canvas.zoom_generation;
+        app.update(Message::ZoomIn); // generation advances
+        assert_ne!(stale_gen, app.canvas.zoom_generation);
+        // Stale generation should be a no-op
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        app.document.as_mut().unwrap().page_images.insert(1, handle);
+        app.update(Message::ZoomDebounceExpired(stale_gen));
+        // Page cache should still be intact (no re-render triggered)
+        assert!(!app.document.as_ref().unwrap().page_images.is_empty());
     }
 
     #[test]
