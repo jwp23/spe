@@ -383,6 +383,7 @@ impl App {
             Message::SidebarScrolled(scroll_y, viewport_height) => {
                 self.sidebar.scroll_y = scroll_y;
                 self.sidebar.viewport_height = viewport_height;
+                return self.render_visible_thumbnails();
             }
             Message::SidebarResized(new_width) => {
                 self.sidebar.width = new_width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
@@ -644,29 +645,42 @@ impl App {
                 self.canvas = CanvasState::default();
                 self.sidebar.thumbnails.clear();
                 self.toolbar.page_input = "1".to_string();
+                let max_page_w = self
+                    .document
+                    .as_ref()
+                    .map(|d| {
+                        d.page_dimensions
+                            .values()
+                            .map(|(w, _)| *w)
+                            .fold(0.0f32, f32::max)
+                    })
+                    .unwrap_or(612.0);
+
                 // Set initial zoom to fit widest page in viewport
-                if let Some(win) = self.window_size {
-                    let max_page_w = self
-                        .document
-                        .as_ref()
-                        .map(|d| {
-                            d.page_dimensions
-                                .values()
-                                .map(|(w, _)| *w)
-                                .fold(0.0f32, f32::max)
-                        })
-                        .unwrap_or(0.0);
-                    if max_page_w > 0.0 {
-                        let sidebar_w = if self.sidebar.visible {
-                            self.sidebar.width
-                        } else {
-                            0.0
-                        };
-                        let available_w = (win.width - sidebar_w - 16.0).max(1.0);
-                        self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
-                    }
+                if let Some(win) = self.window_size
+                    && max_page_w > 0.0
+                {
+                    let sidebar_w = if self.sidebar.visible {
+                        self.sidebar.width
+                    } else {
+                        0.0
+                    };
+                    let available_w = (win.width - sidebar_w - 16.0).max(1.0);
+                    self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
                 }
-                self.render_visible_pages()
+
+                // Compute thumbnail DPI for sidebar rendering
+                let scale_factor = 1.0; // TODO: get from Iced window scale factor when available
+                self.sidebar.thumbnail_dpi = crate::ui::sidebar::compute_thumbnail_dpi(
+                    self.sidebar.width,
+                    scale_factor,
+                    max_page_w,
+                );
+                self.sidebar.backfill_generation += 1;
+
+                let page_task = self.render_visible_pages();
+                let thumb_task = self.render_visible_thumbnails();
+                iced::Task::batch([page_task, thumb_task])
             }
             Err(e) => {
                 eprintln!("Failed to open PDF: {e}");
@@ -748,6 +762,51 @@ impl App {
         iced::Task::batch(tasks)
     }
 
+    /// Render thumbnails for pages visible in the sidebar (plus a buffer),
+    /// skipping any that are already cached.
+    fn render_visible_thumbnails(&self) -> iced::Task<Message> {
+        let Some(doc) = &self.document else {
+            return iced::Task::none();
+        };
+        if !self.sidebar.visible || doc.page_count == 0 {
+            return iced::Task::none();
+        }
+        let dpi = self.sidebar.thumbnail_dpi as u32;
+        if dpi == 0 {
+            return iced::Task::none();
+        }
+        let avg_thumb_h =
+            crate::ui::sidebar::thumbnail_height(612.0, 792.0, self.sidebar.width - 16.0);
+        let visible = crate::ui::sidebar::visible_pages(
+            self.sidebar.scroll_y,
+            self.sidebar.viewport_height.max(600.0),
+            doc.page_count,
+            avg_thumb_h + 8.0,
+            5,
+        );
+        let pages_to_render: Vec<u32> = visible
+            .filter(|p| !self.sidebar.thumbnails.contains_key(p))
+            .collect();
+        if pages_to_render.is_empty() {
+            return iced::Task::none();
+        }
+        let pdf_path = doc.source_path.clone();
+        let generation = self.sidebar.backfill_generation;
+        let mut tasks = Vec::new();
+        for chunk in pages_to_render.chunks(20) {
+            let first = *chunk.first().unwrap();
+            let last = *chunk.last().unwrap();
+            tasks.push(render_thumbnail_batch_task(
+                pdf_path.clone(),
+                first,
+                last,
+                dpi,
+                generation,
+            ));
+        }
+        iced::Task::batch(tasks)
+    }
+
     /// Scroll to a specific page by computing its y-offset and using scroll_to.
     fn scroll_to_page(&self, page: u32) -> iced::Task<Message> {
         let Some(doc) = &self.document else {
@@ -808,6 +867,38 @@ fn render_page_task(pdf_path: PathBuf, page: u32, dpi: u32) -> iced::Task<Messag
         },
         |result| match result {
             Some((page, handle)) => Message::PageRendered(page, handle),
+            None => Message::DeselectOverlay,
+        },
+    )
+}
+
+/// Launch an async task to render a batch of PDF page thumbnails via pdftoppm.
+fn render_thumbnail_batch_task(
+    pdf_path: PathBuf,
+    first_page: u32,
+    last_page: u32,
+    dpi: u32,
+    generation: u64,
+) -> iced::Task<Message> {
+    iced::Task::perform(
+        async move {
+            let renderer = PdftoppmRenderer;
+            match renderer.render_page_batch(&pdf_path, first_page, last_page, dpi) {
+                Ok(images) => {
+                    let handles: Vec<(u32, Handle)> = images
+                        .into_iter()
+                        .map(|(page, img)| (page, canvas::image_to_handle(img)))
+                        .collect();
+                    Some((handles, generation))
+                }
+                Err(e) => {
+                    eprintln!("Failed to render thumbnail batch {first_page}-{last_page}: {e}");
+                    None
+                }
+            }
+        },
+        |result| match result {
+            Some((handles, batch_gen)) => Message::ThumbnailBatchRendered(handles, batch_gen),
             None => Message::DeselectOverlay,
         },
     )
@@ -1426,5 +1517,34 @@ mod tests {
         let size = app.window_size.unwrap();
         assert!((size.width - 1920.0).abs() < f32::EPSILON);
         assert!((size.height - 1080.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_scrolled_updates_scroll_state() {
+        let mut app = test_app_with_document();
+        let _ = app.update(Message::SidebarScrolled(150.0, 600.0));
+        assert!((app.sidebar.scroll_y - 150.0).abs() < f32::EPSILON);
+        assert!((app.sidebar.viewport_height - 600.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn thumbnail_batch_rendered_inserts_with_matching_generation() {
+        let mut app = test_app_with_document();
+        app.sidebar.backfill_generation = 5;
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let _ = app.update(Message::ThumbnailBatchRendered(vec![(1, handle)], 5));
+        assert!(app.sidebar.thumbnails.contains_key(&1));
+    }
+
+    #[test]
+    fn thumbnail_batch_rendered_ignores_stale_generation() {
+        let mut app = test_app_with_document();
+        app.sidebar.backfill_generation = 5;
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let _ = app.update(Message::ThumbnailBatchRendered(
+            vec![(1, handle)],
+            3, // stale generation
+        ));
+        assert!(!app.sidebar.thumbnails.contains_key(&1));
     }
 }
