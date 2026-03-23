@@ -12,6 +12,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Scan for secrets
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/scan" ghcr.io/betterleaks/betterleaks:latest dir --redact /scan
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

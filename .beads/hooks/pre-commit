@@ -24,6 +24,16 @@ fi
 # --- END BEADS INTEGRATION v0.62.0 ---
 
 # --- BEGIN PROJECT CHECKS ---
+if ! command -v betterleaks >/dev/null 2>&1; then
+    echo >&2 "pre-commit: betterleaks not installed. Install from https://github.com/betterleaks/betterleaks"
+    exit 1
+fi
+
+if ! betterleaks git --pre-commit --staged --redact; then
+    echo >&2 "pre-commit: betterleaks detected secrets in staged changes."
+    exit 1
+fi
+
 if ! cargo fmt --check 2>/dev/null; then
     echo >&2 "pre-commit: cargo fmt check failed. Run 'cargo fmt' to fix."
     exit 1
