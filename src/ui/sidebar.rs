@@ -123,7 +123,7 @@ const CURRENT_PAGE_BORDER_COLOR: iced::Color = iced::Color {
 };
 
 /// Width of the current-page highlight border in pixels.
-const CURRENT_PAGE_BORDER_WIDTH: f32 = 2.0;
+const CURRENT_PAGE_BORDER_WIDTH: f32 = 3.0;
 
 /// Canvas program that draws a single page thumbnail: white background,
 /// cached image or gray placeholder, and a highlight border for the current page.
@@ -198,6 +198,12 @@ impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
 
         // Highlight border for current page
         if self.is_current_page {
+            // Semi-transparent overlay tint so the highlight is obvious
+            frame.fill_rectangle(
+                iced::Point::ORIGIN,
+                bounds.size(),
+                iced::Color::from_rgba(0.310, 0.765, 0.969, 0.12),
+            );
             let stroke = canvas::Stroke {
                 style: canvas::Style::Solid(CURRENT_PAGE_BORDER_COLOR),
                 width: CURRENT_PAGE_BORDER_WIDTH,
