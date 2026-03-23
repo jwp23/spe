@@ -1,6 +1,6 @@
 ---
 name: brainstorming
-description: "Use when starting creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation."
+description: "Use when starting creative work - creating features, building components, adding functionality, or modifying behavior. Also use when in plan mode and the user asks to brainstorm or design. Explores user intent, requirements and design before implementation."
 ---
 
 # Brainstorming Ideas Into Designs
@@ -12,6 +12,25 @@ Start by understanding the current project context, then ask questions one at a 
 <HARD-GATE>
 Do NOT invoke any implementation skill, write any code, scaffold any project, or take any implementation action until you have presented a design and the user has approved it. This applies to EVERY project regardless of perceived simplicity.
 </HARD-GATE>
+
+## Plan Mode Integration
+
+When you are in plan mode (`EnterPlanMode` / `/plan`) and the user asks to brainstorm or design a feature, this skill still applies. Plan mode limits your tools (no Write/Edit), so the workflow adapts:
+
+**In plan mode:**
+
+1. Run steps 1-5 normally (explore context, visual companion, clarify, propose approaches, present design) — these are conversational and work with available tools
+2. When the design is approved, write a summary to the plan file: design overview, components, key decisions, and note that next steps are spec writing + bd epic creation
+3. Call `ExitPlanMode` to present the design for approval
+4. After approval (now outside plan mode with full tools): continue with steps 6-10 — write spec, spec review loop, user review, create bd epic, invoke writing-plans
+
+**The conversational design IS the plan mode output.** File operations happen after exiting plan mode.
+
+**Red flags — you are doing it wrong if:**
+- You skip brainstorming because "Write isn't available in plan mode"
+- You jump to writing-plans ad-hoc path without a design or spec
+- You do freeform design discussion without invoking this skill
+- You exit plan mode without presenting the design summary first
 
 ## Anti-Pattern: "This Is Too Simple To Need A Design"
 

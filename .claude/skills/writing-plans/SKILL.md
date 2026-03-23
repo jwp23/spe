@@ -1,6 +1,6 @@
 ---
 name: writing-plans
-description: Use when you have a spec or requirements for a multi-step task, before touching code
+description: Use when you have a spec or requirements for a multi-step task, before touching code. Also use when entering or already in plan mode — all planning in this project goes through bd (beads) issue hierarchies.
 ---
 
 # Writing Plans
@@ -15,11 +15,32 @@ Assume the implementing engineer is skilled but knows almost nothing about our t
 
 **Context:** This should be run in a dedicated worktree (created by brainstorming skill).
 
+## Plan Mode Integration
+
+When you are in plan mode (entered via `EnterPlanMode` or `/plan`), this skill defines what "planning" means in this project. Do NOT write a freeform plan file — create the bd issue hierarchy described below instead.
+
+**Workflow in plan mode:**
+
+1. Follow this skill's full process: create epic (if needed), scope check, file structure, create tasks in bd, run plan review loop
+2. Verify the hierarchy exists: `bd children <epic-id> --json` must show tasks before proceeding
+3. Write a brief summary to the plan file referencing the bd hierarchy: epic ID, feature breakdown, task count, and key dependencies
+4. Call `ExitPlanMode` to present the plan for approval
+5. After approval, proceed directly to execution via subagent-driven-development
+
+**The bd hierarchy IS the plan.** The plan file is just a human-readable summary pointing to it.
+
+**Red flags — you are doing it wrong if:**
+- You are writing implementation steps directly in the plan file instead of bd
+- You call `ExitPlanMode` without any `bd create` commands having run
+- You skip straight to coding after plan approval without invoking subagent-driven-development
+
 ## Input
 
 This skill receives an **epic ID** from the brainstorming skill. The epic already has feature/bug children representing components or subsystems.
 
-If starting without an epic (e.g., ad-hoc planning), create one first:
+**Prerequisite check:** If there is no design spec and the user is asking to brainstorm, design, or explore a feature idea, invoke the brainstorming skill first. Writing-plans decomposes an existing design into tasks — it does not replace the design phase.
+
+If starting without an epic (e.g., ad-hoc planning with an existing spec or clear requirements), create one first:
 ```bash
 bd create "<project name>" -t epic --description="<summary>" --json
 ```
@@ -134,20 +155,8 @@ After creating all tasks:
 
 ## Execution Handoff
 
-After all tasks are created and reviewed, offer execution choice:
+After all tasks are created and reviewed, proceed to execution:
 
-**"Tasks created under epic `<epic-id>`. Two execution options:**
+**"Tasks created under epic `<epic-id>`. Moving to subagent-driven execution."**
 
-**1. Subagent-Driven (recommended)** - I dispatch a fresh subagent per task, review between tasks, fast iteration
-
-**2. Inline Execution** - Execute tasks in this session using executing-plans, batch execution with checkpoints
-
-**Which approach?"**
-
-**If Subagent-Driven chosen:**
-- **REQUIRED SUB-SKILL:** Use subagent-driven-development
-- Fresh subagent per task + two-stage review
-
-**If Inline Execution chosen:**
-- **REQUIRED SUB-SKILL:** Use executing-plans
-- Batch execution with checkpoints for review
+**REQUIRED SUB-SKILL:** Use subagent-driven-development — fresh subagent per task + two-stage review (spec compliance, then code quality).
