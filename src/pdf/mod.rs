@@ -13,7 +13,23 @@ pub fn page_dimensions(doc: &lopdf::Document) -> HashMap<u32, (f32, f32)> {
     dims
 }
 
+/// Maximum depth for walking up the page tree to find inherited MediaBox.
+/// PDF page trees are typically 2-4 levels deep; this guards against
+/// circular Parent references in malformed PDFs.
+const MAX_PAGE_TREE_DEPTH: u32 = 16;
+
 fn read_media_box(doc: &lopdf::Document, object_id: lopdf::ObjectId) -> Option<(f32, f32)> {
+    read_media_box_bounded(doc, object_id, MAX_PAGE_TREE_DEPTH)
+}
+
+fn read_media_box_bounded(
+    doc: &lopdf::Document,
+    object_id: lopdf::ObjectId,
+    remaining_depth: u32,
+) -> Option<(f32, f32)> {
+    if remaining_depth == 0 {
+        return None;
+    }
     let dict = doc.get_object(object_id).ok()?.as_dict().ok()?;
 
     // Try this node's MediaBox first
@@ -27,7 +43,7 @@ fn read_media_box(doc: &lopdf::Document, object_id: lopdf::ObjectId) -> Option<(
     if let Ok(parent_ref) = dict.get(b"Parent")
         && let Ok(parent_id) = parent_ref.as_reference()
     {
-        return read_media_box(doc, parent_id);
+        return read_media_box_bounded(doc, parent_id, remaining_depth - 1);
     }
 
     None

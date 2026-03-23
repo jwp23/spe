@@ -488,6 +488,12 @@ impl App {
 
     fn handle_save_destination(&mut self, path: PathBuf) {
         if let Some(doc) = &mut self.document {
+            // Prevent saving over the source file to avoid data loss on
+            // write failure (the source would already be truncated).
+            if path == doc.source_path {
+                eprintln!("Cannot save to the same file as the source. Use a different filename.");
+                return;
+            }
             let source = doc.source_path.clone();
             let overlays = doc.overlays.clone();
             if let Err(e) = crate::pdf::writer::write_overlays(&source, &path, &overlays) {
