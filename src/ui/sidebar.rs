@@ -1,0 +1,131 @@
+// Thumbnail sidebar: collapsible panel with lazy-loaded page thumbnails.
+
+use std::collections::HashMap;
+
+use iced::widget::image::Handle;
+
+/// State for the thumbnail sidebar.
+pub struct SidebarState {
+    pub visible: bool,
+    pub thumbnails: HashMap<u32, Handle>,
+}
+
+impl Default for SidebarState {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            thumbnails: HashMap::new(),
+        }
+    }
+}
+
+/// Fixed width of the sidebar in pixels.
+pub const SIDEBAR_WIDTH: f32 = 120.0;
+
+/// Thumbnail rendering DPI.
+pub const THUMBNAIL_DPI: f32 = 72.0;
+
+/// Compute the range of pages that should have thumbnails rendered,
+/// based on scroll position, viewport height, and a buffer of extra pages.
+///
+/// Returns an inclusive range of 1-indexed page numbers.
+pub fn visible_pages(
+    scroll_offset: f32,
+    viewport_height: f32,
+    page_count: u32,
+    thumbnail_height: f32,
+    buffer: u32,
+) -> std::ops::RangeInclusive<u32> {
+    if page_count == 0 || thumbnail_height <= 0.0 {
+        // Return an empty range (start > end)
+        #[allow(clippy::reversed_empty_ranges)]
+        return 1..=0;
+    }
+    let first_visible = (scroll_offset / thumbnail_height).floor() as u32;
+    let last_visible = ((scroll_offset + viewport_height) / thumbnail_height).ceil() as u32;
+    let start = first_visible.saturating_sub(buffer).max(1);
+    let end = (last_visible + buffer).min(page_count);
+    start..=end
+}
+
+/// Compute the thumbnail height for a page, maintaining aspect ratio
+/// within the fixed sidebar width.
+pub fn thumbnail_height(page_width: f32, page_height: f32) -> f32 {
+    if page_width <= 0.0 {
+        return SIDEBAR_WIDTH;
+    }
+    SIDEBAR_WIDTH * (page_height / page_width)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sidebar_default_is_visible() {
+        let state = SidebarState::default();
+        assert!(state.visible);
+        assert!(state.thumbnails.is_empty());
+    }
+
+    #[test]
+    fn visible_pages_basic() {
+        // Viewport shows 5 pages, buffer of 2
+        let range = visible_pages(0.0, 500.0, 20, 100.0, 2);
+        assert_eq!(*range.start(), 1);
+        assert_eq!(*range.end(), 7); // 5 visible + 2 buffer
+    }
+
+    #[test]
+    fn visible_pages_scrolled() {
+        // Scrolled down 300px → first visible is page 3 (index 3)
+        let range = visible_pages(300.0, 500.0, 20, 100.0, 2);
+        assert_eq!(*range.start(), 1); // 3 - 2 buffer = 1
+        assert_eq!(*range.end(), 10); // ceil((300+500)/100) + 2 = 10
+    }
+
+    #[test]
+    fn visible_pages_clamps_to_page_count() {
+        let range = visible_pages(1800.0, 500.0, 20, 100.0, 2);
+        assert_eq!(*range.end(), 20);
+    }
+
+    #[test]
+    fn visible_pages_start_never_below_one() {
+        let range = visible_pages(0.0, 200.0, 5, 100.0, 5);
+        assert_eq!(*range.start(), 1);
+    }
+
+    #[test]
+    fn visible_pages_zero_page_count() {
+        let range = visible_pages(0.0, 500.0, 0, 100.0, 2);
+        assert!(range.is_empty());
+    }
+
+    #[test]
+    fn thumbnail_height_letter_page() {
+        // US Letter: 612 x 792 points
+        let h = thumbnail_height(612.0, 792.0);
+        // Expected: 120 * (792/612) ≈ 155.3
+        assert!((h - 155.29).abs() < 0.1);
+    }
+
+    #[test]
+    fn thumbnail_height_landscape() {
+        // Landscape: 792 x 612
+        let h = thumbnail_height(792.0, 612.0);
+        // Expected: 120 * (612/792) ≈ 92.7
+        assert!((h - 92.73).abs() < 0.1);
+    }
+
+    #[test]
+    fn thumbnail_height_zero_width_fallback() {
+        let h = thumbnail_height(0.0, 500.0);
+        assert!((h - SIDEBAR_WIDTH).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_width_constant() {
+        assert!((SIDEBAR_WIDTH - 120.0).abs() < f32::EPSILON);
+    }
+}
