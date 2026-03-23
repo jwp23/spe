@@ -84,14 +84,14 @@ jobs:
       - name: Install system utilities
         run: sudo apt-get update && sudo apt-get install -y poppler-utils fontconfig
 
-      - name: Lint
-        run: cargo clippy -- -D warnings
-
       - name: Run unit tests
         run: cargo test
 
       - name: Run integration tests
         run: cargo test -- --ignored
+
+      - name: Lint
+        run: cargo clippy -- -D warnings
 
   supply-chain:
     runs-on: ubuntu-latest
