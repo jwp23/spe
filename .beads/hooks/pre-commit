@@ -53,6 +53,15 @@ else
     echo >&2 "pre-commit: WARNING: cargo-audit not installed. Run 'cargo install cargo-audit' for dependency vulnerability scanning."
 fi
 
+if command -v cargo-deny >/dev/null 2>&1; then
+    if ! cargo deny check 2>/dev/null; then
+        echo >&2 "pre-commit: cargo deny check failed."
+        exit 1
+    fi
+else
+    echo >&2 "pre-commit: WARNING: cargo-deny not installed. Run 'cargo install cargo-deny' for license and supply-chain checks."
+fi
+
 if ! cargo test 2>/dev/null; then
     echo >&2 "pre-commit: tests failed."
     exit 1
