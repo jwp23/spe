@@ -267,24 +267,27 @@ pub fn sidebar_view<'a>(
             .height(Length::Fixed(thumb_h))
             .into();
 
-        // Highlight border is applied via container styling (not canvas drawing)
-        // so it updates immediately when current_page changes, bypassing
-        // canvas geometry caching.
+        // Highlight border via container styling (not canvas drawing) so it
+        // updates immediately when current_page changes. All thumbnails get
+        // equal padding so the border doesn't cause layout shift; only the
+        // current page gets a colored border.
         let is_current = page == current_page;
-        let thumb_container = container(thumb_canvas).style(move |_theme| {
-            if is_current {
-                container::Style {
-                    border: iced::Border {
-                        color: CURRENT_PAGE_BORDER_COLOR,
-                        width: CURRENT_PAGE_BORDER_WIDTH,
-                        radius: 0.0.into(),
-                    },
-                    ..container::Style::default()
+        let thumb_container = container(thumb_canvas)
+            .padding(CURRENT_PAGE_BORDER_WIDTH)
+            .style(move |_theme| {
+                if is_current {
+                    container::Style {
+                        border: iced::Border {
+                            color: CURRENT_PAGE_BORDER_COLOR,
+                            width: CURRENT_PAGE_BORDER_WIDTH,
+                            radius: 0.0.into(),
+                        },
+                        ..container::Style::default()
+                    }
+                } else {
+                    container::Style::default()
                 }
-            } else {
-                container::Style::default()
-            }
-        });
+            });
 
         let label_color = if is_current {
             CURRENT_PAGE_BORDER_COLOR
