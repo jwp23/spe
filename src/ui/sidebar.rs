@@ -127,6 +127,8 @@ pub struct ThumbnailProgram<'a> {
     pub page_height: f32,
     pub thumbnail_dpi: f32,
     pub overlay_color: iced::Color,
+    /// Shimmer animation phase in [0, 1) for unrendered placeholder.
+    pub shimmer_phase: f32,
 }
 
 impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
@@ -145,17 +147,26 @@ impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
         // White page background
         frame.fill_rectangle(iced::Point::ORIGIN, bounds.size(), iced::Color::WHITE);
 
-        // Draw cached thumbnail or gray placeholder
+        // Draw cached thumbnail or animated shimmer placeholder
         if let Some(handle) = self.thumbnail {
             frame.draw_image(
                 iced::Rectangle::new(iced::Point::ORIGIN, bounds.size()),
                 handle,
             );
         } else {
+            // Base gray
             frame.fill_rectangle(
                 iced::Point::ORIGIN,
                 bounds.size(),
-                iced::Color::from_rgb(0.85, 0.85, 0.85),
+                iced::Color::from_rgb(0.82, 0.82, 0.82),
+            );
+            // Shimmer highlight band sweeping left to right
+            let band_width = bounds.width * 0.4;
+            let x_offset = self.shimmer_phase * (bounds.width + band_width) - band_width;
+            frame.fill_rectangle(
+                iced::Point::new(x_offset, 0.0),
+                iced::Size::new(band_width, bounds.height),
+                iced::Color::from_rgba(1.0, 1.0, 1.0, 0.15),
             );
         }
 
@@ -259,6 +270,7 @@ pub fn sidebar_view<'a>(
             page_height: ph,
             thumbnail_dpi: state.thumbnail_dpi,
             overlay_color,
+            shimmer_phase: state.shimmer_phase,
         };
 
         let thumb_canvas: Element<'a, Message> = canvas_widget(program)
@@ -307,8 +319,25 @@ mod tests {
             page_height: 792.0,
             thumbnail_dpi: 12.0,
             overlay_color: iced::Color::from_rgb(0.0, 0.0, 1.0),
+            shimmer_phase: 0.0,
         };
         assert_eq!(program.page, 1);
+    }
+
+    #[test]
+    fn thumbnail_program_stores_shimmer_phase() {
+        let program = ThumbnailProgram {
+            page: 1,
+            thumbnail: None,
+            is_current_page: false,
+            overlays: &[],
+            page_width: 612.0,
+            page_height: 792.0,
+            thumbnail_dpi: 12.0,
+            overlay_color: iced::Color::from_rgb(0.0, 0.0, 1.0),
+            shimmer_phase: 0.5,
+        };
+        assert!((program.shimmer_phase - 0.5).abs() < f32::EPSILON);
     }
 
     #[test]

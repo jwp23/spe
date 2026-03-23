@@ -534,7 +534,7 @@ impl App {
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        iced::event::listen_with(|event, status, _window| {
+        let event_sub = iced::event::listen_with(|event, status, _window| {
             // Window events are always handled, regardless of capture status.
             if let iced::Event::Window(ref win_event) = event {
                 return match win_event {
@@ -552,7 +552,21 @@ impl App {
                 }
                 _ => None,
             }
-        })
+        });
+
+        // Tick shimmer animation only while sidebar is visible and has unrendered pages.
+        let shimmer_sub = if self.sidebar.visible
+            && self
+                .document
+                .as_ref()
+                .is_some_and(|doc| doc.page_count as usize > self.sidebar.thumbnails.len())
+        {
+            iced::time::every(std::time::Duration::from_millis(16)).map(|_| Message::ShimmerTick)
+        } else {
+            iced::Subscription::none()
+        };
+
+        iced::Subscription::batch([event_sub, shimmer_sub])
     }
 
     fn handle_toolbar_message(&mut self, msg: toolbar::Message) -> iced::Task<Message> {
