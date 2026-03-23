@@ -46,6 +46,7 @@ pub struct PdfCanvasProgram<'a> {
 pub struct ProgramState {
     pub cursor_position: Option<iced::Point>,
     pub drag: Option<LocalDragState>,
+    pub keyboard_modifiers: iced::keyboard::Modifiers,
 }
 
 /// Tracks an in-progress overlay drag within the canvas widget.
@@ -179,6 +180,28 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 } else {
                     Some(canvas::Action::capture())
                 }
+            }
+
+            canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                if state.keyboard_modifiers.command() {
+                    let y = match delta {
+                        mouse::ScrollDelta::Lines { y, .. } => *y,
+                        mouse::ScrollDelta::Pixels { y, .. } => *y,
+                    };
+                    let msg = if y > 0.0 {
+                        Message::ZoomIn
+                    } else {
+                        Message::ZoomOut
+                    };
+                    Some(canvas::Action::publish(msg).and_capture())
+                } else {
+                    None
+                }
+            }
+
+            canvas::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
+                state.keyboard_modifiers = *modifiers;
+                None
             }
 
             _ => None,
@@ -451,6 +474,19 @@ pub fn zoom_percent(zoom: f32) -> u32 {
 
 /// Zoom steps: 25%, 50%, 75%, 100%, 125%, 150%, 200%.
 const ZOOM_STEPS: [f32; 7] = [0.25, 0.50, 0.75, 1.0, 1.25, 1.50, 2.0];
+
+/// Compute zoom level that makes the rendered page width match the viewport width.
+/// Returns a continuous value clamped to the valid zoom range.
+pub fn fit_to_width_zoom(page_width_pts: f32, viewport_width: f32) -> f32 {
+    if page_width_pts <= 0.0 || viewport_width <= 0.0 {
+        return ZOOM_STEPS[0];
+    }
+    // rendered_width = page_width * zoom² * 150/72
+    // Solving for zoom: zoom = sqrt(viewport_width * 72 / (page_width * 150))
+    let zoom_sq = viewport_width * 72.0 / (page_width_pts * 150.0);
+    let zoom = zoom_sq.sqrt();
+    zoom.clamp(ZOOM_STEPS[0], *ZOOM_STEPS.last().unwrap())
+}
 
 /// Next zoom level up from current, or current if already at max.
 pub fn zoom_in(current: f32) -> f32 {
@@ -818,6 +854,24 @@ mod tests {
     #[test]
     fn zoom_out_caps_at_min() {
         assert!((zoom_out(0.25) - 0.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn zoom_in_from_continuous_value() {
+        // From a fit-to-width zoom of 0.885, zoom_in should jump to 1.0
+        assert!((zoom_in(0.885) - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn zoom_out_from_continuous_value() {
+        // From a fit-to-width zoom of 0.885, zoom_out should jump to 0.75
+        assert!((zoom_out(0.885) - 0.75).abs() < 0.01);
+    }
+
+    #[test]
+    fn zoom_percent_continuous_value() {
+        // 0.885 → 89%
+        assert_eq!(zoom_percent(0.885), 89);
     }
 
     #[test]
@@ -1232,5 +1286,130 @@ mod tests {
             "screen y ({sy}) should be near page top ({})",
             local_page_bounds.y
         );
+    }
+
+    // =====================================================================
+    // fit_to_width_zoom tests
+    // =====================================================================
+
+    #[test]
+    fn fit_to_width_zoom_us_letter_1000px() {
+        // US Letter (612pt), viewport 1000px
+        // zoom = sqrt(1000 * 72 / (612 * 150)) = sqrt(0.784) ≈ 0.885
+        let zoom = fit_to_width_zoom(612.0, 1000.0);
+        assert!((zoom - 0.885).abs() < 0.01, "zoom was {zoom}");
+    }
+
+    #[test]
+    fn fit_to_width_zoom_us_letter_1920px() {
+        // zoom = sqrt(1920 * 72 / (612 * 150)) ≈ 1.227
+        let zoom = fit_to_width_zoom(612.0, 1920.0);
+        assert!((zoom - 1.227).abs() < 0.01, "zoom was {zoom}");
+    }
+
+    #[test]
+    fn fit_to_width_zoom_clamps_to_max() {
+        // Very wide viewport should clamp to max zoom (2.0)
+        let zoom = fit_to_width_zoom(100.0, 100000.0);
+        assert!((zoom - 2.0).abs() < f32::EPSILON, "zoom was {zoom}");
+    }
+
+    #[test]
+    fn fit_to_width_zoom_clamps_to_min() {
+        // Very narrow viewport should clamp to min zoom (0.25)
+        let zoom = fit_to_width_zoom(612.0, 1.0);
+        assert!((zoom - 0.25).abs() < f32::EPSILON, "zoom was {zoom}");
+    }
+
+    #[test]
+    fn fit_to_width_zoom_zero_page_width_returns_min() {
+        let zoom = fit_to_width_zoom(0.0, 1000.0);
+        assert!((zoom - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn fit_to_width_zoom_zero_viewport_returns_min() {
+        let zoom = fit_to_width_zoom(612.0, 0.0);
+        assert!((zoom - 0.25).abs() < f32::EPSILON);
+    }
+
+    // =====================================================================
+    // Keyboard modifier tracking tests
+    // =====================================================================
+
+    fn modifiers_changed_event(modifiers: iced::keyboard::Modifiers) -> canvas::Event {
+        canvas::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers))
+    }
+
+    #[test]
+    fn modifiers_changed_updates_program_state() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(0.0, 0.0);
+
+        assert!(!state.keyboard_modifiers.command());
+
+        let event = modifiers_changed_event(iced::keyboard::Modifiers::COMMAND);
+        let action = program.update(&mut state, &event, bounds, cursor);
+        let (_msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Ignored);
+        assert!(state.keyboard_modifiers.command());
+    }
+
+    // =====================================================================
+    // Scroll wheel tests
+    // =====================================================================
+
+    fn scroll_event(delta_y: f32) -> canvas::Event {
+        canvas::Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: delta_y },
+        })
+    }
+
+    #[test]
+    fn ctrl_scroll_up_publishes_zoom_in() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        state.keyboard_modifiers = iced::keyboard::Modifiers::COMMAND;
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(500.0, 500.0);
+
+        let action = program.update(&mut state, &scroll_event(1.0), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(matches!(msg, Some(Message::ZoomIn)));
+    }
+
+    #[test]
+    fn ctrl_scroll_down_publishes_zoom_out() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        state.keyboard_modifiers = iced::keyboard::Modifiers::COMMAND;
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(500.0, 500.0);
+
+        let action = program.update(&mut state, &scroll_event(-1.0), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(matches!(msg, Some(Message::ZoomOut)));
+    }
+
+    #[test]
+    fn bare_scroll_is_not_captured() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        // No modifiers set
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(500.0, 500.0);
+
+        let action = program.update(&mut state, &scroll_event(1.0), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Ignored);
+        assert!(msg.is_none());
     }
 }
