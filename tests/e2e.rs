@@ -109,22 +109,37 @@ fn page_navigation_with_document() {
     use std::path::PathBuf;
 
     let (mut app, _) = App::new();
+    let mut dims = HashMap::new();
+    dims.insert(1, (612.0, 792.0));
+    dims.insert(2, (612.0, 792.0));
+    dims.insert(3, (612.0, 792.0));
     app.document = Some(spe::app::DocumentState {
         source_path: PathBuf::from("/tmp/test.pdf"),
         save_path: None,
         page_count: 3,
         current_page: 1,
         page_images: HashMap::new(),
-        page_dimensions: HashMap::new(),
+        page_dimensions: dims,
         overlays: Vec::new(),
     });
     verify_view_renders(&app);
 
+    // NextPage scrolls; simulate the resulting CanvasScrolled
     let _ = app.update(Message::NextPage);
+    let dpi = spe::ui::canvas::effective_dpi(app.canvas.zoom);
+    let layout = spe::ui::canvas::page_layout(
+        &app.document.as_ref().unwrap().page_dimensions,
+        3,
+        app.canvas.zoom,
+        dpi,
+    );
+    let _ = app.update(Message::CanvasScrolled(layout.page_tops[1], 800.0));
     assert_eq!(app.document.as_ref().unwrap().current_page, 2);
     verify_view_renders(&app);
 
+    // PreviousPage scrolls back
     let _ = app.update(Message::PreviousPage);
+    let _ = app.update(Message::CanvasScrolled(layout.page_tops[0], 800.0));
     assert_eq!(app.document.as_ref().unwrap().current_page, 1);
     verify_view_renders(&app);
 }
@@ -268,15 +283,27 @@ fn page_navigation_with_rendered_pages() {
     app.document = Some(doc);
     verify_view_renders(&app);
 
+    // NextPage scrolls; simulate CanvasScrolled to update current_page
+    let dpi = spe::ui::canvas::effective_dpi(app.canvas.zoom);
+    let layout = spe::ui::canvas::page_layout(
+        &app.document.as_ref().unwrap().page_dimensions,
+        3,
+        app.canvas.zoom,
+        dpi,
+    );
+
     let _ = app.update(Message::NextPage);
+    let _ = app.update(Message::CanvasScrolled(layout.page_tops[1], 800.0));
     assert_eq!(app.document.as_ref().unwrap().current_page, 2);
     verify_view_renders(&app);
 
     let _ = app.update(Message::NextPage);
+    let _ = app.update(Message::CanvasScrolled(layout.page_tops[2], 800.0));
     assert_eq!(app.document.as_ref().unwrap().current_page, 3);
     verify_view_renders(&app);
 
     let _ = app.update(Message::PreviousPage);
+    let _ = app.update(Message::CanvasScrolled(layout.page_tops[1], 800.0));
     assert_eq!(app.document.as_ref().unwrap().current_page, 2);
     verify_view_renders(&app);
 }
