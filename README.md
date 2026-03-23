@@ -10,7 +10,6 @@ Built with Rust and Iced, optimized for Cosmic Desktop on Wayland.
 |------|---------|----------------|---------|
 | Rust | 1.88+ | `pacman -S rust` | Build toolchain |
 | pdftoppm | any | `pacman -S poppler` | PDF page rendering |
-| fc-list | any | `pacman -S fontconfig` | System font discovery |
 
 ## Quick Start
 
@@ -21,31 +20,70 @@ cargo build
 cargo run
 ```
 
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| Ctrl+O | Open file |
+| Ctrl+S | Save |
+| Ctrl+Shift+S | Save as |
+| Ctrl+Z | Undo |
+| Ctrl+Shift+Z | Redo |
+| Ctrl+Plus | Zoom in |
+| Ctrl+Minus | Zoom out |
+| Delete | Delete selected overlay |
+| Escape | Deselect overlay |
+| Page Up / Page Down | Previous / next page |
+| F9 | Toggle thumbnail sidebar |
+
 ## Development
 
 ```bash
-cargo fmt --check       # check formatting
+cargo fmt --check            # check formatting
 cargo clippy -- -D warnings  # lint
-cargo test              # unit tests
-cargo test -- --ignored # integration tests (requires pdftoppm, fc-list)
+cargo test                   # unit + integration tests
+cargo test -- --ignored      # E2E tests (requires GPU context)
 ```
 
-Pre-commit hooks run fmt, clippy, and tests automatically.
+Pre-commit hooks run secrets scanning, fmt, clippy, and tests automatically.
 
 ## Project Structure
 
 ```
 src/
-├── main.rs         # entry point
-├── app.rs          # Iced application state and messages
-├── overlay.rs      # text overlay data model
-├── fonts.rs        # fc-list wrapper for font discovery
+├── main.rs           # entry point — launches Iced application
+├── app.rs            # App struct, Message enum, update/view/subscription
+├── command.rs        # undo/redo Command enum with apply/reverse
+├── config.rs         # AppConfig with overlay color, font/size defaults
+├── coordinate.rs     # screen <-> PDF coordinate conversion, AFM width tables
+├── overlay.rs        # TextOverlay, PdfPosition, Standard14Font
 ├── pdf/
-│   ├── renderer.rs # pdftoppm wrapper for page rendering
-│   └── writer.rs   # lopdf wrapper for text overlay writing
+│   ├── mod.rs        # page_dimensions() helper
+│   ├── renderer.rs   # pdftoppm wrapper for page rendering
+│   └── writer.rs     # lopdf wrapper for text overlay writing
 └── ui/
-    ├── canvas.rs   # PDF page display with click-to-place
-    └── toolbar.rs  # font family and size controls
+    ├── canvas.rs     # canvas state, hit testing, zoom helpers
+    ├── icons.rs      # Phosphor icon font constants and loading
+    ├── sidebar.rs    # thumbnail sidebar state and helpers
+    └── toolbar.rs    # toolbar view with font picker, zoom, page nav
+assets/
+└── phosphor-subset.ttf  # subsetted Phosphor Icons (~12 glyphs, 3KB)
+tests/
+├── e2e.rs            # E2E tests with iced_test Simulator
+├── pdf_rendering.rs  # integration tests for pdftoppm rendering
+└── pdf_writing.rs    # integration tests for PDF overlay writing
+```
+
+## Phosphor Icon Font (contributors only)
+
+The subsetted font is already committed — you do **not** need these tools to build or run the app. This section is only for regenerating the subset after changing which icons are included:
+
+```bash
+pip install fonttools  # or: pipx install fonttools
+pyftsubset Phosphor.ttf \
+  --unicodes="U+E036,U+E038,U+E08A,U+E138,U+E13A,U+E248,U+E256,U+E30C,U+E30E,U+E310,U+EAB6,U+E4A6" \
+  --output-file=assets/phosphor-subset.ttf \
+  --no-hinting --desubroutinize
 ```
 
 ## Architecture Decisions
@@ -55,4 +93,6 @@ Recorded in `docs/adr/`. Key decisions:
 - **Rust** for zero-overhead performance and native Iced integration
 - **Iced 0.14** as the GUI framework (Cosmic Desktop's native toolkit)
 - **pdftoppm** for PDF rendering, **lopdf** for writing text into existing PDFs
+- **Standard 14 PDF fonts** only (no system font embedding in v1)
+- **Command pattern** for unlimited undo/redo
 - **Trait-based wrappers** around system utilities for testability
