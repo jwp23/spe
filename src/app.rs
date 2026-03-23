@@ -68,6 +68,7 @@ pub enum Message {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    ZoomFitWidth,
     ZoomDebounceExpired(u64),
 
     // Sidebar
@@ -324,6 +325,20 @@ impl App {
                 self.canvas.zoom = 1.0;
                 return self.apply_zoom_change();
             }
+            Message::ZoomFitWidth => {
+                if let (Some(doc), Some(win)) = (&self.document, self.window_size)
+                    && let Some(&(page_w, _)) = doc.page_dimensions.get(&doc.current_page)
+                {
+                    let sidebar_w = if self.sidebar.visible {
+                        crate::ui::sidebar::SIDEBAR_WIDTH
+                    } else {
+                        0.0
+                    };
+                    let available_w = (win.width - sidebar_w - 16.0).max(1.0);
+                    self.canvas.zoom = canvas::fit_to_width_zoom(page_w, available_w);
+                    return self.apply_zoom_change();
+                }
+            }
             Message::ZoomDebounceExpired(generation) => {
                 if generation == self.canvas.zoom_generation {
                     // Clear all cached images so pages get fresh renders at
@@ -512,6 +527,7 @@ impl App {
             toolbar::Message::ZoomIn => return self.update(Message::ZoomIn),
             toolbar::Message::ZoomOut => return self.update(Message::ZoomOut),
             toolbar::Message::ZoomReset => return self.update(Message::ZoomReset),
+            toolbar::Message::ZoomFitWidth => return self.update(Message::ZoomFitWidth),
             toolbar::Message::PreviousPage => return self.update(Message::PreviousPage),
             toolbar::Message::NextPage => return self.update(Message::NextPage),
             toolbar::Message::PageInput(input) => {
@@ -727,6 +743,7 @@ fn key_to_message(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<
                 ("z", true, true) | ("Z", true, _) => Some(Message::Redo),
                 ("+" | "=", true, _) => Some(Message::ZoomIn),
                 ("-", true, false) => Some(Message::ZoomOut),
+                ("0", true, false) => Some(Message::ZoomFitWidth),
                 _ => None,
             }
         }
@@ -1208,6 +1225,69 @@ mod tests {
             iced::Length::Fixed(fw) => assert!(fw > 3000.0),
             other => panic!("Expected Fixed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn zoom_fit_width_sets_correct_zoom() {
+        let mut app = test_app_with_document();
+        app.document
+            .as_mut()
+            .unwrap()
+            .page_dimensions
+            .insert(1, (612.0, 792.0));
+        app.window_size = Some(iced::Size::new(1000.0, 800.0));
+        app.sidebar.visible = false;
+        let _ = app.update(Message::ZoomFitWidth);
+        let expected = canvas::fit_to_width_zoom(612.0, 1000.0 - 16.0);
+        assert!(
+            (app.canvas.zoom - expected).abs() < 0.01,
+            "zoom was {} expected {}",
+            app.canvas.zoom,
+            expected
+        );
+    }
+
+    #[test]
+    fn zoom_fit_width_noop_without_document() {
+        let (mut app, _) = App::new();
+        app.window_size = Some(iced::Size::new(1000.0, 800.0));
+        let _ = app.update(Message::ZoomFitWidth);
+        assert!((app.canvas.zoom - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn zoom_fit_width_noop_without_window_size() {
+        let mut app = test_app_with_document();
+        app.document
+            .as_mut()
+            .unwrap()
+            .page_dimensions
+            .insert(1, (612.0, 792.0));
+        let _ = app.update(Message::ZoomFitWidth);
+        assert!((app.canvas.zoom - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn ctrl_zero_maps_to_zoom_fit_width() {
+        let msg = key_to_message(
+            keyboard::Key::Character("0".into()),
+            keyboard::Modifiers::COMMAND,
+        );
+        assert!(matches!(msg, Some(Message::ZoomFitWidth)));
+    }
+
+    #[test]
+    fn zoom_fit_width_increments_generation() {
+        let mut app = test_app_with_document();
+        app.document
+            .as_mut()
+            .unwrap()
+            .page_dimensions
+            .insert(1, (612.0, 792.0));
+        app.window_size = Some(iced::Size::new(1000.0, 800.0));
+        let gen_before = app.canvas.zoom_generation;
+        let _ = app.update(Message::ZoomFitWidth);
+        assert!(app.canvas.zoom_generation > gen_before);
     }
 
     #[test]

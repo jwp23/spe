@@ -38,6 +38,7 @@ pub enum Message {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    ZoomFitWidth,
     PreviousPage,
     NextPage,
     PageInput(String),
@@ -124,7 +125,7 @@ pub fn toolbar_view<'a>(state: &ToolbarState, ctx: &ToolbarContext) -> iced::Ele
         ),
         text(format!("{zoom_percent}%")).size(14),
         icon_button(icons::MAGNIFYING_GLASS_PLUS, Message::ZoomIn, has_document),
-        icon_button(icons::MAGNIFYING_GLASS, Message::ZoomReset, has_document),
+        icon_button(icons::MAGNIFYING_GLASS, Message::ZoomFitWidth, has_document,),
     ]
     .spacing(2)
     .align_y(iced::Alignment::Center);
