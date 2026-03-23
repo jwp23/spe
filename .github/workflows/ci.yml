@@ -40,3 +40,26 @@ jobs:
 
       - name: Run integration tests
         run: cargo test -- --ignored
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check licenses and advisories
+        uses: EmbarkStudios/cargo-deny-action@v2
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          output-file: spe-sbom.cdx.json
+          artifact-name: sbom-cyclonedx
+
+      - name: Scan SBOM for vulnerabilities
+        uses: anchore/scan-action@v7
+        with:
+          sbom: spe-sbom.cdx.json
+          fail-build: true
+          severity-cutoff: critical
+          output-format: table
