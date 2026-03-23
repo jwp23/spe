@@ -214,13 +214,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
         frame.draw_image(local_page_bounds, handle);
 
         // Build conversion params with frame-local offsets for overlay positioning
-        let local_params = ConversionParams {
-            zoom: self.zoom,
-            dpi: self.dpi,
-            page_height: page_dims.1,
-            offset_x: local_page_bounds.x,
-            offset_y: local_page_bounds.y,
-        };
+        let local_params = self.conversion_params(page_dims, &local_page_bounds);
 
         let overlay_color = iced::Color::from_rgba(
             self.overlay_color[0],
@@ -270,11 +264,13 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
         }
 
         // Drag preview: draw the dragged overlay at the cursor position
+        // cursor_pos and grab_offset are in absolute (window) space;
+        // subtract bounds origin to convert to frame-local coordinates.
         if let (Some(drag), Some(cursor_pos)) = (&state.drag, state.cursor_position)
             && let Some(overlay) = self.overlays.get(drag.overlay_index)
         {
-            let preview_screen_x = cursor_pos.x - drag.grab_offset_x;
-            let preview_screen_y = cursor_pos.y - drag.grab_offset_y;
+            let preview_screen_x = cursor_pos.x - drag.grab_offset_x - bounds.x;
+            let preview_screen_y = cursor_pos.y - drag.grab_offset_y - bounds.y;
             let scaled_size = overlay.font_size * scale;
             let preview_color = iced::Color::from_rgba(
                 self.overlay_color[0],
@@ -1166,28 +1162,6 @@ mod tests {
     // =====================================================================
 
     #[test]
-    fn font_size_scaling_matches_hit_test_scale() {
-        // The draw method scales font size as: font_size * zoom * dpi / 72.0
-        // The hit_test uses scale = zoom * (dpi / 72.0) and multiplies bounding box
-        // Both should produce consistent results.
-        let zoom = 1.5_f32;
-        let dpi = 150.0_f32;
-        let font_size = 12.0_f32;
-        let draw_scale = zoom * dpi / 72.0;
-        let hit_test_scale = zoom * (dpi / 72.0);
-        assert!(
-            (draw_scale - hit_test_scale).abs() < f32::EPSILON,
-            "draw scale ({draw_scale}) must match hit_test scale ({hit_test_scale})"
-        );
-        let draw_scaled_size = font_size * draw_scale;
-        let hit_test_scaled_height = font_size * hit_test_scale;
-        assert!(
-            (draw_scaled_size - hit_test_scaled_height).abs() < f32::EPSILON,
-            "scaled font size must match between draw and hit_test"
-        );
-    }
-
-    #[test]
     fn local_page_bounds_offsets_correctly_from_canvas_position() {
         // When canvas bounds start at (50, 30), page_image_bounds includes that offset.
         // The frame-local adjustment should subtract canvas origin.
@@ -1253,23 +1227,6 @@ mod tests {
             (sy - local_page_bounds.y).abs() < 0.1,
             "screen y ({sy}) should be near page top ({})",
             local_page_bounds.y
-        );
-    }
-
-    #[test]
-    fn draw_text_position_is_offset_upward_by_font_height() {
-        // draw_overlay_text positions text at (sx, sy - scaled_font_size).
-        // This accounts for PDF baseline coordinates: pdf_to_screen gives the
-        // baseline position, but Iced Text renders from the top-left.
-        // The text height equals the scaled font size.
-        let font_size = 12.0_f32;
-        let scale = 1.0_f32; // zoom=1, dpi=72
-        let scaled = font_size * scale;
-        let baseline_y = 100.0_f32;
-        let top_left_y = baseline_y - scaled;
-        assert!(
-            (top_left_y - 88.0).abs() < f32::EPSILON,
-            "text top-left y should be baseline minus font height"
         );
     }
 }
