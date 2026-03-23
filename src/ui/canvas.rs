@@ -857,6 +857,24 @@ mod tests {
     }
 
     #[test]
+    fn zoom_in_from_continuous_value() {
+        // From a fit-to-width zoom of 0.885, zoom_in should jump to 1.0
+        assert!((zoom_in(0.885) - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn zoom_out_from_continuous_value() {
+        // From a fit-to-width zoom of 0.885, zoom_out should jump to 0.75
+        assert!((zoom_out(0.885) - 0.75).abs() < 0.01);
+    }
+
+    #[test]
+    fn zoom_percent_continuous_value() {
+        // 0.885 → 89%
+        assert_eq!(zoom_percent(0.885), 89);
+    }
+
+    #[test]
     fn zoom_percent_at_default() {
         assert_eq!(zoom_percent(1.0), 100);
     }
