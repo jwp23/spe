@@ -84,6 +84,7 @@ pub enum Message {
 
     // Sidebar
     ToggleSidebar,
+    SidebarDragStart(f32),
     ThumbnailBatchRendered(Vec<(u32, Handle)>, u64),
     SidebarScrolled(f32, f32),
     SidebarResized(f32),
@@ -390,11 +391,62 @@ impl App {
                 self.sidebar.viewport_height = viewport_height;
                 return self.render_visible_thumbnails();
             }
-            Message::SidebarResized(new_width) => {
+            Message::SidebarDragStart(_) => {
+                self.sidebar.dragging = true;
+                self.sidebar.drag_start_x = 0.0;
+                self.sidebar.drag_start_width = self.sidebar.width;
+            }
+            Message::SidebarResized(cursor_x) => {
+                if !self.sidebar.dragging {
+                    return iced::Task::none();
+                }
+                if self.sidebar.drag_start_x == 0.0 {
+                    // First move: capture start X position
+                    self.sidebar.drag_start_x = cursor_x;
+                    return iced::Task::none();
+                }
+                let new_width =
+                    self.sidebar.drag_start_width + (cursor_x - self.sidebar.drag_start_x);
                 self.sidebar.width = new_width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
             }
-            Message::SidebarResizeEnd => {}
-            Message::SidebarResizeDebounceExpired(_generation) => {}
+            Message::SidebarResizeEnd => {
+                if !self.sidebar.dragging {
+                    return iced::Task::none();
+                }
+                self.sidebar.dragging = false;
+                self.sidebar.backfill_generation += 1;
+                let generation = self.sidebar.backfill_generation;
+                return iced::Task::perform(
+                    async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        generation
+                    },
+                    Message::SidebarResizeDebounceExpired,
+                );
+            }
+            Message::SidebarResizeDebounceExpired(generation) => {
+                if generation == self.sidebar.backfill_generation {
+                    let max_page_w = self
+                        .document
+                        .as_ref()
+                        .map(|d| {
+                            d.page_dimensions
+                                .values()
+                                .map(|(w, _)| *w)
+                                .fold(0.0f32, f32::max)
+                        })
+                        .unwrap_or(612.0);
+                    let scale_factor = 1.0;
+                    self.sidebar.thumbnail_dpi = crate::ui::sidebar::compute_thumbnail_dpi(
+                        self.sidebar.width,
+                        scale_factor,
+                        max_page_w,
+                    );
+                    self.sidebar.thumbnails.clear();
+                    self.sidebar.active_batch_tasks = 0;
+                    return self.render_visible_thumbnails();
+                }
+            }
             Message::SidebarPageClicked(page) => {
                 return self.update(Message::GoToPage(page));
             }
@@ -494,7 +546,26 @@ impl App {
                     &doc.overlays,
                     self.config.overlay_color,
                 );
-                iced::widget::row![sidebar, scrollable_canvas].into()
+
+                let handle_strip = iced::widget::container(
+                    iced::widget::Space::new()
+                        .width(4)
+                        .height(iced::Length::Fill),
+                )
+                .style(|_theme| iced::widget::container::Style {
+                    background: Some(iced::Background::Color(iced::Color::from_rgb(
+                        0.2, 0.2, 0.3,
+                    ))),
+                    ..Default::default()
+                })
+                .width(4)
+                .height(iced::Length::Fill);
+
+                let handle = iced::widget::mouse_area(handle_strip)
+                    .on_press(Message::SidebarDragStart(0.0))
+                    .interaction(iced::mouse::Interaction::ResizingHorizontally);
+
+                iced::widget::row![sidebar, handle, scrollable_canvas].into()
             } else {
                 scrollable_canvas
             }
@@ -548,6 +619,21 @@ impl App {
                     iced::window::Event::Opened { size, .. } => Some(Message::WindowResized(*size)),
                     _ => None,
                 };
+            }
+            // Mouse move/release events are always forwarded (regardless of
+            // capture status) so the drag handler in update() can track them.
+            // The handler guards on self.sidebar.dragging and ignores events
+            // when no drag is active.
+            if let iced::Event::Mouse(ref mouse_event) = event {
+                match mouse_event {
+                    iced::mouse::Event::CursorMoved { position } => {
+                        return Some(Message::SidebarResized(position.x));
+                    }
+                    iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left) => {
+                        return Some(Message::SidebarResizeEnd);
+                    }
+                    _ => {}
+                }
             }
             if status == iced::event::Status::Captured {
                 return None;
@@ -1719,6 +1805,135 @@ mod tests {
         assert_eq!(app.sidebar.active_batch_tasks, 1);
         // Page must not be inserted for stale generation.
         assert!(!app.sidebar.thumbnails.contains_key(&1));
+    }
+
+    #[test]
+    fn sidebar_drag_start_sets_dragging_state() {
+        let mut app = test_app_with_document();
+        app.sidebar.width = 150.0;
+        let _ = app.update(Message::SidebarDragStart(200.0));
+        assert!(app.sidebar.dragging);
+        assert!((app.sidebar.drag_start_width - 150.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_drag_start_ignores_x_from_message() {
+        // mouse_area on_press doesn't pass position, so SidebarDragStart(0.0)
+        // is always sent. The actual start X is captured from the first move.
+        let mut app = test_app_with_document();
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        assert!(app.sidebar.dragging);
+        assert!((app.sidebar.drag_start_x - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_resized_ignored_when_not_dragging() {
+        let mut app = test_app_with_document();
+        app.sidebar.width = 150.0;
+        app.sidebar.dragging = false;
+        let _ = app.update(Message::SidebarResized(300.0));
+        // Width should not change when not dragging
+        assert!((app.sidebar.width - 150.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_resized_captures_start_x_on_first_move() {
+        let mut app = test_app_with_document();
+        app.sidebar.width = 150.0;
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        // First move captures start X
+        let _ = app.update(Message::SidebarResized(200.0));
+        assert!((app.sidebar.drag_start_x - 200.0).abs() < f32::EPSILON);
+        // Width should not change on first move (just capturing start position)
+        assert!((app.sidebar.width - 150.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_resized_tracks_drag_delta() {
+        let mut app = test_app_with_document();
+        app.sidebar.width = 150.0;
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        // First move captures start X at 200
+        let _ = app.update(Message::SidebarResized(200.0));
+        // Second move: delta = 250 - 200 = 50, new width = 150 + 50 = 200
+        let _ = app.update(Message::SidebarResized(250.0));
+        assert!((app.sidebar.width - 200.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_resized_clamps_to_min_width() {
+        let mut app = test_app_with_document();
+        app.sidebar.width = 150.0;
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        let _ = app.update(Message::SidebarResized(200.0)); // capture start X
+        // Drag far left: delta = 0 - 200 = -200, new width = 150 - 200 = -50 → clamped to 80
+        let _ = app.update(Message::SidebarResized(0.0));
+        assert!((app.sidebar.width - MIN_SIDEBAR_WIDTH).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_resized_clamps_to_max_width() {
+        let mut app = test_app_with_document();
+        app.sidebar.width = 150.0;
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        let _ = app.update(Message::SidebarResized(200.0)); // capture start X
+        // Drag far right: delta = 900 - 200 = 700, new width = 150 + 700 = 850 → clamped to 400
+        let _ = app.update(Message::SidebarResized(900.0));
+        assert!((app.sidebar.width - MAX_SIDEBAR_WIDTH).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_resize_end_clears_dragging() {
+        let mut app = test_app_with_document();
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        assert!(app.sidebar.dragging);
+        let _ = app.update(Message::SidebarResizeEnd);
+        assert!(!app.sidebar.dragging);
+    }
+
+    #[test]
+    fn sidebar_resize_end_increments_backfill_generation() {
+        let mut app = test_app_with_document();
+        let gen_before = app.sidebar.backfill_generation;
+        let _ = app.update(Message::SidebarDragStart(0.0));
+        let _ = app.update(Message::SidebarResizeEnd);
+        assert_eq!(app.sidebar.backfill_generation, gen_before + 1);
+    }
+
+    #[test]
+    fn sidebar_resize_end_ignored_when_not_dragging() {
+        let mut app = test_app_with_document();
+        let gen_before = app.sidebar.backfill_generation;
+        let _ = app.update(Message::SidebarResizeEnd);
+        // Generation should not change when not dragging
+        assert_eq!(app.sidebar.backfill_generation, gen_before);
+    }
+
+    #[test]
+    fn sidebar_resize_debounce_expired_recomputes_dpi() {
+        let mut app = test_app_with_document();
+        let doc = app.document.as_mut().unwrap();
+        doc.page_dimensions.insert(1, (612.0, 792.0));
+        app.sidebar.visible = true;
+        app.sidebar.width = 200.0;
+        app.sidebar.backfill_generation = 5;
+        app.sidebar.thumbnail_dpi = 99.0; // will be recalculated
+        let _ = app.update(Message::SidebarResizeDebounceExpired(5));
+        // DPI should be recomputed based on new width
+        let expected_dpi = crate::ui::sidebar::compute_thumbnail_dpi(200.0, 1.0, 612.0);
+        assert!((app.sidebar.thumbnail_dpi - expected_dpi).abs() < 0.1);
+        // Thumbnails should be cleared for re-render
+        assert!(app.sidebar.thumbnails.is_empty());
+    }
+
+    #[test]
+    fn sidebar_resize_debounce_expired_stale_generation_is_noop() {
+        let mut app = test_app_with_document();
+        app.sidebar.backfill_generation = 5;
+        app.sidebar.thumbnail_dpi = 99.0;
+        let _ = app.update(Message::SidebarResizeDebounceExpired(3)); // stale
+        // DPI should not change
+        assert!((app.sidebar.thumbnail_dpi - 99.0).abs() < f32::EPSILON);
     }
 
     #[test]

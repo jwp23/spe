@@ -31,6 +31,10 @@ pub struct SidebarState {
     pub shimmer_phase: f32,
     /// Number of thumbnail batch tasks currently in flight.
     pub active_batch_tasks: u32,
+    /// Mouse X position when resize drag started.
+    pub drag_start_x: f32,
+    /// Sidebar width when resize drag started.
+    pub drag_start_width: f32,
 }
 
 impl Default for SidebarState {
@@ -46,6 +50,8 @@ impl Default for SidebarState {
             backfill_generation: 0,
             shimmer_phase: 0.0,
             active_batch_tasks: 0,
+            drag_start_x: 0.0,
+            drag_start_width: 0.0,
         }
     }
 }
@@ -470,6 +476,13 @@ mod tests {
     fn sidebar_default_active_batch_tasks_is_zero() {
         let state = SidebarState::default();
         assert_eq!(state.active_batch_tasks, 0);
+    }
+
+    #[test]
+    fn sidebar_default_drag_start_fields() {
+        let state = SidebarState::default();
+        assert!((state.drag_start_x - 0.0).abs() < f32::EPSILON);
+        assert!((state.drag_start_width - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
