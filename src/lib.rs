@@ -1,4 +1,5 @@
 pub mod app;
+pub mod config;
 pub mod overlay;
 pub mod pdf;
 pub mod ui;
