@@ -67,6 +67,29 @@ pub fn visible_pages(
     start..=end
 }
 
+/// Horizontal padding subtracted from sidebar width when computing thumbnail render DPI.
+const THUMBNAIL_PADDING: f32 = 16.0;
+
+/// Compute the DPI at which thumbnails should be rendered so they fill the
+/// usable sidebar width at the given display scale factor.
+///
+/// - `sidebar_width`: full sidebar width in logical pixels
+/// - `scale_factor`: HiDPI multiplier (1.0 for standard, 2.0 for HiDPI)
+/// - `max_page_width_pts`: widest page in the document, in PDF points
+pub fn compute_thumbnail_dpi(
+    sidebar_width: f32,
+    scale_factor: f32,
+    max_page_width_pts: f32,
+) -> f32 {
+    let usable_width = (sidebar_width - THUMBNAIL_PADDING).max(1.0);
+    let page_width_inches = if max_page_width_pts > 0.0 {
+        max_page_width_pts / 72.0
+    } else {
+        8.5 // fallback to US Letter width
+    };
+    ((usable_width * scale_factor) / page_width_inches).max(1.0)
+}
+
 /// Compute the thumbnail height for a page, maintaining aspect ratio
 /// within the given sidebar width.
 pub fn thumbnail_height(page_width: f32, page_height: f32, sidebar_width: f32) -> f32 {
@@ -146,6 +169,37 @@ mod tests {
     #[test]
     fn sidebar_width_constant() {
         assert!((DEFAULT_SIDEBAR_WIDTH - 120.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn compute_thumbnail_dpi_standard_letter() {
+        // US Letter 8.5" wide, sidebar width, 1x scale
+        // usable_width = sidebar_width - THUMBNAIL_PADDING
+        // DPI = (usable_width * scale) / (page_width_pts / 72)
+        let dpi = compute_thumbnail_dpi(120.0, 1.0, 612.0);
+        // usable = 120 - 16 = 104, page_inches = 612/72 = 8.5
+        // dpi = 104 / 8.5 ≈ 12.24
+        assert!((dpi - 12.24).abs() < 0.1);
+    }
+
+    #[test]
+    fn compute_thumbnail_dpi_hidpi() {
+        let dpi = compute_thumbnail_dpi(120.0, 2.0, 612.0);
+        // usable = 104, dpi = (104 * 2) / 8.5 ≈ 24.47
+        assert!((dpi - 24.47).abs() < 0.1);
+    }
+
+    #[test]
+    fn compute_thumbnail_dpi_wider_sidebar() {
+        let dpi = compute_thumbnail_dpi(200.0, 1.0, 612.0);
+        // usable = 200 - 16 = 184, dpi = 184 / 8.5 ≈ 21.65
+        assert!((dpi - 21.65).abs() < 0.1);
+    }
+
+    #[test]
+    fn compute_thumbnail_dpi_zero_page_width_returns_minimum() {
+        let dpi = compute_thumbnail_dpi(120.0, 1.0, 0.0);
+        assert!(dpi > 0.0);
     }
 
     #[test]
