@@ -3,12 +3,13 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use image::DynamicImage;
 use tempfile::TempDir;
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum RendererError {
     #[error("pdftoppm not found. Install with: sudo pacman -S poppler")]
     NotInstalled,
@@ -32,6 +33,26 @@ pub trait PageRenderer {
         page: u32,
         dpi: u32,
     ) -> Result<DynamicImage, RendererError>;
+}
+
+/// Cached result of probing for pdftoppm availability.
+static PDFTOPPM_PROBE: OnceLock<Result<(), RendererError>> = OnceLock::new();
+
+fn probe_pdftoppm() -> Result<(), RendererError> {
+    PDFTOPPM_PROBE
+        .get_or_init(|| {
+            let probe = Command::new("pdftoppm").arg("-v").output();
+            match probe {
+                Err(e) if e.kind() == ErrorKind::NotFound => Err(RendererError::NotInstalled),
+                Err(e) => Err(RendererError::RenderFailed {
+                    page: 0,
+                    path: PathBuf::new(),
+                    detail: format!("failed to probe pdftoppm: {e}"),
+                }),
+                Ok(_) => Ok(()),
+            }
+        })
+        .clone()
 }
 
 /// Renders PDF pages by invoking the system `pdftoppm` utility.
@@ -98,9 +119,9 @@ impl PdftoppmRenderer {
         Ok(results)
     }
 
-    /// Probes for `pdftoppm`, creates a temp directory, invokes `pdftoppm` for the
-    /// given page range, and checks the exit status. Returns the live `TempDir` so
-    /// the caller can read the output files before they are deleted.
+    /// Creates a temp directory, invokes `pdftoppm` for the given page range,
+    /// and checks the exit status. Returns the live `TempDir` so the caller
+    /// can read the output files before they are deleted.
     fn invoke_pdftoppm(
         &self,
         pdf_path: &Path,
@@ -108,18 +129,7 @@ impl PdftoppmRenderer {
         last_page: u32,
         dpi: u32,
     ) -> Result<TempDir, RendererError> {
-        let probe = Command::new("pdftoppm").arg("-v").output();
-        match probe {
-            Err(e) if e.kind() == ErrorKind::NotFound => return Err(RendererError::NotInstalled),
-            Err(e) => {
-                return Err(RendererError::RenderFailed {
-                    page: first_page,
-                    path: pdf_path.to_path_buf(),
-                    detail: format!("failed to probe pdftoppm: {e}"),
-                });
-            }
-            Ok(_) => {}
-        }
+        probe_pdftoppm()?;
 
         let tmp_dir = TempDir::new().map_err(|e| RendererError::RenderFailed {
             page: first_page,
@@ -274,5 +284,12 @@ mod tests {
         let result = renderer.render_page(Path::new("/any.pdf"), 1, 150);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), RendererError::NotInstalled));
+    }
+
+    #[test]
+    fn probe_cache_returns_consistent_results() {
+        let r1 = probe_pdftoppm();
+        let r2 = probe_pdftoppm();
+        assert_eq!(r1.is_ok(), r2.is_ok());
     }
 }
