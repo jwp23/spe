@@ -480,10 +480,14 @@ impl App {
                 .into();
 
             if self.sidebar.visible {
-                let sidebar: iced::Element<Message> =
-                    iced::widget::container(iced::widget::text("Sidebar"))
-                        .width(self.sidebar.width)
-                        .into();
+                let sidebar = crate::ui::sidebar::sidebar_view(
+                    &self.sidebar,
+                    doc.page_count,
+                    doc.current_page,
+                    &doc.page_dimensions,
+                    &doc.overlays,
+                    self.config.overlay_color,
+                );
                 iced::widget::row![sidebar, scrollable_canvas].into()
             } else {
                 scrollable_canvas

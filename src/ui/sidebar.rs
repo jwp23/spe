@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use iced::mouse;
 use iced::widget::canvas;
 use iced::widget::image::Handle;
+use iced::{Color, Element, Length};
 
 use crate::app::Message;
 use crate::overlay::TextOverlay;
@@ -210,6 +211,87 @@ impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
     }
 }
 
+/// Build the sidebar view: a scrollable column of page thumbnails with labels.
+///
+/// Each page is rendered as a button wrapping a thumbnail canvas and a centered
+/// page number. Clicking a thumbnail emits `Message::SidebarPageClicked`.
+/// Scrolling emits `Message::SidebarScrolled`.
+pub fn sidebar_view<'a>(
+    state: &'a SidebarState,
+    page_count: u32,
+    current_page: u32,
+    page_dimensions: &'a HashMap<u32, (f32, f32)>,
+    overlays: &'a [TextOverlay],
+    overlay_color: [f32; 4],
+) -> Element<'a, Message> {
+    use iced::widget::{button, canvas as canvas_widget, column, container, scrollable, text};
+
+    let overlay_color = Color::from_rgba(
+        overlay_color[0],
+        overlay_color[1],
+        overlay_color[2],
+        overlay_color[3],
+    );
+
+    if page_count == 0 {
+        return container(text("No document"))
+            .width(state.width)
+            .center_x(Length::Fill)
+            .into();
+    }
+
+    let thumb_width = (state.width - THUMBNAIL_PADDING).max(1.0);
+
+    let mut col = column![];
+    for page in 1..=page_count {
+        let (pw, ph) = page_dimensions
+            .get(&page)
+            .copied()
+            .unwrap_or((612.0, 792.0));
+        let thumb_h = thumbnail_height(pw, ph, thumb_width);
+
+        let program = ThumbnailProgram {
+            page,
+            thumbnail: state.thumbnails.get(&page),
+            is_current_page: page == current_page,
+            overlays,
+            page_width: pw,
+            page_height: ph,
+            thumbnail_dpi: state.thumbnail_dpi,
+            overlay_color,
+        };
+
+        let thumb_canvas: Element<'a, Message> = canvas_widget(program)
+            .width(Length::Fixed(thumb_width))
+            .height(Length::Fixed(thumb_h))
+            .into();
+
+        let label = text(format!("{page}")).size(10).center();
+
+        let thumb_col = column![thumb_canvas, label].align_x(iced::Alignment::Center);
+
+        let page_num = page;
+        let thumb_button = button(thumb_col)
+            .on_press(Message::SidebarPageClicked(page_num))
+            .style(|_theme, _status| button::Style::default())
+            .padding(0);
+
+        col = col.push(thumb_button);
+    }
+
+    let sidebar_scrollable = scrollable(col)
+        .direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::default(),
+        ))
+        .on_scroll(|viewport| {
+            Message::SidebarScrolled(viewport.absolute_offset().y, viewport.bounds().height)
+        })
+        .width(state.width)
+        .height(Length::Fill);
+
+    sidebar_scrollable.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,5 +432,21 @@ mod tests {
         assert!(!state.dragging);
         assert_eq!(state.backfill_generation, 0);
         assert!((state.shimmer_phase - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_view_exists_with_correct_signature() {
+        // Verify sidebar_view compiles with expected parameter types
+        let state = SidebarState::default();
+        let page_dimensions = HashMap::new();
+        let overlays: Vec<TextOverlay> = vec![];
+        let _: iced::Element<Message> = sidebar_view(
+            &state,
+            0,
+            1,
+            &page_dimensions,
+            &overlays,
+            [0.0, 0.0, 0.0, 1.0],
+        );
     }
 }
