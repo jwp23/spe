@@ -35,6 +35,7 @@ pub struct App {
     pub redo_stack: Vec<UndoCommand>,
     pub config: AppConfig,
     pub window_size: Option<iced::Size>,
+    pub scrollable_id: iced::widget::Id,
 }
 
 /// All messages the application can process.
@@ -54,7 +55,7 @@ pub enum Message {
     PageRendered(u32, Handle),
 
     // Overlay editing (undoable)
-    PlaceOverlay(PdfPosition),
+    PlaceOverlay { page: u32, position: PdfPosition },
     UpdateOverlayText(String),
     CommitText,
     MoveOverlay(usize, PdfPosition),
@@ -70,6 +71,7 @@ pub enum Message {
     ZoomReset,
     ZoomFitWidth,
     ZoomDebounceExpired(u64),
+    CanvasScrolled(f32, f32),
 
     // Sidebar
     ToggleSidebar,
@@ -100,6 +102,7 @@ impl App {
             redo_stack: Vec::new(),
             config: AppConfig::default(),
             window_size: None,
+            scrollable_id: iced::widget::Id::unique(),
         };
         let font_task = iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded);
         (app, font_task)
@@ -143,62 +146,41 @@ impl App {
                 self.handle_save_destination(path);
             }
 
-            // --- Page navigation ---
+            // --- Page navigation (scroll to target page) ---
             Message::NextPage => {
-                let new_page = if let Some(doc) = &mut self.document
+                if let Some(doc) = &self.document
                     && doc.current_page < doc.page_count
                 {
-                    doc.current_page += 1;
-                    self.toolbar.page_input = doc.current_page.to_string();
-                    Some(doc.current_page)
-                } else {
-                    None
-                };
-                if let Some(page) = new_page {
-                    return self.render_if_uncached(page);
+                    return self.scroll_to_page(doc.current_page + 1);
                 }
             }
             Message::PreviousPage => {
-                let new_page = if let Some(doc) = &mut self.document
+                if let Some(doc) = &self.document
                     && doc.current_page > 1
                 {
-                    doc.current_page -= 1;
-                    self.toolbar.page_input = doc.current_page.to_string();
-                    Some(doc.current_page)
-                } else {
-                    None
-                };
-                if let Some(page) = new_page {
-                    return self.render_if_uncached(page);
+                    return self.scroll_to_page(doc.current_page - 1);
                 }
             }
             Message::GoToPage(page) => {
-                let navigated = if let Some(doc) = &mut self.document
+                if let Some(doc) = &self.document
                     && page >= 1
                     && page <= doc.page_count
                 {
-                    doc.current_page = page;
-                    self.toolbar.page_input = page.to_string();
-                    true
-                } else {
-                    false
-                };
-                if navigated {
-                    return self.render_if_uncached(page);
+                    return self.scroll_to_page(page);
                 }
             }
             Message::PageRendered(page, handle) => {
                 if let Some(doc) = &mut self.document {
                     doc.page_images.insert(page, handle);
-                    return self.prerender_neighbors();
+                    return self.render_visible_pages();
                 }
             }
 
             // --- Overlay editing (undoable) ---
-            Message::PlaceOverlay(position) => {
+            Message::PlaceOverlay { page, position } => {
                 if let Some(doc) = &mut self.document {
                     let overlay = TextOverlay {
-                        page: doc.current_page,
+                        page,
                         position,
                         text: String::new(),
                         font: self.toolbar.font,
@@ -326,17 +308,22 @@ impl App {
                 return self.apply_zoom_change();
             }
             Message::ZoomFitWidth => {
-                if let (Some(doc), Some(win)) = (&self.document, self.window_size)
-                    && let Some(&(page_w, _)) = doc.page_dimensions.get(&doc.current_page)
-                {
-                    let sidebar_w = if self.sidebar.visible {
-                        crate::ui::sidebar::SIDEBAR_WIDTH
-                    } else {
-                        0.0
-                    };
-                    let available_w = (win.width - sidebar_w - 16.0).max(1.0);
-                    self.canvas.zoom = canvas::fit_to_width_zoom(page_w, available_w);
-                    return self.apply_zoom_change();
+                if let (Some(doc), Some(win)) = (&self.document, self.window_size) {
+                    let max_page_w = doc
+                        .page_dimensions
+                        .values()
+                        .map(|(w, _)| *w)
+                        .fold(0.0f32, f32::max);
+                    if max_page_w > 0.0 {
+                        let sidebar_w = if self.sidebar.visible {
+                            crate::ui::sidebar::SIDEBAR_WIDTH
+                        } else {
+                            0.0
+                        };
+                        let available_w = (win.width - sidebar_w - 16.0).max(1.0);
+                        self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
+                        return self.apply_zoom_change();
+                    }
                 }
             }
             Message::ZoomDebounceExpired(generation) => {
@@ -346,8 +333,27 @@ impl App {
                     if let Some(doc) = &mut self.document {
                         doc.page_images.clear();
                     }
-                    return self.render_current_page();
+                    return self.render_visible_pages();
                 }
+            }
+            Message::CanvasScrolled(scroll_y, viewport_height) => {
+                self.canvas.scroll_y = scroll_y;
+                self.canvas.viewport_height = viewport_height;
+                if let Some(doc) = &mut self.document {
+                    let dpi = canvas::effective_dpi(self.canvas.zoom);
+                    let layout = canvas::page_layout(
+                        &doc.page_dimensions,
+                        doc.page_count,
+                        self.canvas.zoom,
+                        dpi,
+                    );
+                    let page = canvas::dominant_page(&layout, scroll_y, viewport_height);
+                    if doc.current_page != page {
+                        doc.current_page = page;
+                        self.toolbar.page_input = page.to_string();
+                    }
+                }
+                return self.render_visible_pages();
             }
 
             // --- Sidebar ---
@@ -401,13 +407,20 @@ impl App {
         let toolbar = toolbar::toolbar_view(&self.toolbar, &toolbar_ctx).map(Message::Toolbar);
 
         let content: iced::Element<Message> = if let Some(doc) = &self.document {
+            let dpi = canvas::effective_dpi(self.canvas.zoom);
+            let layout =
+                canvas::page_layout(&doc.page_dimensions, doc.page_count, self.canvas.zoom, dpi);
+
             let program = PdfCanvasProgram {
-                page_image: doc.page_images.get(&doc.current_page),
-                page_dimensions: doc.page_dimensions.get(&doc.current_page).copied(),
+                page_images: &doc.page_images,
+                page_layout: layout,
+                page_dimensions: &doc.page_dimensions,
+                page_count: doc.page_count,
+                scroll_y: self.canvas.scroll_y,
+                viewport_height: self.canvas.viewport_height,
                 overlays: &doc.overlays,
-                current_page: doc.current_page,
                 zoom: self.canvas.zoom,
-                dpi: canvas::effective_dpi(self.canvas.zoom),
+                dpi,
                 active_overlay: self.canvas.active_overlay,
                 editing: self.canvas.editing,
                 overlay_color: self.config.overlay_color,
@@ -424,6 +437,10 @@ impl App {
                 .direction(iced::widget::scrollable::Direction::Both {
                     vertical: iced::widget::scrollable::Scrollbar::default(),
                     horizontal: iced::widget::scrollable::Scrollbar::default(),
+                })
+                .id(self.scrollable_id.clone())
+                .on_scroll(|viewport| {
+                    Message::CanvasScrolled(viewport.absolute_offset().y, viewport.bounds().height)
                 })
                 .width(iced::Length::Fill)
                 .height(iced::Length::Fill)
@@ -445,23 +462,20 @@ impl App {
         iced::widget::column![toolbar, content].into()
     }
 
-    /// Compute canvas widget dimensions: large enough for the rendered page
-    /// or the available viewport, whichever is bigger. This ensures centering
-    /// when the page is small and scrolling when the page is large.
+    /// Compute canvas widget dimensions for multi-page layout.
+    /// Width: max page width or viewport, whichever is larger.
+    /// Height: total layout height (all pages + gaps) or viewport, whichever is larger.
     fn canvas_dimensions(&self, doc: &DocumentState) -> (iced::Length, iced::Length) {
         const TOOLBAR_HEIGHT_ESTIMATE: f32 = 40.0;
         const SCROLLBAR_MARGIN: f32 = 16.0;
 
-        let page_dims = doc.page_dimensions.get(&doc.current_page).copied();
         let dpi = canvas::effective_dpi(self.canvas.zoom);
+        let layout =
+            canvas::page_layout(&doc.page_dimensions, doc.page_count, self.canvas.zoom, dpi);
 
-        let (rendered_w, rendered_h) = match page_dims {
-            Some((pw, ph)) => (
-                pw * self.canvas.zoom * dpi / 72.0,
-                ph * self.canvas.zoom * dpi / 72.0,
-            ),
-            None => return (iced::Length::Fill, iced::Length::Fill),
-        };
+        if layout.page_tops.is_empty() {
+            return (iced::Length::Fill, iced::Length::Fill);
+        }
 
         match self.window_size {
             Some(win) => {
@@ -474,8 +488,8 @@ impl App {
                 let available_h =
                     (win.height - TOOLBAR_HEIGHT_ESTIMATE - SCROLLBAR_MARGIN).max(1.0);
                 (
-                    iced::Length::Fixed(rendered_w.max(available_w)),
-                    iced::Length::Fixed(rendered_h.max(available_h)),
+                    iced::Length::Fixed(layout.max_width.max(available_w)),
+                    iced::Length::Fixed(layout.total_height.max(available_h)),
                 )
             }
             None => (iced::Length::Fill, iced::Length::Fill),
@@ -579,23 +593,29 @@ impl App {
                 self.canvas = CanvasState::default();
                 self.sidebar.thumbnails.clear();
                 self.toolbar.page_input = "1".to_string();
-                // Set initial zoom to fit page width in viewport
-                if let Some(win) = self.window_size
-                    && let Some(&(page_w, _)) = self
+                // Set initial zoom to fit widest page in viewport
+                if let Some(win) = self.window_size {
+                    let max_page_w = self
                         .document
                         .as_ref()
-                        .and_then(|d| d.page_dimensions.get(&1))
-                {
-                    let sidebar_w = if self.sidebar.visible {
-                        crate::ui::sidebar::SIDEBAR_WIDTH
-                    } else {
-                        0.0
-                    };
-                    let available_w = (win.width - sidebar_w - 16.0).max(1.0);
-                    self.canvas.zoom = canvas::fit_to_width_zoom(page_w, available_w);
+                        .map(|d| {
+                            d.page_dimensions
+                                .values()
+                                .map(|(w, _)| *w)
+                                .fold(0.0f32, f32::max)
+                        })
+                        .unwrap_or(0.0);
+                    if max_page_w > 0.0 {
+                        let sidebar_w = if self.sidebar.visible {
+                            crate::ui::sidebar::SIDEBAR_WIDTH
+                        } else {
+                            0.0
+                        };
+                        let available_w = (win.width - sidebar_w - 16.0).max(1.0);
+                        self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
+                    }
                 }
-                let dpi = canvas::effective_dpi(self.canvas.zoom) as u32;
-                render_page_task(path, 1, dpi)
+                self.render_visible_pages()
             }
             Err(e) => {
                 eprintln!("Failed to open PDF: {e}");
@@ -653,43 +673,50 @@ impl App {
         }
     }
 
-    /// Render the given page if it is not already cached.
-    fn render_if_uncached(&self, page: u32) -> iced::Task<Message> {
-        if let Some(doc) = &self.document
-            && !doc.page_images.contains_key(&page)
-        {
-            let dpi = canvas::effective_dpi(self.canvas.zoom) as u32;
-            render_page_task(doc.source_path.clone(), page, dpi)
-        } else {
-            iced::Task::none()
-        }
-    }
-
-    /// Pre-render neighbor pages (current ± 1) that are not already cached.
-    fn prerender_neighbors(&self) -> iced::Task<Message> {
+    /// Render all pages in the visible range (plus 1-page buffer) that are not cached.
+    fn render_visible_pages(&self) -> iced::Task<Message> {
         let Some(doc) = &self.document else {
             return iced::Task::none();
         };
-        let dpi = canvas::effective_dpi(self.canvas.zoom) as u32;
+        let dpi = canvas::effective_dpi(self.canvas.zoom);
+        let layout =
+            canvas::page_layout(&doc.page_dimensions, doc.page_count, self.canvas.zoom, dpi);
+        let (first, last) =
+            canvas::visible_pages(&layout, self.canvas.scroll_y, self.canvas.viewport_height);
+        // Expand by 1-page buffer on each side
+        let buffer_first = first.saturating_sub(1).max(1);
+        let buffer_last = (last + 1).min(doc.page_count);
+
+        let dpi_u32 = dpi as u32;
         let mut tasks = Vec::new();
-        let current = doc.current_page;
-        if current > 1 && !doc.page_images.contains_key(&(current - 1)) {
-            tasks.push(render_page_task(doc.source_path.clone(), current - 1, dpi));
-        }
-        if current < doc.page_count && !doc.page_images.contains_key(&(current + 1)) {
-            tasks.push(render_page_task(doc.source_path.clone(), current + 1, dpi));
+        for page in buffer_first..=buffer_last {
+            if !doc.page_images.contains_key(&page) {
+                tasks.push(render_page_task(doc.source_path.clone(), page, dpi_u32));
+            }
         }
         iced::Task::batch(tasks)
     }
 
-    /// Re-render the current page at the current zoom/DPI.
-    fn render_current_page(&self) -> iced::Task<Message> {
-        if let Some(doc) = &self.document {
-            let dpi = canvas::effective_dpi(self.canvas.zoom) as u32;
-            render_page_task(doc.source_path.clone(), doc.current_page, dpi)
+    /// Scroll to a specific page by computing its y-offset and using scroll_to.
+    fn scroll_to_page(&self, page: u32) -> iced::Task<Message> {
+        let Some(doc) = &self.document else {
+            return iced::Task::none();
+        };
+        let dpi = canvas::effective_dpi(self.canvas.zoom);
+        let layout =
+            canvas::page_layout(&doc.page_dimensions, doc.page_count, self.canvas.zoom, dpi);
+        let target_y = if (page as usize) <= layout.page_tops.len() {
+            layout.page_tops[(page - 1) as usize]
         } else {
-            iced::Task::none()
-        }
+            0.0
+        };
+        iced::widget::operation::scroll_to(
+            self.scrollable_id.clone(),
+            iced::widget::scrollable::AbsoluteOffset {
+                x: 0.0,
+                y: target_y,
+            },
+        )
     }
 
     /// Common post-zoom logic: increment generation and schedule a debounced
@@ -800,41 +827,27 @@ mod tests {
     }
 
     #[test]
-    fn next_page_increments() {
+    fn next_page_does_not_change_current_page_directly() {
+        // Page navigation now scrolls; current_page updates via CanvasScrolled
         let mut app = test_app_with_document();
         app.update(Message::NextPage);
-        assert_eq!(app.document.as_ref().unwrap().current_page, 2);
+        // current_page hasn't changed yet (scroll is async)
+        assert_eq!(app.document.as_ref().unwrap().current_page, 1);
     }
 
     #[test]
-    fn next_page_does_not_exceed_page_count() {
+    fn next_page_is_noop_at_last_page() {
         let mut app = test_app_with_document();
+        app.document.as_mut().unwrap().current_page = 3;
         app.update(Message::NextPage);
-        app.update(Message::NextPage);
-        app.update(Message::NextPage); // should stay at 3
         assert_eq!(app.document.as_ref().unwrap().current_page, 3);
     }
 
     #[test]
-    fn previous_page_decrements() {
-        let mut app = test_app_with_document();
-        app.update(Message::NextPage);
-        app.update(Message::PreviousPage);
-        assert_eq!(app.document.as_ref().unwrap().current_page, 1);
-    }
-
-    #[test]
-    fn previous_page_does_not_go_below_one() {
+    fn previous_page_is_noop_at_first_page() {
         let mut app = test_app_with_document();
         app.update(Message::PreviousPage);
         assert_eq!(app.document.as_ref().unwrap().current_page, 1);
-    }
-
-    #[test]
-    fn go_to_page_sets_current_page() {
-        let mut app = test_app_with_document();
-        app.update(Message::GoToPage(2));
-        assert_eq!(app.document.as_ref().unwrap().current_page, 2);
     }
 
     #[test]
@@ -845,9 +858,35 @@ mod tests {
     }
 
     #[test]
+    fn canvas_scrolled_updates_current_page() {
+        let mut app = test_app_with_document();
+        // Add page dimensions so layout can be computed
+        let doc = app.document.as_mut().unwrap();
+        doc.page_dimensions.insert(1, (612.0, 792.0));
+        doc.page_dimensions.insert(2, (612.0, 792.0));
+        doc.page_dimensions.insert(3, (612.0, 792.0));
+
+        // Scroll to a position where page 2 is dominant
+        let dpi = canvas::effective_dpi(app.canvas.zoom);
+        let layout = canvas::page_layout(
+            &app.document.as_ref().unwrap().page_dimensions,
+            3,
+            app.canvas.zoom,
+            dpi,
+        );
+        let scroll_y = layout.page_tops[1]; // top of page 2
+        app.update(Message::CanvasScrolled(scroll_y, 800.0));
+        assert_eq!(app.document.as_ref().unwrap().current_page, 2);
+        assert_eq!(app.toolbar.page_input, "2");
+    }
+
+    #[test]
     fn place_overlay_adds_to_overlays() {
         let mut app = test_app_with_document();
-        app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
         assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
         assert_eq!(app.undo_stack.len(), 1);
         assert!(app.canvas.active_overlay.is_some());
@@ -858,7 +897,10 @@ mod tests {
     fn undo_redo_through_update() {
         let mut app = test_app_with_document();
 
-        app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
         assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
 
         app.update(Message::Undo);
@@ -873,18 +915,27 @@ mod tests {
     #[test]
     fn new_action_clears_redo_stack() {
         let mut app = test_app_with_document();
-        app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
         app.update(Message::Undo);
         assert_eq!(app.redo_stack.len(), 1);
 
-        app.update(Message::PlaceOverlay(PdfPosition { x: 200.0, y: 600.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 200.0, y: 600.0 },
+        });
         assert!(app.redo_stack.is_empty());
     }
 
     #[test]
     fn delete_overlay_removes_selected() {
         let mut app = test_app_with_document();
-        app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
         // PlaceOverlay sets active_overlay
         app.update(Message::DeleteOverlay);
         assert_eq!(app.document.as_ref().unwrap().overlays.len(), 0);
@@ -894,7 +945,10 @@ mod tests {
     #[test]
     fn change_font_updates_overlay_and_toolbar() {
         let mut app = test_app_with_document();
-        app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
         app.update(Message::ChangeFont(Standard14Font::Courier));
         assert_eq!(
             app.document.as_ref().unwrap().overlays[0].font,
@@ -997,7 +1051,10 @@ mod tests {
     #[test]
     fn select_overlay_updates_toolbar() {
         let mut app = test_app_with_document();
-        app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
         app.update(Message::ChangeFont(Standard14Font::CourierBold));
         app.update(Message::DeselectOverlay);
         // Now select it again
