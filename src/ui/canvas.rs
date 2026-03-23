@@ -54,12 +54,16 @@ pub struct LocalDragState {
 }
 
 impl PdfCanvasProgram<'_> {
-    /// Build ConversionParams from current program state and page bounds.
-    fn conversion_params(&self, page_bounds: &iced::Rectangle) -> ConversionParams {
+    /// Build ConversionParams from page dimensions and page bounds.
+    fn conversion_params(
+        &self,
+        page_dims: (f32, f32),
+        page_bounds: &iced::Rectangle,
+    ) -> ConversionParams {
         ConversionParams {
             zoom: self.zoom,
             dpi: self.dpi,
-            page_height: self.page_dimensions.unwrap().1,
+            page_height: page_dims.1,
             offset_x: page_bounds.x,
             offset_y: page_bounds.y,
         }
@@ -90,7 +94,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 }
 
                 let page_bounds = page_image_bounds(page_dims, self.zoom, self.dpi, bounds);
-                let params = self.conversion_params(&page_bounds);
+                let params = self.conversion_params(page_dims, &page_bounds);
 
                 // Check if we hit an existing overlay
                 if let Some(idx) = hit_test(
@@ -141,12 +145,12 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
             }
 
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                let drag = state.drag.take()?;
                 let cursor_pos = cursor.position()?;
+                let drag = state.drag.take()?;
 
                 let page_dims = self.page_dimensions?;
                 let page_bounds = page_image_bounds(page_dims, self.zoom, self.dpi, bounds);
-                let params = self.conversion_params(&page_bounds);
+                let params = self.conversion_params(page_dims, &page_bounds);
 
                 // Compute overlay's new screen position by subtracting grab offset
                 let overlay_screen_x = cursor_pos.x - drag.grab_offset_x;
@@ -213,7 +217,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
         }
 
         let page_bounds = page_image_bounds(page_dims, self.zoom, self.dpi, bounds);
-        let params = self.conversion_params(&page_bounds);
+        let params = self.conversion_params(page_dims, &page_bounds);
 
         if hit_test(
             cursor_pos.x,
@@ -799,19 +803,8 @@ mod tests {
 
     #[test]
     fn update_click_while_editing_commits_text_first() {
-        // When editing and clicking on empty page, should produce CommitText
-        // before PlaceOverlay. Since we can only return one message, we need
-        // to return CommitText. The PlaceOverlay will happen on the next event
-        // cycle after the app processes CommitText.
-        //
-        // Actually, re-reading the task spec: "first publish CommitText, then SelectOverlay"
-        // But we can only return one Action with one message.
-        // The pragmatic approach: when editing and clicking, commit first.
-        // The app will process CommitText, then the next click (user has to click again).
-        //
-        // Wait — let me reconsider. The task says "If already editing, first publish CommitText".
-        // Since we can only publish one message per event, we should publish CommitText
-        // and NOT also select/place. The user's click will be "consumed" by committing.
+        // Iced actions carry a single message, so clicking while editing
+        // returns CommitText only. The place/select happens on the next click.
         let overlays: Vec<TextOverlay> = vec![];
         let program = PdfCanvasProgram {
             editing: true,
