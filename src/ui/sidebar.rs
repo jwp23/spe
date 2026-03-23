@@ -29,6 +29,8 @@ pub struct SidebarState {
     pub backfill_generation: u64,
     /// Phase [0, 1) for the shimmer animation on loading placeholders.
     pub shimmer_phase: f32,
+    /// Number of thumbnail batch tasks currently in flight.
+    pub active_batch_tasks: u32,
 }
 
 impl Default for SidebarState {
@@ -43,6 +45,7 @@ impl Default for SidebarState {
             dragging: false,
             backfill_generation: 0,
             shimmer_phase: 0.0,
+            active_batch_tasks: 0,
         }
     }
 }
@@ -461,6 +464,12 @@ mod tests {
         assert!(!state.dragging);
         assert_eq!(state.backfill_generation, 0);
         assert!((state.shimmer_phase - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidebar_default_active_batch_tasks_is_zero() {
+        let state = SidebarState::default();
+        assert_eq!(state.active_batch_tasks, 0);
     }
 
     #[test]

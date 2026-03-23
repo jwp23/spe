@@ -20,6 +20,8 @@ const MIN_SIDEBAR_WIDTH: f32 = 80.0;
 const MAX_SIDEBAR_WIDTH: f32 = 400.0;
 /// Phase advance per shimmer tick (fraction of full cycle).
 const SHIMMER_TICK_DELTA: f32 = 0.05;
+/// Maximum number of thumbnail batch tasks that may run concurrently.
+const MAX_CONCURRENT_THUMBNAIL_TASKS: u32 = 2;
 
 /// State for the currently loaded PDF document.
 pub struct DocumentState {
@@ -374,8 +376,9 @@ impl App {
                 self.sidebar.visible = !self.sidebar.visible;
             }
             Message::ThumbnailBatchRendered(batch, generation) => {
+                self.sidebar.active_batch_tasks = self.sidebar.active_batch_tasks.saturating_sub(1);
                 if generation != self.sidebar.backfill_generation {
-                    return iced::Task::none();
+                    return self.schedule_thumbnail_backfill();
                 }
                 for (page, handle) in batch {
                     self.sidebar.thumbnails.insert(page, handle);
@@ -646,6 +649,7 @@ impl App {
                 self.redo_stack.clear();
                 self.canvas = CanvasState::default();
                 self.sidebar.thumbnails.clear();
+                self.sidebar.active_batch_tasks = 0;
                 self.toolbar.page_input = "1".to_string();
                 let max_page_w = self
                     .document
@@ -767,7 +771,10 @@ impl App {
     /// Backfill thumbnails for pages not yet rendered, working outward from
     /// the current page in batches of 20. Chains itself via `ThumbnailBatchRendered`
     /// until all pages are covered. Discards results from stale generations.
-    fn schedule_thumbnail_backfill(&self) -> iced::Task<Message> {
+    fn schedule_thumbnail_backfill(&mut self) -> iced::Task<Message> {
+        if self.sidebar.active_batch_tasks >= MAX_CONCURRENT_THUMBNAIL_TASKS {
+            return iced::Task::none();
+        }
         let Some(doc) = &self.document else {
             return iced::Task::none();
         };
@@ -790,6 +797,7 @@ impl App {
         let batch: Vec<u32> = unrendered.into_iter().take(20).collect();
         let range_first = batch.iter().copied().min().unwrap();
         let range_last = batch.iter().copied().max().unwrap();
+        self.sidebar.active_batch_tasks += 1;
         render_thumbnail_batch_task(
             doc.source_path.clone(),
             range_first,
@@ -801,7 +809,10 @@ impl App {
 
     /// Render thumbnails for pages visible in the sidebar (plus a buffer),
     /// skipping any that are already cached.
-    fn render_visible_thumbnails(&self) -> iced::Task<Message> {
+    fn render_visible_thumbnails(&mut self) -> iced::Task<Message> {
+        if self.sidebar.active_batch_tasks >= MAX_CONCURRENT_THUMBNAIL_TASKS {
+            return iced::Task::none();
+        }
         let Some(doc) = &self.document else {
             return iced::Task::none();
         };
@@ -833,6 +844,10 @@ impl App {
         for chunk in pages_to_render.chunks(20) {
             let first = *chunk.first().unwrap();
             let last = *chunk.last().unwrap();
+            if self.sidebar.active_batch_tasks >= MAX_CONCURRENT_THUMBNAIL_TASKS {
+                break;
+            }
+            self.sidebar.active_batch_tasks += 1;
             tasks.push(render_thumbnail_batch_task(
                 pdf_path.clone(),
                 first,
@@ -1587,7 +1602,7 @@ mod tests {
 
     #[test]
     fn schedule_thumbnail_backfill_returns_none_without_document() {
-        let (app, _) = App::new();
+        let (mut app, _) = App::new();
         // Should not panic and should return a no-op task
         let _ = app.schedule_thumbnail_backfill();
     }
@@ -1647,5 +1662,137 @@ mod tests {
         // We can't easily inspect iced::Task internals, but we can verify the
         // method doesn't panic and the thumbnail state is correct.
         let _ = task;
+    }
+
+    #[test]
+    fn render_visible_thumbnails_respects_concurrency_limit() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        app.sidebar.viewport_height = 600.0;
+        // At the limit — should return early without spawning.
+        app.sidebar.active_batch_tasks = MAX_CONCURRENT_THUMBNAIL_TASKS;
+        let _ = app.render_visible_thumbnails();
+        // Counter must not increase beyond the limit.
+        assert_eq!(
+            app.sidebar.active_batch_tasks,
+            MAX_CONCURRENT_THUMBNAIL_TASKS
+        );
+    }
+
+    #[test]
+    fn schedule_thumbnail_backfill_respects_concurrency_limit() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        app.sidebar.active_batch_tasks = MAX_CONCURRENT_THUMBNAIL_TASKS;
+        let _ = app.schedule_thumbnail_backfill();
+        // Counter must not increase beyond the limit.
+        assert_eq!(
+            app.sidebar.active_batch_tasks,
+            MAX_CONCURRENT_THUMBNAIL_TASKS
+        );
+    }
+
+    #[test]
+    fn thumbnail_batch_rendered_decrements_active_batch_tasks() {
+        let mut app = test_app_with_document();
+        app.sidebar.backfill_generation = 1;
+        app.sidebar.active_batch_tasks = 1;
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let _ = app.update(Message::ThumbnailBatchRendered(vec![(1, handle)], 1));
+        // Counter decremented even on successful completion.
+        assert_eq!(app.sidebar.active_batch_tasks, 0);
+    }
+
+    #[test]
+    fn thumbnail_batch_rendered_decrements_on_stale_generation() {
+        let mut app = test_app_with_document();
+        app.sidebar.backfill_generation = 5;
+        app.sidebar.active_batch_tasks = 2;
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let _ = app.update(Message::ThumbnailBatchRendered(
+            vec![(1, handle)],
+            3, // stale
+        ));
+        // Counter decremented even for stale results.
+        assert_eq!(app.sidebar.active_batch_tasks, 1);
+        // Page must not be inserted for stale generation.
+        assert!(!app.sidebar.thumbnails.contains_key(&1));
+    }
+
+    #[test]
+    fn active_batch_tasks_does_not_underflow() {
+        let mut app = test_app_with_document();
+        app.sidebar.backfill_generation = 1;
+        app.sidebar.active_batch_tasks = 0; // already zero
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let _ = app.update(Message::ThumbnailBatchRendered(vec![(1, handle)], 1));
+        // saturating_sub must keep it at 0.
+        assert_eq!(app.sidebar.active_batch_tasks, 0);
+    }
+
+    #[test]
+    fn handle_file_opened_resets_active_batch_tasks() {
+        use lopdf::{Dictionary, Object};
+        let mut app = test_app_with_document();
+        app.sidebar.active_batch_tasks = 3;
+        // Build a minimal loadable PDF in a temp file.
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let mut doc = lopdf::Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let mut page_dict = Dictionary::new();
+        page_dict.set("Type", Object::Name(b"Page".to_vec()));
+        page_dict.set("Parent", Object::Reference(pages_id));
+        page_dict.set(
+            "MediaBox",
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(612),
+                Object::Integer(792),
+            ]),
+        );
+        let page_id = doc.add_object(Object::Dictionary(page_dict));
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name(b"Pages".to_vec()));
+        pages_dict.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages_dict.set("Count", Object::Integer(1));
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog.set("Pages", Object::Reference(pages_id));
+        let catalog_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", Object::Reference(catalog_id));
+        doc.save(tmp.path()).expect("save temp pdf");
+        let _ = app.handle_file_opened(tmp.path().to_path_buf());
+        // The counter is reset to 0 at file-open time; any new render tasks
+        // spawned immediately after may increment it, but it must stay within
+        // the concurrency limit — not accumulate from the prior 3.
+        assert!(app.sidebar.active_batch_tasks <= MAX_CONCURRENT_THUMBNAIL_TASKS);
+    }
+
+    #[test]
+    fn render_visible_thumbnails_increments_active_batch_tasks_when_below_limit() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        app.sidebar.viewport_height = 600.0;
+        // Below the limit and pages are unrendered — should spawn and increment.
+        assert_eq!(app.sidebar.active_batch_tasks, 0);
+        let _ = app.render_visible_thumbnails();
+        // At least one task was spawned; counter reflects that.
+        assert!(app.sidebar.active_batch_tasks >= 1);
+    }
+
+    #[test]
+    fn schedule_thumbnail_backfill_increments_active_batch_tasks_when_below_limit() {
+        let mut app = test_app_with_document();
+        app.sidebar.visible = true;
+        app.sidebar.thumbnail_dpi = 36.0;
+        assert_eq!(app.sidebar.active_batch_tasks, 0);
+        let _ = app.schedule_thumbnail_backfill();
+        // One batch task was scheduled; counter should be 1.
+        assert_eq!(app.sidebar.active_batch_tasks, 1);
     }
 }
