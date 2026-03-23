@@ -321,6 +321,11 @@ impl App {
             }
             Message::ZoomDebounceExpired(generation) => {
                 if generation == self.canvas.zoom_generation {
+                    // Clear all cached images so pages get fresh renders at
+                    // the new DPI (including neighbors on navigation).
+                    if let Some(doc) = &mut self.document {
+                        doc.page_images.clear();
+                    }
                     return self.render_current_page();
                 }
             }
@@ -589,13 +594,11 @@ impl App {
         }
     }
 
-    /// Common post-zoom logic: increment generation, clear page cache,
-    /// and schedule a debounced re-render.
+    /// Common post-zoom logic: increment generation and schedule a debounced
+    /// re-render. The stale cached image stays visible for instant visual
+    /// feedback (scaled by draw_image) until the debounce fires.
     fn apply_zoom_change(&mut self) -> iced::Task<Message> {
         self.canvas.zoom_generation += 1;
-        if let Some(doc) = &mut self.document {
-            doc.page_images.clear();
-        }
         self.schedule_zoom_render()
     }
 
@@ -846,23 +849,25 @@ mod tests {
     }
 
     #[test]
-    fn zoom_clears_page_image_cache() {
+    fn zoom_keeps_stale_image_for_visual_feedback() {
         let mut app = test_app_with_document();
         let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
         app.document.as_mut().unwrap().page_images.insert(1, handle);
-        assert!(!app.document.as_ref().unwrap().page_images.is_empty());
         app.update(Message::ZoomIn);
-        assert!(app.document.as_ref().unwrap().page_images.is_empty());
+        // Stale image stays in cache for instant visual feedback during debounce
+        assert!(!app.document.as_ref().unwrap().page_images.is_empty());
     }
 
     #[test]
-    fn zoom_debounce_expired_matching_generation_does_not_panic() {
+    fn zoom_debounce_expired_clears_cache() {
         let mut app = test_app_with_document();
+        let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
+        app.document.as_mut().unwrap().page_images.insert(1, handle);
         app.update(Message::ZoomIn);
         let generation = app.canvas.zoom_generation;
-        // Matching generation should trigger a re-render (returns a Task,
-        // but we just verify it doesn't panic and state is consistent)
+        // Matching debounce expiry clears cache and triggers re-render
         app.update(Message::ZoomDebounceExpired(generation));
+        assert!(app.document.as_ref().unwrap().page_images.is_empty());
     }
 
     #[test]
