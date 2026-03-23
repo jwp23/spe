@@ -144,11 +144,13 @@ Rust built-in `cargo test`. Unit tests co-located in `#[cfg(test)]` modules. Int
 ## Pre-commit & CI
 
 Pre-commit hook (`.beads/hooks/pre-commit`) runs after beads integration:
+- `betterleaks git --pre-commit --staged --redact` (hard fail; hard fail if not installed)
 - `cargo fmt --check`
 - `cargo clippy -- -D warnings`
+- `cargo audit` (optional — warns if not installed, fails if vulnerabilities found)
 - `cargo test`
 
-GitHub Actions CI (`.github/workflows/ci.yml`) runs the same checks plus `cargo test -- --ignored` for integration tests.
+GitHub Actions CI (`.github/workflows/ci.yml`) runs secrets scanning (betterleaks via Docker), the same Rust checks, plus `cargo test -- --ignored` for integration tests.
 
 See `docs/decisions/pre-commit-suite.md` and `docs/decisions/ci-pipeline.md`.
 
