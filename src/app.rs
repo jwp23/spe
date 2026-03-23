@@ -54,7 +54,7 @@ pub enum Message {
     PageRendered(u32, Handle),
 
     // Overlay editing (undoable)
-    PlaceOverlay(PdfPosition),
+    PlaceOverlay { page: u32, position: PdfPosition },
     UpdateOverlayText(String),
     CommitText,
     MoveOverlay(usize, PdfPosition),
@@ -195,10 +195,10 @@ impl App {
             }
 
             // --- Overlay editing (undoable) ---
-            Message::PlaceOverlay(position) => {
+            Message::PlaceOverlay { page, position } => {
                 if let Some(doc) = &mut self.document {
                     let overlay = TextOverlay {
-                        page: doc.current_page,
+                        page,
                         position,
                         text: String::new(),
                         font: self.toolbar.font,
@@ -847,7 +847,10 @@ mod tests {
     #[test]
     fn place_overlay_adds_to_overlays() {
         let mut app = test_app_with_document();
-        app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
         assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
         assert_eq!(app.undo_stack.len(), 1);
         assert!(app.canvas.active_overlay.is_some());
@@ -858,7 +861,10 @@ mod tests {
     fn undo_redo_through_update() {
         let mut app = test_app_with_document();
 
-        app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
         assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
 
         app.update(Message::Undo);
@@ -873,18 +879,27 @@ mod tests {
     #[test]
     fn new_action_clears_redo_stack() {
         let mut app = test_app_with_document();
-        app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
         app.update(Message::Undo);
         assert_eq!(app.redo_stack.len(), 1);
 
-        app.update(Message::PlaceOverlay(PdfPosition { x: 200.0, y: 600.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 200.0, y: 600.0 },
+        });
         assert!(app.redo_stack.is_empty());
     }
 
     #[test]
     fn delete_overlay_removes_selected() {
         let mut app = test_app_with_document();
-        app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
         // PlaceOverlay sets active_overlay
         app.update(Message::DeleteOverlay);
         assert_eq!(app.document.as_ref().unwrap().overlays.len(), 0);
@@ -894,7 +909,10 @@ mod tests {
     #[test]
     fn change_font_updates_overlay_and_toolbar() {
         let mut app = test_app_with_document();
-        app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
         app.update(Message::ChangeFont(Standard14Font::Courier));
         assert_eq!(
             app.document.as_ref().unwrap().overlays[0].font,
@@ -997,7 +1015,10 @@ mod tests {
     #[test]
     fn select_overlay_updates_toolbar() {
         let mut app = test_app_with_document();
-        app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
         app.update(Message::ChangeFont(Standard14Font::CourierBold));
         app.update(Message::DeselectOverlay);
         // Now select it again

@@ -84,7 +84,10 @@ fn undo_redo_with_view_rebuild() {
     verify_view_renders(&app);
 
     // Place an overlay
-    let _ = app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+    let _ = app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+    });
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
     verify_view_renders(&app);
 
@@ -144,7 +147,10 @@ fn delete_overlay_with_selection() {
         overlays: Vec::new(),
     });
 
-    let _ = app.update(Message::PlaceOverlay(PdfPosition { x: 100.0, y: 700.0 }));
+    let _ = app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+    });
     assert!(app.canvas.active_overlay.is_some());
     verify_view_renders(&app);
 

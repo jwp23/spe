@@ -126,10 +126,10 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                     // Click on empty page area — place a new overlay
                     let (pdf_x, pdf_y) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
                     Some(
-                        canvas::Action::publish(Message::PlaceOverlay(PdfPosition {
-                            x: pdf_x,
-                            y: pdf_y,
-                        }))
+                        canvas::Action::publish(Message::PlaceOverlay {
+                            page: self.current_page,
+                            position: PdfPosition { x: pdf_x, y: pdf_y },
+                        })
                         .and_capture(),
                     )
                 } else {
@@ -1272,9 +1272,10 @@ mod tests {
         let (msg, status) = decompose(action);
         assert_eq!(status, event::Status::Captured);
         match msg {
-            Some(Message::PlaceOverlay(pos)) => {
-                assert!((pos.x - 106.0).abs() < 0.5);
-                assert!((pos.y - 696.0).abs() < 0.5);
+            Some(Message::PlaceOverlay { page, position }) => {
+                assert_eq!(page, 1);
+                assert!((position.x - 106.0).abs() < 0.5);
+                assert!((position.y - 696.0).abs() < 0.5);
             }
             other => panic!("Expected PlaceOverlay, got {other:?}"),
         }
