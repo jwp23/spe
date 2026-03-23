@@ -15,6 +15,3 @@ tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
 iced_test = "0.14"
-
-[profile.dev.package."*"]
-opt-level = 2
