@@ -34,6 +34,15 @@ if ! cargo clippy -- -D warnings 2>/dev/null; then
     exit 1
 fi
 
+if command -v cargo-audit >/dev/null 2>&1; then
+    if ! cargo audit 2>/dev/null; then
+        echo >&2 "pre-commit: cargo audit found vulnerabilities."
+        exit 1
+    fi
+else
+    echo >&2 "pre-commit: WARNING: cargo-audit not installed. Run 'cargo install cargo-audit' for dependency vulnerability scanning."
+fi
+
 if ! cargo test 2>/dev/null; then
     echo >&2 "pre-commit: tests failed."
     exit 1
