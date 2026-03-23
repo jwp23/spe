@@ -1,21 +1,20 @@
 // PDF page canvas with click-to-place text handling.
 
-use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen};
-use crate::overlay::{PdfPosition, TextOverlay};
+use iced::mouse;
+use iced::widget::canvas;
+use iced::widget::image::Handle;
 
-/// State for the PDF canvas view.
+use crate::app::Message;
+use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen, screen_to_pdf};
+use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+
+/// State for the PDF canvas view (persistent, lives in App).
 pub struct CanvasState {
     pub zoom: f32,
     pub active_overlay: Option<usize>,
     pub editing: bool,
-    pub dragging: Option<DragState>,
-}
-
-/// Tracks an in-progress overlay drag operation.
-pub struct DragState {
-    pub overlay_index: usize,
-    pub initial_position: PdfPosition,
-    pub grab_offset: (f32, f32),
+    /// Counter incremented on each zoom change; used to debounce re-renders.
+    pub zoom_generation: u64,
 }
 
 impl Default for CanvasState {
@@ -24,9 +23,391 @@ impl Default for CanvasState {
             zoom: 1.0,
             active_overlay: None,
             editing: false,
-            dragging: None,
+            zoom_generation: 0,
         }
     }
+}
+
+/// The canvas::Program implementor that borrows App state for rendering and event handling.
+pub struct PdfCanvasProgram<'a> {
+    pub page_image: Option<&'a Handle>,
+    pub page_dimensions: Option<(f32, f32)>,
+    pub overlays: &'a [TextOverlay],
+    pub current_page: u32,
+    pub zoom: f32,
+    pub dpi: f32,
+    pub active_overlay: Option<usize>,
+    pub editing: bool,
+    pub overlay_color: [f32; 4],
+}
+
+/// Widget-local mutable state managed by Iced's canvas infrastructure.
+#[derive(Default)]
+pub struct ProgramState {
+    pub cursor_position: Option<iced::Point>,
+    pub drag: Option<LocalDragState>,
+}
+
+/// Tracks an in-progress overlay drag within the canvas widget.
+pub struct LocalDragState {
+    pub overlay_index: usize,
+    pub initial_pdf_position: PdfPosition,
+    pub grab_offset_x: f32,
+    pub grab_offset_y: f32,
+}
+
+impl PdfCanvasProgram<'_> {
+    /// Build ConversionParams from page dimensions and page bounds.
+    fn conversion_params(
+        &self,
+        page_dims: (f32, f32),
+        page_bounds: &iced::Rectangle,
+    ) -> ConversionParams {
+        ConversionParams {
+            zoom: self.zoom,
+            dpi: self.dpi,
+            page_height: page_dims.1,
+            offset_x: page_bounds.x,
+            offset_y: page_bounds.y,
+        }
+    }
+}
+
+impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
+    type State = ProgramState;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &canvas::Event,
+        bounds: iced::Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        match event {
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                let page_dims = self.page_dimensions?;
+                let cursor_pos = cursor.position()?;
+                if !bounds.contains(cursor_pos) {
+                    return None;
+                }
+
+                // Any left click while editing commits the current text first
+                if self.editing {
+                    return Some(canvas::Action::publish(Message::CommitText).and_capture());
+                }
+
+                let page_bounds = page_image_bounds(page_dims, self.zoom, self.dpi, bounds);
+                let params = self.conversion_params(page_dims, &page_bounds);
+
+                // Check if we hit an existing overlay
+                if let Some(idx) = hit_test(
+                    cursor_pos.x,
+                    cursor_pos.y,
+                    self.overlays,
+                    self.current_page,
+                    &params,
+                ) {
+                    // Compute grab offset: distance from overlay's screen position to cursor
+                    let (overlay_sx, overlay_sy) = pdf_to_screen(
+                        self.overlays[idx].position.x,
+                        self.overlays[idx].position.y,
+                        &params,
+                    );
+                    state.drag = Some(LocalDragState {
+                        overlay_index: idx,
+                        initial_pdf_position: self.overlays[idx].position,
+                        grab_offset_x: cursor_pos.x - overlay_sx,
+                        grab_offset_y: cursor_pos.y - overlay_sy,
+                    });
+
+                    Some(canvas::Action::publish(Message::SelectOverlay(idx)).and_capture())
+                } else if page_bounds.contains(cursor_pos) {
+                    // Click on empty page area — place a new overlay
+                    let (pdf_x, pdf_y) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
+                    Some(
+                        canvas::Action::publish(Message::PlaceOverlay(PdfPosition {
+                            x: pdf_x,
+                            y: pdf_y,
+                        }))
+                        .and_capture(),
+                    )
+                } else {
+                    // Click outside page bounds (but inside canvas) — deselect
+                    Some(canvas::Action::publish(Message::DeselectOverlay).and_capture())
+                }
+            }
+
+            canvas::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                state.cursor_position = Some(*position);
+                // During drag, request a redraw for visual feedback
+                if state.drag.is_some() {
+                    Some(canvas::Action::request_redraw())
+                } else {
+                    None
+                }
+            }
+
+            canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                let cursor_pos = cursor.position()?;
+                let drag = state.drag.take()?;
+
+                let page_dims = self.page_dimensions?;
+                let page_bounds = page_image_bounds(page_dims, self.zoom, self.dpi, bounds);
+                let params = self.conversion_params(page_dims, &page_bounds);
+
+                // Compute overlay's new screen position by subtracting grab offset
+                let overlay_screen_x = cursor_pos.x - drag.grab_offset_x;
+                let overlay_screen_y = cursor_pos.y - drag.grab_offset_y;
+                let (new_pdf_x, new_pdf_y) =
+                    screen_to_pdf(overlay_screen_x, overlay_screen_y, &params);
+
+                // Only publish MoveOverlay if the position actually changed
+                let moved = (new_pdf_x - drag.initial_pdf_position.x).abs() > 0.1
+                    || (new_pdf_y - drag.initial_pdf_position.y).abs() > 0.1;
+
+                if moved {
+                    Some(
+                        canvas::Action::publish(Message::MoveOverlay(
+                            drag.overlay_index,
+                            PdfPosition {
+                                x: new_pdf_x,
+                                y: new_pdf_y,
+                            },
+                        ))
+                        .and_capture(),
+                    )
+                } else {
+                    Some(canvas::Action::capture())
+                }
+            }
+
+            _ => None,
+        }
+    }
+
+    fn draw(
+        &self,
+        state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &iced::Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+
+        // Gray background
+        frame.fill_rectangle(
+            iced::Point::ORIGIN,
+            bounds.size(),
+            iced::Color::from_rgb(0.85, 0.85, 0.85),
+        );
+
+        let (Some(handle), Some(page_dims)) = (self.page_image, self.page_dimensions) else {
+            return vec![frame.into_geometry()];
+        };
+
+        // PDF page image, centered in canvas
+        let page_bounds = page_image_bounds(page_dims, self.zoom, self.dpi, bounds);
+        let local_page_bounds = iced::Rectangle {
+            x: page_bounds.x - bounds.x,
+            y: page_bounds.y - bounds.y,
+            width: page_bounds.width,
+            height: page_bounds.height,
+        };
+        frame.draw_image(local_page_bounds, handle);
+
+        // Build conversion params with frame-local offsets for overlay positioning
+        let local_params = self.conversion_params(page_dims, &local_page_bounds);
+
+        let overlay_color = iced::Color::from_rgba(
+            self.overlay_color[0],
+            self.overlay_color[1],
+            self.overlay_color[2],
+            self.overlay_color[3],
+        );
+        let scale = self.zoom * self.dpi / 72.0;
+
+        // Draw overlays on the current page
+        for (i, overlay) in self.overlays.iter().enumerate() {
+            if overlay.page != self.current_page {
+                continue;
+            }
+
+            // During drag, skip the dragged overlay at its stored position;
+            // we draw it at the preview position below.
+            let is_dragging = state.drag.as_ref().is_some_and(|d| d.overlay_index == i);
+            if is_dragging {
+                continue;
+            }
+
+            let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, &local_params);
+            let scaled_size = overlay.font_size * scale;
+
+            draw_overlay_text(
+                &mut frame,
+                &overlay.text,
+                sx,
+                sy,
+                scaled_size,
+                overlay_color,
+            );
+
+            // Selection bounding box
+            if self.active_overlay == Some(i) {
+                draw_selection_box(
+                    &mut frame,
+                    &overlay.text,
+                    overlay.font,
+                    overlay.font_size,
+                    sx,
+                    sy,
+                    scale,
+                );
+            }
+        }
+
+        // Drag preview: draw the dragged overlay at the cursor position
+        // cursor_pos and grab_offset are in absolute (window) space;
+        // subtract bounds origin to convert to frame-local coordinates.
+        if let (Some(drag), Some(cursor_pos)) = (&state.drag, state.cursor_position)
+            && let Some(overlay) = self.overlays.get(drag.overlay_index)
+        {
+            let preview_screen_x = cursor_pos.x - drag.grab_offset_x - bounds.x;
+            let preview_screen_y = cursor_pos.y - drag.grab_offset_y - bounds.y;
+            let scaled_size = overlay.font_size * scale;
+            let preview_color = iced::Color::from_rgba(
+                self.overlay_color[0],
+                self.overlay_color[1],
+                self.overlay_color[2],
+                0.5,
+            );
+
+            draw_overlay_text(
+                &mut frame,
+                &overlay.text,
+                preview_screen_x,
+                preview_screen_y,
+                scaled_size,
+                preview_color,
+            );
+        }
+
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &Self::State,
+        bounds: iced::Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if state.drag.is_some() {
+            return mouse::Interaction::Grabbing;
+        }
+
+        let Some(page_dims) = self.page_dimensions else {
+            return mouse::Interaction::default();
+        };
+
+        let Some(cursor_pos) = cursor.position() else {
+            return mouse::Interaction::default();
+        };
+
+        if !bounds.contains(cursor_pos) {
+            return mouse::Interaction::default();
+        }
+
+        let page_bounds = page_image_bounds(page_dims, self.zoom, self.dpi, bounds);
+        let params = self.conversion_params(page_dims, &page_bounds);
+
+        if hit_test(
+            cursor_pos.x,
+            cursor_pos.y,
+            self.overlays,
+            self.current_page,
+            &params,
+        )
+        .is_some()
+        {
+            return mouse::Interaction::Pointer;
+        }
+
+        if page_bounds.contains(cursor_pos) {
+            return mouse::Interaction::Crosshair;
+        }
+
+        mouse::Interaction::default()
+    }
+}
+
+/// Draw overlay text at a screen position on the canvas frame.
+fn draw_overlay_text(
+    frame: &mut canvas::Frame,
+    content: &str,
+    screen_x: f32,
+    screen_y: f32,
+    scaled_font_size: f32,
+    color: iced::Color,
+) {
+    let text = canvas::Text {
+        content: content.to_string(),
+        position: iced::Point::new(screen_x, screen_y - scaled_font_size),
+        color,
+        size: iced::Pixels(scaled_font_size),
+        font: iced::Font::default(),
+        ..canvas::Text::default()
+    };
+    frame.fill_text(text);
+}
+
+/// Draw a selection bounding box around an overlay at a screen position.
+fn draw_selection_box(
+    frame: &mut canvas::Frame,
+    text: &str,
+    font: Standard14Font,
+    font_size: f32,
+    screen_x: f32,
+    screen_y: f32,
+    scale: f32,
+) {
+    let bbox = overlay_bounding_box(text, font, font_size);
+    let w = bbox.width * scale;
+    let h = bbox.height * scale;
+    let padding = 2.0;
+
+    frame.stroke_rectangle(
+        iced::Point::new(screen_x - padding, screen_y - h - padding),
+        iced::Size::new(w + 2.0 * padding, h + 2.0 * padding),
+        canvas::Stroke::default()
+            .with_color(iced::Color::from_rgb(0.2, 0.5, 1.0))
+            .with_width(1.5),
+    );
+}
+
+/// Compute the Rectangle where the PDF page image should be drawn, centered within the canvas.
+pub fn page_image_bounds(
+    page_dims: (f32, f32),
+    zoom: f32,
+    dpi: f32,
+    canvas_bounds: iced::Rectangle,
+) -> iced::Rectangle {
+    let rendered_width = page_dims.0 * zoom * dpi / 72.0;
+    let rendered_height = page_dims.1 * zoom * dpi / 72.0;
+    let offset_x = (canvas_bounds.width - rendered_width) / 2.0;
+    let offset_y = (canvas_bounds.height - rendered_height) / 2.0;
+    iced::Rectangle {
+        x: canvas_bounds.x + offset_x,
+        y: canvas_bounds.y + offset_y,
+        width: rendered_width,
+        height: rendered_height,
+    }
+}
+
+/// Convert a decoded image to an Iced image Handle.
+pub fn image_to_handle(img: image::DynamicImage) -> Handle {
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Handle::from_rgba(width, height, rgba.into_raw())
 }
 
 /// Test whether a screen-space click hits any overlay on the current page.
@@ -96,6 +477,8 @@ mod tests {
     use super::*;
     use crate::coordinate::ConversionParams;
     use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+    use iced::event;
+    use iced::widget::canvas::Program;
 
     fn default_params() -> ConversionParams {
         ConversionParams {
@@ -117,13 +500,249 @@ mod tests {
         }
     }
 
+    /// Canvas bounds used in event handling tests: 1000x1000 starting at origin.
+    fn test_canvas_bounds() -> iced::Rectangle {
+        iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 1000.0,
+        }
+    }
+
+    /// US Letter page at zoom=1, dpi=72 produces a 612x792 image.
+    /// Centered in 1000x1000 canvas: offset_x=194, offset_y=104.
+    const TEST_PAGE_DIMS: (f32, f32) = (612.0, 792.0);
+    const TEST_ZOOM: f32 = 1.0;
+    const TEST_DPI: f32 = 72.0;
+
+    /// Build a PdfCanvasProgram for event handling tests.
+    fn test_program(overlays: &[TextOverlay]) -> PdfCanvasProgram<'_> {
+        PdfCanvasProgram {
+            page_image: None,
+            page_dimensions: Some(TEST_PAGE_DIMS),
+            overlays,
+            current_page: 1,
+            zoom: TEST_ZOOM,
+            dpi: TEST_DPI,
+            active_overlay: None,
+            editing: false,
+            overlay_color: [0.0, 0.0, 1.0, 1.0],
+        }
+    }
+
+    fn left_press_event() -> canvas::Event {
+        canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+    }
+
+    fn left_release_event() -> canvas::Event {
+        canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+    }
+
+    fn cursor_moved_event(x: f32, y: f32) -> canvas::Event {
+        canvas::Event::Mouse(mouse::Event::CursorMoved {
+            position: iced::Point::new(x, y),
+        })
+    }
+
+    fn cursor_at(x: f32, y: f32) -> mouse::Cursor {
+        mouse::Cursor::Available(iced::Point::new(x, y))
+    }
+
+    /// Decompose an update() result into (message, event_status) for assertions.
+    fn decompose(action: Option<canvas::Action<Message>>) -> (Option<Message>, event::Status) {
+        match action {
+            Some(a) => {
+                let (msg, _redraw, status) = a.into_inner();
+                (msg, status)
+            }
+            None => (None, event::Status::Ignored),
+        }
+    }
+
     #[test]
     fn default_canvas_state() {
         let state = CanvasState::default();
         assert!((state.zoom - 1.0).abs() < f32::EPSILON);
         assert!(state.active_overlay.is_none());
         assert!(!state.editing);
-        assert!(state.dragging.is_none());
+        assert_eq!(state.zoom_generation, 0);
+    }
+
+    // --- ProgramState tests ---
+
+    #[test]
+    fn program_state_default_has_no_cursor_or_drag() {
+        let state = ProgramState::default();
+        assert!(state.cursor_position.is_none());
+        assert!(state.drag.is_none());
+    }
+
+    // --- LocalDragState tests ---
+
+    #[test]
+    fn local_drag_state_construction() {
+        let drag = LocalDragState {
+            overlay_index: 3,
+            initial_pdf_position: PdfPosition { x: 100.0, y: 500.0 },
+            grab_offset_x: 5.0,
+            grab_offset_y: 10.0,
+        };
+        assert_eq!(drag.overlay_index, 3);
+        assert!((drag.initial_pdf_position.x - 100.0).abs() < f32::EPSILON);
+        assert!((drag.initial_pdf_position.y - 500.0).abs() < f32::EPSILON);
+        assert!((drag.grab_offset_x - 5.0).abs() < f32::EPSILON);
+        assert!((drag.grab_offset_y - 10.0).abs() < f32::EPSILON);
+    }
+
+    // --- PdfCanvasProgram tests ---
+
+    #[test]
+    fn pdf_canvas_program_construction_with_no_document() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = PdfCanvasProgram {
+            page_image: None,
+            page_dimensions: None,
+            overlays: &overlays,
+            current_page: 0,
+            zoom: 1.0,
+            dpi: 150.0,
+            active_overlay: None,
+            editing: false,
+            overlay_color: [0.0, 0.0, 1.0, 1.0],
+        };
+        assert!(program.page_image.is_none());
+        assert!(program.page_dimensions.is_none());
+        assert_eq!(program.overlays.len(), 0);
+    }
+
+    #[test]
+    fn pdf_canvas_program_construction_with_document() {
+        let handle = iced::widget::image::Handle::from_rgba(1, 1, vec![0u8; 4]);
+        let overlays = vec![overlay_at(72.0, 720.0, "Test")];
+        let program = PdfCanvasProgram {
+            page_image: Some(&handle),
+            page_dimensions: Some((612.0, 792.0)),
+            overlays: &overlays,
+            current_page: 1,
+            zoom: 1.5,
+            dpi: 150.0,
+            active_overlay: Some(0),
+            editing: true,
+            overlay_color: [0.26, 0.53, 0.96, 1.0],
+        };
+        assert!(program.page_image.is_some());
+        assert_eq!(program.page_dimensions, Some((612.0, 792.0)));
+        assert_eq!(program.overlays.len(), 1);
+        assert_eq!(program.current_page, 1);
+        assert!((program.zoom - 1.5).abs() < f32::EPSILON);
+        assert!(program.editing);
+    }
+
+    // --- page_image_bounds tests ---
+
+    #[test]
+    fn page_image_bounds_centers_within_canvas() {
+        // US Letter at zoom=1.0, dpi=72 → 612x792 pixels
+        // Canvas is 1000x1000
+        let bounds = page_image_bounds(
+            (612.0, 792.0),
+            1.0,
+            72.0,
+            iced::Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: 1000.0,
+                height: 1000.0,
+            },
+        );
+        // Image is 612x792, centered in 1000x1000
+        assert!((bounds.width - 612.0).abs() < 0.1);
+        assert!((bounds.height - 792.0).abs() < 0.1);
+        // Centered horizontally: (1000 - 612) / 2 = 194
+        assert!((bounds.x - 194.0).abs() < 0.1);
+        // Centered vertically: (1000 - 792) / 2 = 104
+        assert!((bounds.y - 104.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn page_image_bounds_scales_with_zoom() {
+        // US Letter at zoom=2.0, dpi=72 → 1224x1584 pixels
+        let bounds = page_image_bounds(
+            (612.0, 792.0),
+            2.0,
+            72.0,
+            iced::Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: 2000.0,
+                height: 2000.0,
+            },
+        );
+        assert!((bounds.width - 1224.0).abs() < 0.1);
+        assert!((bounds.height - 1584.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn page_image_bounds_scales_with_dpi() {
+        // US Letter at zoom=1.0, dpi=150 → 612*150/72 = 1275 wide, 792*150/72 = 1650 tall
+        let bounds = page_image_bounds(
+            (612.0, 792.0),
+            1.0,
+            150.0,
+            iced::Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: 2000.0,
+                height: 2000.0,
+            },
+        );
+        assert!((bounds.width - 1275.0).abs() < 0.1);
+        assert!((bounds.height - 1650.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn page_image_bounds_accounts_for_canvas_offset() {
+        // Canvas bounds start at (50, 30)
+        let bounds = page_image_bounds(
+            (612.0, 792.0),
+            1.0,
+            72.0,
+            iced::Rectangle {
+                x: 50.0,
+                y: 30.0,
+                width: 1000.0,
+                height: 1000.0,
+            },
+        );
+        // Image is 612x792, centered in 1000x1000 starting at (50, 30)
+        assert!((bounds.x - (50.0 + 194.0)).abs() < 0.1);
+        assert!((bounds.y - (30.0 + 104.0)).abs() < 0.1);
+    }
+
+    // --- image_to_handle tests ---
+
+    #[test]
+    fn image_to_handle_converts_rgba_image() {
+        // Create a 2x2 red image
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([255, 0, 0, 255]),
+        ));
+        let _handle = image_to_handle(img);
+        // If we get here without panic, conversion succeeded
+    }
+
+    #[test]
+    fn image_to_handle_converts_rgb_image() {
+        // Create an RGB image (no alpha channel) — should still convert
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            3,
+            3,
+            image::Rgb([0, 128, 255]),
+        ));
+        let _handle = image_to_handle(img);
     }
 
     #[test]
@@ -219,5 +838,399 @@ mod tests {
     #[test]
     fn effective_dpi_at_double_zoom() {
         assert!((effective_dpi(2.0) - 300.0).abs() < 0.01);
+    }
+
+    // =====================================================================
+    // update() tests — event handling
+    // =====================================================================
+
+    #[test]
+    fn update_ignores_click_when_no_page_dimensions() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = PdfCanvasProgram {
+            page_dimensions: None,
+            ..test_program(&overlays)
+        };
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(500.0, 500.0);
+
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert!(msg.is_none());
+        assert_eq!(status, event::Status::Ignored);
+    }
+
+    #[test]
+    fn update_ignores_click_when_cursor_unavailable() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = mouse::Cursor::Unavailable;
+
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert!(msg.is_none());
+        assert_eq!(status, event::Status::Ignored);
+    }
+
+    #[test]
+    fn update_click_on_empty_page_places_overlay() {
+        // Click at screen (300, 200) which is inside the page image.
+        // Page image bounds: (194, 104) to (806, 896).
+        // Expected PDF coords: (106, 696)
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(300.0, 200.0);
+
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        match msg {
+            Some(Message::PlaceOverlay(pos)) => {
+                assert!((pos.x - 106.0).abs() < 0.5);
+                assert!((pos.y - 696.0).abs() < 0.5);
+            }
+            other => panic!("Expected PlaceOverlay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_click_on_overlay_selects_it() {
+        // Overlay at PDF (72, 720) → screen (266, 176)
+        // Courier 12pt "Hello": hit box x=[266, 302], y=[164, 176]
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        // Click inside the overlay's hit box
+        let cursor = cursor_at(270.0, 170.0);
+
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(matches!(msg, Some(Message::SelectOverlay(0))));
+    }
+
+    #[test]
+    fn update_click_on_overlay_starts_drag() {
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(270.0, 170.0);
+
+        program.update(&mut state, &left_press_event(), bounds, cursor);
+        assert!(state.drag.is_some());
+        let drag = state.drag.as_ref().unwrap();
+        assert_eq!(drag.overlay_index, 0);
+        assert!((drag.initial_pdf_position.x - 72.0).abs() < 0.01);
+        assert!((drag.initial_pdf_position.y - 720.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn update_click_outside_page_deselects() {
+        // Page image bounds: (194, 104) to (806, 896).
+        // Click at (50, 50) which is outside the page.
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(50.0, 50.0);
+
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(matches!(msg, Some(Message::DeselectOverlay)));
+    }
+
+    #[test]
+    fn update_click_while_editing_commits_text_first() {
+        // Iced actions carry a single message, so clicking while editing
+        // returns CommitText only. The place/select happens on the next click.
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = PdfCanvasProgram {
+            editing: true,
+            active_overlay: Some(0),
+            ..test_program(&overlays)
+        };
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(300.0, 200.0); // inside page
+
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(matches!(msg, Some(Message::CommitText)));
+    }
+
+    #[test]
+    fn update_cursor_move_updates_state() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(400.0, 300.0);
+
+        let action = program.update(
+            &mut state,
+            &cursor_moved_event(400.0, 300.0),
+            bounds,
+            cursor,
+        );
+        let (msg, _status) = decompose(action);
+        assert!(msg.is_none());
+        assert!(state.cursor_position.is_some());
+        let pos = state.cursor_position.unwrap();
+        assert!((pos.x - 400.0).abs() < 0.01);
+        assert!((pos.y - 300.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn update_mouse_release_without_drag_is_ignored() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(300.0, 200.0);
+
+        let action = program.update(&mut state, &left_release_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert!(msg.is_none());
+        assert_eq!(status, event::Status::Ignored);
+    }
+
+    #[test]
+    fn update_drag_and_release_publishes_move() {
+        // 1) Click on overlay to start drag
+        // 2) Move cursor
+        // 3) Release → should publish MoveOverlay
+
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+
+        // Step 1: click on overlay at screen (270, 170)
+        let cursor = cursor_at(270.0, 170.0);
+        program.update(&mut state, &left_press_event(), bounds, cursor);
+        assert!(state.drag.is_some());
+
+        // Step 2: move cursor to (370, 270) — 100px right, 100px down
+        let cursor = cursor_at(370.0, 270.0);
+        program.update(
+            &mut state,
+            &cursor_moved_event(370.0, 270.0),
+            bounds,
+            cursor,
+        );
+
+        // Step 3: release at (370, 270)
+        let action = program.update(&mut state, &left_release_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(state.drag.is_none());
+        match msg {
+            Some(Message::MoveOverlay(idx, pos)) => {
+                assert_eq!(idx, 0);
+                // The overlay moved. The new position should reflect 100px
+                // shift in screen space converted to PDF space.
+                // At zoom=1, dpi=72: scale=1.0, so 100 screen px = 100 PDF pts
+                // Original PDF: (72, 720)
+                // Shift: +100 x, -100 y (screen down = PDF y decrease)
+                // Expected: (172, 620)
+                assert!((pos.x - 172.0).abs() < 1.0);
+                assert!((pos.y - 620.0).abs() < 1.0);
+            }
+            other => panic!("Expected MoveOverlay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_drag_release_at_same_position_no_move_message() {
+        // Click on overlay, don't move, release → no MoveOverlay needed
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+
+        let cursor = cursor_at(270.0, 170.0);
+        program.update(&mut state, &left_press_event(), bounds, cursor);
+        assert!(state.drag.is_some());
+
+        // Release at same position
+        let action = program.update(&mut state, &left_release_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert!(state.drag.is_none());
+        // No movement → captured but no message
+        assert_eq!(status, event::Status::Captured);
+        assert!(msg.is_none());
+    }
+
+    #[test]
+    fn update_ignores_right_click() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(300.0, 200.0);
+
+        let event = canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right));
+        let action = program.update(&mut state, &event, bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert!(msg.is_none());
+        assert_eq!(status, event::Status::Ignored);
+    }
+
+    // =====================================================================
+    // mouse_interaction() tests
+    // =====================================================================
+
+    #[test]
+    fn mouse_interaction_grabbing_during_drag() {
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let program = test_program(&overlays);
+        let mut state = ProgramState::default();
+        state.drag = Some(LocalDragState {
+            overlay_index: 0,
+            initial_pdf_position: PdfPosition { x: 72.0, y: 720.0 },
+            grab_offset_x: 4.0,
+            grab_offset_y: 6.0,
+        });
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(300.0, 200.0);
+
+        let interaction = program.mouse_interaction(&state, bounds, cursor);
+        assert_eq!(interaction, mouse::Interaction::Grabbing);
+    }
+
+    #[test]
+    fn mouse_interaction_pointer_over_overlay() {
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let program = test_program(&overlays);
+        let state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        // Cursor over the overlay's hit box at screen (270, 170)
+        let cursor = cursor_at(270.0, 170.0);
+
+        let interaction = program.mouse_interaction(&state, bounds, cursor);
+        assert_eq!(interaction, mouse::Interaction::Pointer);
+    }
+
+    #[test]
+    fn mouse_interaction_crosshair_on_page() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        // Cursor inside page image but not over any overlay
+        let cursor = cursor_at(500.0, 500.0);
+
+        let interaction = program.mouse_interaction(&state, bounds, cursor);
+        assert_eq!(interaction, mouse::Interaction::Crosshair);
+    }
+
+    #[test]
+    fn mouse_interaction_default_outside_page() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = test_program(&overlays);
+        let state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        // Cursor outside page image (50, 50) but inside canvas bounds
+        let cursor = cursor_at(50.0, 50.0);
+
+        let interaction = program.mouse_interaction(&state, bounds, cursor);
+        assert_eq!(interaction, mouse::Interaction::default());
+    }
+
+    #[test]
+    fn mouse_interaction_default_when_no_page() {
+        let overlays: Vec<TextOverlay> = vec![];
+        let program = PdfCanvasProgram {
+            page_dimensions: None,
+            ..test_program(&overlays)
+        };
+        let state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(500.0, 500.0);
+
+        let interaction = program.mouse_interaction(&state, bounds, cursor);
+        assert_eq!(interaction, mouse::Interaction::default());
+    }
+
+    // =====================================================================
+    // draw() logic tests — verify coordinate consistency
+    // =====================================================================
+
+    #[test]
+    fn local_page_bounds_offsets_correctly_from_canvas_position() {
+        // When canvas bounds start at (50, 30), page_image_bounds includes that offset.
+        // The frame-local adjustment should subtract canvas origin.
+        let canvas_bounds = iced::Rectangle {
+            x: 50.0,
+            y: 30.0,
+            width: 1000.0,
+            height: 1000.0,
+        };
+        let page_bounds = page_image_bounds(TEST_PAGE_DIMS, TEST_ZOOM, TEST_DPI, canvas_bounds);
+        let local_page_bounds = iced::Rectangle {
+            x: page_bounds.x - canvas_bounds.x,
+            y: page_bounds.y - canvas_bounds.y,
+            width: page_bounds.width,
+            height: page_bounds.height,
+        };
+        // The local bounds should be the same as if canvas started at origin
+        let origin_bounds = page_image_bounds(
+            TEST_PAGE_DIMS,
+            TEST_ZOOM,
+            TEST_DPI,
+            iced::Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: 1000.0,
+                height: 1000.0,
+            },
+        );
+        assert!((local_page_bounds.x - origin_bounds.x).abs() < 0.1);
+        assert!((local_page_bounds.y - origin_bounds.y).abs() < 0.1);
+        assert!((local_page_bounds.width - origin_bounds.width).abs() < 0.1);
+        assert!((local_page_bounds.height - origin_bounds.height).abs() < 0.1);
+    }
+
+    #[test]
+    fn conversion_params_from_local_bounds_produce_valid_coordinates() {
+        // Verify that using local (frame-relative) page bounds in ConversionParams
+        // produces screen coordinates within the frame dimensions.
+        let canvas_bounds = test_canvas_bounds();
+        let page_bounds = page_image_bounds(TEST_PAGE_DIMS, TEST_ZOOM, TEST_DPI, canvas_bounds);
+        let local_page_bounds = iced::Rectangle {
+            x: page_bounds.x - canvas_bounds.x,
+            y: page_bounds.y - canvas_bounds.y,
+            width: page_bounds.width,
+            height: page_bounds.height,
+        };
+        let params = ConversionParams {
+            zoom: TEST_ZOOM,
+            dpi: TEST_DPI,
+            page_height: TEST_PAGE_DIMS.1,
+            offset_x: local_page_bounds.x,
+            offset_y: local_page_bounds.y,
+        };
+        // A point at the top-left of the PDF page (0, page_height) should map
+        // to approximately local_page_bounds origin.
+        let (sx, sy) = pdf_to_screen(0.0, TEST_PAGE_DIMS.1, &params);
+        assert!(
+            (sx - local_page_bounds.x).abs() < 0.1,
+            "screen x ({sx}) should be near page left ({})",
+            local_page_bounds.x
+        );
+        assert!(
+            (sy - local_page_bounds.y).abs() < 0.1,
+            "screen y ({sy}) should be near page top ({})",
+            local_page_bounds.y
+        );
     }
 }
