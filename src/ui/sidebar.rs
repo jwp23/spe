@@ -292,9 +292,9 @@ pub fn sidebar_view<'a>(
         let label_color = if is_current {
             CURRENT_PAGE_BORDER_COLOR
         } else {
-            iced::Color::from_rgb(0.53, 0.60, 0.67)
+            iced::Color::from_rgb(0.878, 0.878, 0.878)
         };
-        let label = text(format!("{page}")).size(10).center().color(label_color);
+        let label = text(format!("{page}")).size(13).center().color(label_color);
 
         let thumb_col = column![thumb_container, label].align_x(iced::Alignment::Center);
 
