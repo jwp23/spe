@@ -41,6 +41,51 @@ impl Standard14Font {
     }
 }
 
+impl std::fmt::Display for Standard14Font {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Helvetica => "Helvetica",
+                Self::HelveticaBold => "Helvetica Bold",
+                Self::HelveticaOblique => "Helvetica Oblique",
+                Self::HelveticaBoldOblique => "Helvetica Bold Oblique",
+                Self::TimesRoman => "Times Roman",
+                Self::TimesBold => "Times Bold",
+                Self::TimesItalic => "Times Italic",
+                Self::TimesBoldItalic => "Times Bold Italic",
+                Self::Courier => "Courier",
+                Self::CourierBold => "Courier Bold",
+                Self::CourierOblique => "Courier Oblique",
+                Self::CourierBoldOblique => "Courier Bold Oblique",
+                Self::Symbol => "Symbol",
+                Self::ZapfDingbats => "Zapf Dingbats",
+            }
+        )
+    }
+}
+
+impl Standard14Font {
+    /// All 14 Standard PDF fonts, for use in UI pick lists.
+    pub const ALL: [Standard14Font; 14] = [
+        Self::Helvetica,
+        Self::HelveticaBold,
+        Self::HelveticaOblique,
+        Self::HelveticaBoldOblique,
+        Self::TimesRoman,
+        Self::TimesBold,
+        Self::TimesItalic,
+        Self::TimesBoldItalic,
+        Self::Courier,
+        Self::CourierBold,
+        Self::CourierOblique,
+        Self::CourierBoldOblique,
+        Self::Symbol,
+        Self::ZapfDingbats,
+    ];
+}
+
 /// A position on a PDF page in PDF coordinate space (points, origin bottom-left).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PdfPosition {
@@ -141,5 +186,19 @@ mod tests {
         };
         let cloned = overlay.clone();
         assert_eq!(overlay, cloned);
+    }
+
+    #[test]
+    fn standard14font_display_names() {
+        assert_eq!(Standard14Font::Helvetica.to_string(), "Helvetica");
+        assert_eq!(Standard14Font::HelveticaBold.to_string(), "Helvetica Bold");
+        assert_eq!(Standard14Font::TimesRoman.to_string(), "Times Roman");
+        assert_eq!(Standard14Font::Courier.to_string(), "Courier");
+        assert_eq!(Standard14Font::ZapfDingbats.to_string(), "Zapf Dingbats");
+    }
+
+    #[test]
+    fn standard14font_all_has_14_entries() {
+        assert_eq!(Standard14Font::ALL.len(), 14);
     }
 }
