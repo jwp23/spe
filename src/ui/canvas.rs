@@ -192,7 +192,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                     let params = self
                         .conversion_params_for_page(placement.page, &placement.page_screen_rect)?;
 
-                    if distance < 10.0 {
+                    if distance < MIN_DRAG_DISTANCE {
                         // Short drag / click: single-line overlay
                         let (pdf_x, pdf_y) = screen_to_pdf(
                             placement.start_screen.x,
@@ -416,10 +416,10 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
         if let Some(placement) = &state.placement_drag
             && let Some(cursor_pos) = state.cursor_position
         {
-            let dx = (cursor_pos.x - placement.start_screen.x).abs();
-            let dy = (cursor_pos.y - placement.start_screen.y).abs();
+            let dx = cursor_pos.x - placement.start_screen.x;
+            let dy = cursor_pos.y - placement.start_screen.y;
             let distance = (dx * dx + dy * dy).sqrt();
-            if distance < 10.0 {
+            if distance < MIN_DRAG_DISTANCE {
                 return vec![frame.into_geometry()];
             }
 
@@ -536,6 +536,9 @@ fn draw_selection_box(
 
 /// Gap between pages in continuous scrolling mode (pixels).
 pub const PAGE_GAP: f32 = 16.0;
+
+/// Minimum drag distance in pixels to initiate a resize. Clicks below this distance are treated as single-line overlays.
+const MIN_DRAG_DISTANCE: f32 = 10.0;
 
 /// Layout of all pages stacked vertically for continuous scrolling.
 pub struct PageLayout {
