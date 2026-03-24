@@ -918,6 +918,7 @@ impl App {
                 self.undo_stack.clear();
                 self.redo_stack.clear();
                 self.canvas = CanvasState::default();
+                self.editor_content = None;
                 self.sidebar.thumbnails.clear();
                 self.sidebar.active_batch_tasks = 0;
                 self.toolbar.page_input = "1".to_string();
@@ -2261,6 +2262,20 @@ mod tests {
         // spawned immediately after may increment it, but it must stay within
         // the concurrency limit — not accumulate from the prior 3.
         assert!(app.sidebar.active_batch_tasks <= MAX_CONCURRENT_THUMBNAIL_TASKS);
+    }
+
+    #[test]
+    fn handle_file_opened_clears_editor_content() {
+        let mut app = test_app_with_document();
+        // Simulate a stale editor_content from a previous multi-line overlay
+        app.editor_content = Some(iced::widget::text_editor::Content::with_text("stale text"));
+        assert!(app.editor_content.is_some());
+
+        let tmp = make_temp_pdf();
+        let _ = app.handle_file_opened(tmp.path().to_path_buf());
+
+        // editor_content should be cleared when opening a new PDF
+        assert!(app.editor_content.is_none());
     }
 
     #[test]
