@@ -1,6 +1,7 @@
 ---
 name: writing-plans
 description: Use when you have a spec or requirements for a multi-step task, before touching code. Also use when entering or already in plan mode — all planning in this project goes through bd (beads) issue hierarchies.
+argument-hint: "[spec or requirements]"
 ---
 
 # Writing Plans
@@ -139,6 +140,7 @@ bd dep <blocker-task-id> --blocks <blocked-task-id>
 - Exact commands with expected output
 - Reference relevant skills with @ syntax
 - DRY, YAGNI, TDD, frequent commits
+- When making technical choices (tool selection, patterns, library choices), invoke **record-decision**
 
 ## Plan Review Loop
 

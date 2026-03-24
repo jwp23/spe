@@ -1,6 +1,7 @@
 ---
 name: systematic-debugging
 description: Use when debugging, investigating why something is broken, slow, or not working as expected, or encountering any bug, test failure, performance issue, or unexpected behavior — before proposing fixes
+argument-hint: "[symptom or error]"
 ---
 
 # Systematic Debugging
@@ -209,6 +210,8 @@ You MUST complete each phase before proceeding to the next.
    - Should we refactor architecture vs. continue fixing symptoms?
 
    **Discuss with your human partner before attempting more fixes**
+
+   When the architectural decision is made, invoke **record-decision** to capture it.
 
    This is NOT a failed hypothesis - this is a wrong architecture.
 

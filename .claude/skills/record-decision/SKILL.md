@@ -1,6 +1,7 @@
 ---
 name: record-decision
 description: Use when a technical decision is being discussed or has been made - choosing between approaches, selecting libraries, establishing conventions, or making trade-offs
+argument-hint: "[decision topic]"
 ---
 
 # Record Decision

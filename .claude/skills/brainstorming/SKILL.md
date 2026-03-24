@@ -112,6 +112,7 @@ digraph brainstorming {
 - Propose 2-3 different approaches with trade-offs
 - Present options conversationally with your recommendation and reasoning
 - Lead with your recommended option and explain why
+- When the user selects an approach, invoke **record-decision** to capture the choice and trade-offs
 
 **Presenting the design:**
 
