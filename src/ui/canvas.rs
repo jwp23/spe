@@ -8,6 +8,11 @@ use crate::app::Message;
 use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen, screen_to_pdf};
 use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
 
+/// Time window for double-click detection (milliseconds).
+const DOUBLE_CLICK_TIMEOUT_MS: u128 = 500;
+/// Maximum distance for double-click detection (pixels).
+const DOUBLE_CLICK_DISTANCE_PX: f32 = 5.0;
+
 /// State for the PDF canvas view (persistent, lives in App).
 pub struct CanvasState {
     pub zoom: f32,
@@ -146,9 +151,9 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                     {
                         let is_double_click =
                             state.last_click.as_ref().is_some_and(|(time, pos)| {
-                                time.elapsed().as_millis() < 500
-                                    && (pos.x - cursor_pos.x).abs() < 5.0
-                                    && (pos.y - cursor_pos.y).abs() < 5.0
+                                time.elapsed().as_millis() < DOUBLE_CLICK_TIMEOUT_MS
+                                    && (pos.x - cursor_pos.x).abs() < DOUBLE_CLICK_DISTANCE_PX
+                                    && (pos.y - cursor_pos.y).abs() < DOUBLE_CLICK_DISTANCE_PX
                             });
                         state.last_click = Some((std::time::Instant::now(), cursor_pos));
 
@@ -171,6 +176,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                         });
                         Some(canvas::Action::publish(Message::SelectOverlay(idx)).and_capture())
                     } else if page_rect.contains(iced::Point::new(canvas_x, canvas_y)) {
+                        state.last_click = None;
                         state.placement_drag = Some(PlacementDragState {
                             start_screen: cursor_pos,
                             page,
@@ -182,10 +188,12 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                         });
                         Some(canvas::Action::capture())
                     } else {
+                        state.last_click = None;
                         Some(canvas::Action::publish(Message::DeselectOverlay).and_capture())
                     }
                 } else {
                     // Click in gap or outside pages
+                    state.last_click = None;
                     Some(canvas::Action::publish(Message::DeselectOverlay).and_capture())
                 }
             }
@@ -2187,8 +2195,8 @@ mod tests {
     }
 
     #[test]
-    fn click_on_empty_page_after_overlay_click_resets_double_click_tracking() {
-        // Clicking blank page area still sets last_click and does NOT edit.
+    fn click_on_empty_page_between_overlay_clicks_prevents_double_click() {
+        // Clicking blank page area clears last_click and prevents false-positive double-click.
         let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
         let imgs = test_page_images();
         let dims = test_page_dimensions();
