@@ -58,12 +58,16 @@ digraph process {
         "Close task: bd close <task-id>" [shape=box];
     }
 
-    "Load epic, review tasks\nwith bd children/show" [shape=box];
-    "More tasks remain?" [shape=diamond];
+    "Load epic features:\nbd children <epic-id> --json" [shape=box];
+    "Load feature tasks:\nbd children <feature-id> --json" [shape=box];
+    "More tasks in feature?" [shape=diamond];
+    "Close feature:\nbd close <feature-id>" [shape=box];
+    "More features remain?" [shape=diamond];
     "Dispatch final code reviewer subagent for entire implementation" [shape=box];
     "Use finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
 
-    "Load epic, review tasks\nwith bd children/show" -> "Dispatch implementer subagent (./implementer-prompt.md)";
+    "Load epic features:\nbd children <epic-id> --json" -> "Load feature tasks:\nbd children <feature-id> --json";
+    "Load feature tasks:\nbd children <feature-id> --json" -> "Dispatch implementer subagent (./implementer-prompt.md)";
     "Dispatch implementer subagent (./implementer-prompt.md)" -> "Implementer subagent asks questions?";
     "Implementer subagent asks questions?" -> "Answer questions, provide context" [label="yes"];
     "Answer questions, provide context" -> "Dispatch implementer subagent (./implementer-prompt.md)";
@@ -77,9 +81,12 @@ digraph process {
     "Code quality reviewer subagent approves?" -> "Implementer subagent fixes quality issues" [label="no"];
     "Implementer subagent fixes quality issues" -> "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [label="re-review"];
     "Code quality reviewer subagent approves?" -> "Close task: bd close <task-id>" [label="yes"];
-    "Close task: bd close <task-id>" -> "More tasks remain?";
-    "More tasks remain?" -> "Dispatch implementer subagent (./implementer-prompt.md)" [label="yes"];
-    "More tasks remain?" -> "Dispatch final code reviewer subagent for entire implementation" [label="no"];
+    "Close task: bd close <task-id>" -> "More tasks in feature?";
+    "More tasks in feature?" -> "Dispatch implementer subagent (./implementer-prompt.md)" [label="yes"];
+    "More tasks in feature?" -> "Close feature:\nbd close <feature-id>" [label="no"];
+    "Close feature:\nbd close <feature-id>" -> "More features remain?";
+    "More features remain?" -> "Load feature tasks:\nbd children <feature-id> --json" [label="yes"];
+    "More features remain?" -> "Dispatch final code reviewer subagent for entire implementation" [label="no"];
     "Dispatch final code reviewer subagent for entire implementation" -> "Use finishing-a-development-branch";
 }
 ```
@@ -137,9 +144,11 @@ Implementer subagents report one of four statuses. Handle each appropriately:
 ```
 You: I'm using Subagent-Driven Development to execute this plan.
 
-[Load epic: bd children <epic-id> --json]
-[For each feature, load tasks: bd children <feature-id> --json]
-[Read task details: bd show <task-id> for each task]
+[Load epic features: bd children <epic-id> --json]
+
+--- Feature 1 (bd-feat1): Hook system ---
+
+[Load feature tasks: bd children bd-feat1 --json]
 
 Task 1 (bd-abc): Hook installation script
 
@@ -169,41 +178,27 @@ Code reviewer: Strengths: Good test coverage, clean. Issues: None. Approved.
 Task 2 (bd-def): Recovery modes
 
 [bd update bd-def --claim]
-[Read task design from bd show bd-def]
-[Dispatch implementation subagent with full task text + context]
-
-Implementer: [No questions, proceeds]
-Implementer:
-  - Added verify/repair modes
-  - 8/8 tests passing
-  - Self-review: All good
-  - Committed
-
-[Dispatch spec compliance reviewer]
-Spec reviewer: ❌ Issues:
-  - Missing: Progress reporting (spec says "report every 100 items")
-  - Extra: Added --json flag (not requested)
-
-[Implementer fixes issues]
-Implementer: Removed --json flag, added progress reporting
-
-[Spec reviewer reviews again]
-Spec reviewer: ✅ Spec compliant now
-
-[Dispatch code quality reviewer]
-Code reviewer: Strengths: Solid. Issues (Important): Magic number (100)
-
-[Implementer fixes]
-Implementer: Extracted PROGRESS_INTERVAL constant
-
-[Code reviewer reviews again]
-Code reviewer: ✅ Approved
+...reviews pass...
 
 [bd close bd-def --reason "Implemented"]
 
-...
+[All tasks in feature done — close feature]
+[bd close bd-feat1 --reason "All tasks complete"]
 
-[After all tasks — bd children <epic-id> shows all closed]
+--- Feature 2 (bd-feat2): Verification ---
+
+[Load feature tasks: bd children bd-feat2 --json]
+
+Task 3 (bd-ghi): Verify command
+...implement, review, close...
+[bd close bd-ghi --reason "Implemented"]
+
+[All tasks in feature done — close feature]
+[bd close bd-feat2 --reason "All tasks complete"]
+
+--- All features complete ---
+
+[bd children <epic-id> shows all features closed — epic auto-closes]
 [Dispatch final code-reviewer]
 Final reviewer: All requirements met, ready to merge
 
