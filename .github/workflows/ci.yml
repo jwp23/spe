@@ -64,7 +64,8 @@ jobs:
           cargo install cargo-audit --locked
           cargo audit
 
-  lint:
+  check:
+    needs: [fmt, secrets]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -80,48 +81,17 @@ jobs:
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
-      - name: Lint
-        run: cargo clippy -- -D warnings
-
-  test:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-        with:
-          toolchain: stable
-
-      - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install system utilities
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils fontconfig
 
       - name: Run unit tests
         run: cargo test
 
-  integration:
-    needs: [test]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-        with:
-          toolchain: stable
-
-      - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-
-      - name: Install system utilities
-        run: sudo apt-get update && sudo apt-get install -y poppler-utils fontconfig
-
       - name: Run integration tests
         run: cargo test -- --ignored
+
+      - name: Lint
+        run: cargo clippy -- -D warnings
 
   supply-chain:
     runs-on: ubuntu-latest
