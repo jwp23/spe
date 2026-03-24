@@ -1331,39 +1331,43 @@ fn render_thumbnail_batch_task(
 }
 
 /// Transparent background with blue outline for the floating text input overlay.
+const OVERLAY_BORDER: iced::Border = iced::Border {
+    color: canvas::SELECTION_COLOR,
+    width: 1.5,
+    radius: iced::border::Radius {
+        top_left: 2.0,
+        top_right: 2.0,
+        bottom_right: 2.0,
+        bottom_left: 2.0,
+    },
+};
+const OVERLAY_PLACEHOLDER: iced::Color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4);
+const OVERLAY_SELECTION: iced::Color = iced::Color::from_rgba(0.2, 0.5, 1.0, 0.3);
+
 fn overlay_text_input_style(
     _theme: &iced::Theme,
     _status: iced::widget::text_input::Status,
 ) -> iced::widget::text_input::Style {
     iced::widget::text_input::Style {
         background: iced::Background::Color(iced::Color::TRANSPARENT),
-        border: iced::Border {
-            color: canvas::SELECTION_COLOR,
-            width: 1.5,
-            radius: 2.0.into(),
-        },
+        border: OVERLAY_BORDER,
         icon: iced::Color::BLACK,
-        placeholder: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+        placeholder: OVERLAY_PLACEHOLDER,
         value: iced::Color::BLACK,
-        selection: iced::Color::from_rgba(0.2, 0.5, 1.0, 0.3),
+        selection: OVERLAY_SELECTION,
     }
 }
 
-/// Transparent background with blue outline for the floating text editor overlay.
 fn overlay_text_editor_style(
     _theme: &iced::Theme,
     _status: iced::widget::text_editor::Status,
 ) -> iced::widget::text_editor::Style {
     iced::widget::text_editor::Style {
         background: iced::Background::Color(iced::Color::TRANSPARENT),
-        border: iced::Border {
-            color: canvas::SELECTION_COLOR,
-            width: 1.5,
-            radius: 2.0.into(),
-        },
-        placeholder: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+        border: OVERLAY_BORDER,
+        placeholder: OVERLAY_PLACEHOLDER,
         value: iced::Color::BLACK,
-        selection: iced::Color::from_rgba(0.2, 0.5, 1.0, 0.3),
+        selection: OVERLAY_SELECTION,
     }
 }
 
