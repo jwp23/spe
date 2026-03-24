@@ -857,6 +857,22 @@ impl App {
     }
 
     fn handle_commit_text(&mut self) -> iced::Task<Message> {
+        if let Some(doc) = &self.document
+            && let Some(idx) = self.canvas.active_overlay
+            && idx < doc.overlays.len()
+            && let Some(old_text) = self.canvas.edit_start_text.take()
+        {
+            let new_text = doc.overlays[idx].text.clone();
+            if old_text != new_text {
+                let cmd = UndoCommand::EditText {
+                    index: idx,
+                    old_text,
+                    new_text,
+                };
+                self.undo_stack.push(cmd);
+                self.redo_stack.clear();
+            }
+        }
         self.canvas.editing = false;
         self.canvas.edit_start_text = None;
         self.editor_content = None;
@@ -2658,5 +2674,105 @@ mod tests {
         app.update(Message::EditOverlay(0));
         assert!(app.canvas.active_overlay.is_none());
         assert!(!app.canvas.editing);
+    }
+
+    #[test]
+    fn commit_text_pushes_edit_text_command_when_text_changed() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        // PlaceOverlay should push one command
+        assert_eq!(app.undo_stack.len(), 1);
+
+        // Simulate typing text
+        let overlay = &mut app.document.as_mut().unwrap().overlays[0];
+        overlay.text = "Hello".to_string();
+
+        // Commit the text change
+        app.update(Message::CommitText);
+
+        // Should have pushed EditText command
+        assert_eq!(app.undo_stack.len(), 2);
+        if let UndoCommand::EditText {
+            old_text, new_text, ..
+        } = &app.undo_stack[1]
+        {
+            assert_eq!(old_text, "");
+            assert_eq!(new_text, "Hello");
+        } else {
+            panic!("Expected EditText command at index 1");
+        }
+    }
+
+    #[test]
+    fn commit_text_no_command_when_text_unchanged() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        assert_eq!(app.undo_stack.len(), 1);
+
+        // Commit without typing anything (text unchanged from "")
+        app.update(Message::CommitText);
+
+        // Should NOT push EditText command
+        assert_eq!(app.undo_stack.len(), 1);
+    }
+
+    #[test]
+    fn undo_after_text_edit_restores_previous_text() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+
+        // Type text
+        let overlay = &mut app.document.as_mut().unwrap().overlays[0];
+        overlay.text = "Hello".to_string();
+
+        // Commit
+        let _ = app.update(Message::CommitText);
+        assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+
+        // Undo
+        let _ = app.update(Message::Undo);
+
+        // Text should be restored to empty
+        assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "");
+    }
+
+    #[test]
+    fn redo_after_undo_restores_edited_text() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+
+        // Type text
+        let overlay = &mut app.document.as_mut().unwrap().overlays[0];
+        overlay.text = "Hello".to_string();
+
+        // Commit
+        let _ = app.update(Message::CommitText);
+        assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+
+        // Undo
+        let _ = app.update(Message::Undo);
+        assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "");
+
+        // Redo
+        let _ = app.update(Message::Redo);
+
+        // Text should be restored to "Hello"
+        assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
     }
 }
