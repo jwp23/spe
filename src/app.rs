@@ -48,6 +48,8 @@ pub struct App {
     pub scale_factor: f32,
     pub scrollable_id: iced::widget::Id,
     pub status_message: Option<(String, std::time::Instant)>,
+    /// Content state for the floating multi-line text_editor (width-Some overlays).
+    pub editor_content: Option<iced::widget::text_editor::Content>,
 }
 
 /// All messages the application can process.
@@ -73,6 +75,7 @@ pub enum Message {
         width: Option<f32>,
     },
     UpdateOverlayText(String),
+    TextEditorAction(iced::widget::text_editor::Action),
     CommitText,
     MoveOverlay(usize, PdfPosition),
     ChangeFont(Standard14Font),
@@ -133,6 +136,7 @@ impl App {
             scale_factor: 1.0,
             scrollable_id: iced::widget::Id::unique(),
             status_message: None,
+            editor_content: None,
         };
         let font_task = iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded);
         (app, font_task)
@@ -233,6 +237,10 @@ impl App {
                     self.canvas.active_overlay = Some(idx);
                     self.canvas.editing = true;
                     self.canvas.edit_start_text = Some(String::new());
+                    if width.is_some() {
+                        self.editor_content =
+                            Some(iced::widget::text_editor::Content::with_text(""));
+                    }
                 }
             }
             Message::UpdateOverlayText(text) => {
@@ -241,6 +249,18 @@ impl App {
                     && idx < doc.overlays.len()
                 {
                     doc.overlays[idx].text = text;
+                }
+            }
+            Message::TextEditorAction(action) => {
+                if let Some(content) = &mut self.editor_content {
+                    content.perform(action);
+                    let new_text = content.text();
+                    if let Some(doc) = &mut self.document
+                        && let Some(idx) = self.canvas.active_overlay
+                        && idx < doc.overlays.len()
+                    {
+                        doc.overlays[idx].text = new_text;
+                    }
                 }
             }
             Message::CommitText => {
@@ -725,15 +745,15 @@ impl App {
         iced::Subscription::batch([event_sub, shimmer_sub, toast_sub])
     }
 
-    /// Wrap the scrollable canvas in a stack with a floating text_input when editing a
-    /// single-line overlay. Returns the scrollable unchanged when not editing.
+    /// Wrap the scrollable canvas in a stack with a floating text widget when editing an overlay.
+    /// Single-line overlays (width == None) get a text_input; multi-line overlays (width == Some)
+    /// get a text_editor. Returns the scrollable unchanged when not editing.
     fn floating_text_input<'a>(
         &'a self,
         doc: &'a DocumentState,
         layout: &canvas::PageLayout,
         scrollable_canvas: iced::Element<'a, Message>,
     ) -> iced::Element<'a, Message> {
-        // Only show floating input when editing a single-line overlay (width == None)
         let Some(idx) = self.canvas.active_overlay else {
             return scrollable_canvas;
         };
@@ -743,9 +763,6 @@ impl App {
         let Some(overlay) = doc.overlays.get(idx) else {
             return scrollable_canvas;
         };
-        if overlay.width.is_some() {
-            return scrollable_canvas;
-        }
 
         // Estimate canvas width for page rect centering: window minus sidebar minus scrollbar gutter
         const SCROLLBAR_MARGIN: f32 = 16.0;
@@ -788,18 +805,29 @@ impl App {
         let top_offset = (screen_y - self.canvas.scroll_y - scaled_font_size).max(0.0);
         let left_offset = screen_x.max(0.0);
 
-        // Auto-grow width with 80px minimum
-        let text_width =
-            overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size).width * scale;
-        let input_width = (80.0_f32).max(text_width);
+        let widget: iced::Element<Message> = if let Some(pdf_width) = overlay.width {
+            // Multi-line overlay: use text_editor with fixed width matching the overlay drag width.
+            let Some(content) = &self.editor_content else {
+                return scrollable_canvas;
+            };
+            let screen_width = pdf_width * scale;
+            iced::widget::text_editor(content)
+                .on_action(Message::TextEditorAction)
+                .width(screen_width)
+                .into()
+        } else {
+            // Single-line overlay: use text_input with auto-growing width.
+            let text_width =
+                overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size).width * scale;
+            let input_width = (80.0_f32).max(text_width);
+            iced::widget::text_input("", &overlay.text)
+                .on_input(Message::UpdateOverlayText)
+                .on_submit(Message::CommitText)
+                .width(input_width)
+                .into()
+        };
 
-        let input: iced::Element<Message> = iced::widget::text_input("", &overlay.text)
-            .on_input(Message::UpdateOverlayText)
-            .on_submit(Message::CommitText)
-            .width(input_width)
-            .into();
-
-        let positioned: iced::Element<Message> = iced::widget::container(input)
+        let positioned: iced::Element<Message> = iced::widget::container(widget)
             .padding(iced::Padding::ZERO.top(top_offset).left(left_offset))
             .width(iced::Length::Fill)
             .height(iced::Length::Fill)
@@ -813,6 +841,7 @@ impl App {
     fn handle_commit_text(&mut self) -> iced::Task<Message> {
         self.canvas.editing = false;
         self.canvas.edit_start_text = None;
+        self.editor_content = None;
         iced::Task::none()
     }
 
@@ -2424,5 +2453,61 @@ mod tests {
         });
         assert!(app.canvas.editing);
         let _element = app.view();
+    }
+
+    // --- text_editor (multi-line) tests ---
+
+    #[test]
+    fn place_multiline_overlay_initializes_editor_content() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 500.0 },
+            width: Some(200.0),
+        });
+        assert!(app.editor_content.is_some());
+    }
+
+    #[test]
+    fn place_singleline_overlay_does_not_initialize_editor_content() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 500.0 },
+            width: None,
+        });
+        assert!(app.editor_content.is_none());
+    }
+
+    #[test]
+    fn text_editor_action_syncs_text_to_overlay() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 500.0 },
+            width: Some(200.0),
+        });
+        // Insert the character 'H' into the editor
+        app.update(Message::TextEditorAction(
+            iced::widget::text_editor::Action::Edit(iced::widget::text_editor::Edit::Insert('H')),
+        ));
+        let text = app.document.as_ref().unwrap().overlays[0].text.clone();
+        assert!(
+            text.contains('H'),
+            "overlay text should contain 'H', got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn commit_text_clears_editor_content() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 500.0 },
+            width: Some(200.0),
+        });
+        assert!(app.editor_content.is_some());
+        app.update(Message::CommitText);
+        assert!(app.editor_content.is_none());
     }
 }
