@@ -35,6 +35,15 @@ pub struct DocumentState {
     pub overlays: Vec<TextOverlay>,
 }
 
+impl DocumentState {
+    pub fn max_page_width(&self) -> f32 {
+        self.page_dimensions
+            .values()
+            .map(|(w, _)| *w)
+            .fold(0.0f32, f32::max)
+    }
+}
+
 /// Top-level application state.
 pub struct App {
     pub document: Option<DocumentState>,
@@ -171,6 +180,14 @@ impl App {
             cmd.apply(&mut doc.overlays);
             self.undo_stack.push(cmd);
             self.redo_stack.clear();
+        }
+    }
+
+    fn effective_sidebar_width(&self) -> f32 {
+        if self.sidebar.visible {
+            self.sidebar.width
+        } else {
+            0.0
         }
     }
 
@@ -420,18 +437,10 @@ impl App {
             }
             Message::ZoomFitWidth => {
                 if let (Some(doc), Some(win)) = (&self.document, self.window_size) {
-                    let max_page_w = doc
-                        .page_dimensions
-                        .values()
-                        .map(|(w, _)| *w)
-                        .fold(0.0f32, f32::max);
+                    let max_page_w = doc.max_page_width();
                     if max_page_w > 0.0 {
-                        let sidebar_w = if self.sidebar.visible {
-                            self.sidebar.width
-                        } else {
-                            0.0
-                        };
-                        let available_w = (win.width - sidebar_w - 16.0).max(1.0);
+                        let available_w =
+                            (win.width - self.effective_sidebar_width() - 16.0).max(1.0);
                         self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
                         return self.apply_zoom_change();
                     }
@@ -524,12 +533,7 @@ impl App {
                     let max_page_w = self
                         .document
                         .as_ref()
-                        .map(|d| {
-                            d.page_dimensions
-                                .values()
-                                .map(|(w, _)| *w)
-                                .fold(0.0f32, f32::max)
-                        })
+                        .map(|d| d.max_page_width())
                         .unwrap_or(612.0);
                     self.sidebar.thumbnail_dpi = crate::ui::sidebar::compute_thumbnail_dpi(
                         self.sidebar.width,
@@ -711,12 +715,8 @@ impl App {
 
         match self.window_size {
             Some(win) => {
-                let sidebar_w = if self.sidebar.visible {
-                    self.sidebar.width
-                } else {
-                    0.0
-                };
-                let available_w = (win.width - sidebar_w - SCROLLBAR_MARGIN).max(1.0);
+                let available_w =
+                    (win.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN).max(1.0);
                 let available_h =
                     (win.height - TOOLBAR_HEIGHT_ESTIMATE - SCROLLBAR_MARGIN).max(1.0);
                 (
@@ -834,14 +834,9 @@ impl App {
         let overlay = doc.overlays.get(idx)?;
 
         const SCROLLBAR_MARGIN: f32 = 16.0;
-        let sidebar_w = if self.sidebar.visible {
-            self.sidebar.width
-        } else {
-            0.0
-        };
         let canvas_w = self
             .window_size
-            .map(|s| (s.width - sidebar_w - SCROLLBAR_MARGIN).max(1.0))
+            .map(|s| (s.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN).max(1.0))
             .unwrap_or(800.0);
 
         let dpi = canvas::effective_dpi(self.canvas.zoom);
@@ -1009,24 +1004,14 @@ impl App {
                 let max_page_w = self
                     .document
                     .as_ref()
-                    .map(|d| {
-                        d.page_dimensions
-                            .values()
-                            .map(|(w, _)| *w)
-                            .fold(0.0f32, f32::max)
-                    })
+                    .map(|d| d.max_page_width())
                     .unwrap_or(612.0);
 
                 // Set initial zoom to fit widest page in viewport
                 if let Some(win) = self.window_size
                     && max_page_w > 0.0
                 {
-                    let sidebar_w = if self.sidebar.visible {
-                        self.sidebar.width
-                    } else {
-                        0.0
-                    };
-                    let available_w = (win.width - sidebar_w - 16.0).max(1.0);
+                    let available_w = (win.width - self.effective_sidebar_width() - 16.0).max(1.0);
                     self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
                 }
 
