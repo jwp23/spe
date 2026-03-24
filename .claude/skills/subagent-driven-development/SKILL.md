@@ -86,18 +86,27 @@ digraph process {
 
 ## Model Selection
 
-Use the least powerful model that can handle each role to conserve cost and increase speed.
+Use the least powerful model that can handle each role. Start cheap, escalate on failure.
 
-**Mechanical implementation tasks** (isolated functions, clear specs, 1-2 files): use a fast, cheap model. Most implementation tasks are mechanical when the plan is well-specified.
+The Agent tool accepts `model: "haiku" | "sonnet" | "opus"`. Use this table:
 
-**Integration and judgment tasks** (multi-file coordination, pattern matching, debugging): use a standard model.
+| Role | Model | Why |
+|------|-------|-----|
+| Implementer (mechanical) | `haiku` | Clear spec, 1-2 files, plan provides code snippets. Review stages catch mistakes. |
+| Implementer (integration) | `sonnet` | Multi-file coordination, message passing, pattern matching. |
+| Implementer (complex) | `opus` | Design judgment, broad codebase understanding, architectural decisions. |
+| Spec reviewer | `sonnet` | Structured comparison: spec vs. code. Doesn't require deep judgment. |
+| Code quality reviewer | `opus` | Judgment-heavy: naming, coupling, maintainability, design smell detection. |
+| Final reviewer | `opus` | Holistic assessment across entire implementation. |
 
-**Architecture, design, and review tasks**: use the most capable available model.
+**Most implementation tasks are mechanical when the plan is well-specified.** Plans from writing-plans include code snippets, file paths, and acceptance criteria — enough context for haiku to succeed.
 
-**Task complexity signals:**
-- Touches 1-2 files with a complete spec → cheap model
-- Touches multiple files with integration concerns → standard model
-- Requires design judgment or broad codebase understanding → most capable model
+**Complexity signals for implementers:**
+- Touches 1-2 files with a complete spec → `haiku`
+- Touches multiple files with integration concerns → `sonnet`
+- Requires design judgment or broad codebase understanding → `opus`
+
+**Escalation is the safety net:** If haiku reports BLOCKED, re-dispatch with sonnet. If sonnet reports BLOCKED, re-dispatch with opus. Never retry the same model without changing something (see Handling Implementer Status).
 
 ## Handling Implementer Status
 
