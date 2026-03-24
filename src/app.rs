@@ -68,6 +68,7 @@ pub enum Message {
     PlaceOverlay {
         page: u32,
         position: PdfPosition,
+        width: Option<f32>,
     },
     UpdateOverlayText(String),
     CommitText,
@@ -203,7 +204,11 @@ impl App {
             }
 
             // --- Overlay editing (undoable) ---
-            Message::PlaceOverlay { page, position } => {
+            Message::PlaceOverlay {
+                page,
+                position,
+                width,
+            } => {
                 if let Some(doc) = &mut self.document {
                     let overlay = TextOverlay {
                         page,
@@ -211,7 +216,7 @@ impl App {
                         text: String::new(),
                         font: self.toolbar.font,
                         font_size: self.toolbar.font_size,
-                        width: None,
+                        width,
                     };
                     let cmd = UndoCommand::PlaceOverlay {
                         overlay: overlay.clone(),
@@ -1202,6 +1207,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
         assert_eq!(app.undo_stack.len(), 1);
@@ -1216,6 +1222,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
 
@@ -1234,6 +1241,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         app.update(Message::Undo);
         assert_eq!(app.redo_stack.len(), 1);
@@ -1241,6 +1249,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 200.0, y: 600.0 },
+            width: None,
         });
         assert!(app.redo_stack.is_empty());
     }
@@ -1251,6 +1260,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         // PlaceOverlay sets active_overlay
         app.update(Message::DeleteOverlay);
@@ -1264,6 +1274,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         app.update(Message::ChangeFont(Standard14Font::Courier));
         assert_eq!(
@@ -1370,6 +1381,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         app.update(Message::ChangeFont(Standard14Font::CourierBold));
         app.update(Message::DeselectOverlay);
@@ -2098,6 +2110,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         assert!(app.canvas.active_overlay.is_some());
         assert!(app.canvas.editing);
