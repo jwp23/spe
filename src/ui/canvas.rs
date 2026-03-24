@@ -14,6 +14,8 @@ use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
 const DOUBLE_CLICK_TIMEOUT_MS: u128 = 500;
 /// Maximum distance for double-click detection (pixels).
 const DOUBLE_CLICK_DISTANCE_PX: f32 = 5.0;
+/// Blue used for selection boxes, resize handles, and text input borders.
+pub const SELECTION_COLOR: iced::Color = iced::Color::from_rgb(0.2, 0.5, 1.0);
 
 /// State for the PDF canvas view (persistent, lives in App).
 pub struct CanvasState {
@@ -521,7 +523,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 iced::Point::new(rect_x, rect_y),
                 iced::Size::new(rect_w, rect_h),
                 canvas::Stroke::default()
-                    .with_color(iced::Color::from_rgb(0.2, 0.5, 1.0))
+                    .with_color(SELECTION_COLOR)
                     .with_width(1.5),
             );
         }
@@ -637,7 +639,7 @@ fn draw_selection_box(
         iced::Point::new(screen_x - padding, screen_y - h - padding),
         iced::Size::new(w + 2.0 * padding, h + 2.0 * padding),
         canvas::Stroke::default()
-            .with_color(iced::Color::from_rgb(0.2, 0.5, 1.0))
+            .with_color(SELECTION_COLOR)
             .with_width(1.5),
     );
 }
@@ -659,7 +661,7 @@ fn draw_resize_handle(
     frame.fill_rectangle(
         iced::Point::new(handle_x - 2.0, overlay_sy - scaled_size),
         iced::Size::new(4.0, scaled_size),
-        iced::Color::from_rgb(0.2, 0.5, 1.0),
+        SELECTION_COLOR,
     );
 }
 

@@ -23,6 +23,14 @@ const MAX_SIDEBAR_WIDTH: f32 = 400.0;
 const SHIMMER_TICK_DELTA: f32 = 0.05;
 /// Maximum number of thumbnail batch tasks that may run concurrently.
 const MAX_CONCURRENT_THUMBNAIL_TASKS: u32 = 2;
+/// Margin reserved for scrollbar width in viewport calculations.
+const SCROLLBAR_MARGIN: f32 = 16.0;
+/// Debounce timeout for zoom and sidebar resize operations (milliseconds).
+const DEBOUNCE_MS: u64 = 300;
+/// Number of pages to render in a single thumbnail batch.
+const THUMBNAIL_BATCH_SIZE: usize = 20;
+/// Extra pages to render above/below the visible sidebar range.
+const SIDEBAR_PAGE_BUFFER: u32 = 5;
 
 /// State for the currently loaded PDF document.
 pub struct DocumentState {
@@ -440,7 +448,8 @@ impl App {
                     let max_page_w = doc.max_page_width();
                     if max_page_w > 0.0 {
                         let available_w =
-                            (win.width - self.effective_sidebar_width() - 16.0).max(1.0);
+                            (win.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN)
+                                .max(1.0);
                         self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
                         return self.apply_zoom_change();
                     }
@@ -522,7 +531,7 @@ impl App {
                 let generation = self.sidebar.backfill_generation;
                 return iced::Task::perform(
                     async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
                         generation
                     },
                     Message::SidebarResizeDebounceExpired,
@@ -703,7 +712,6 @@ impl App {
     /// Height: total layout height (all pages + gaps) or viewport, whichever is larger.
     fn canvas_dimensions(&self, doc: &DocumentState) -> (iced::Length, iced::Length) {
         const TOOLBAR_HEIGHT_ESTIMATE: f32 = 40.0;
-        const SCROLLBAR_MARGIN: f32 = 16.0;
 
         let dpi = canvas::effective_dpi(self.canvas.zoom);
         let layout =
@@ -829,7 +837,6 @@ impl App {
         }
         let overlay = doc.overlays.get(idx)?;
 
-        const SCROLLBAR_MARGIN: f32 = 16.0;
         let canvas_w = self
             .window_size
             .map(|s| (s.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN).max(1.0))
@@ -1007,7 +1014,8 @@ impl App {
                 if let Some(win) = self.window_size
                     && max_page_w > 0.0
                 {
-                    let available_w = (win.width - self.effective_sidebar_width() - 16.0).max(1.0);
+                    let available_w =
+                        (win.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN).max(1.0);
                     self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
                 }
 
@@ -1156,7 +1164,7 @@ impl App {
         }
         // Sort nearest-first so the most relevant pages render sooner.
         unrendered.sort_by_key(|p| (*p as i64 - center_page as i64).unsigned_abs());
-        let batch: Vec<u32> = unrendered.into_iter().take(20).collect();
+        let batch: Vec<u32> = unrendered.into_iter().take(THUMBNAIL_BATCH_SIZE).collect();
         // pdftoppm requires a contiguous page range (-f/-l), so we use
         // min/max of the nearest-first batch. This may re-render some
         // already-cached pages in the middle — harmless at thumbnail DPI.
@@ -1195,7 +1203,7 @@ impl App {
             self.sidebar.viewport_height.max(600.0),
             doc.page_count,
             avg_thumb_h + 8.0,
-            5,
+            SIDEBAR_PAGE_BUFFER,
         );
         let pages_to_render: Vec<u32> = visible
             .filter(|p| !self.sidebar.thumbnails.contains_key(p))
@@ -1206,7 +1214,7 @@ impl App {
         let pdf_path = doc.source_path.clone();
         let generation = self.sidebar.backfill_generation;
         let mut tasks = Vec::new();
-        for chunk in pages_to_render.chunks(20) {
+        for chunk in pages_to_render.chunks(THUMBNAIL_BATCH_SIZE) {
             let first = *chunk.first().unwrap();
             let last = *chunk.last().unwrap();
             if self.sidebar.active_batch_tasks >= MAX_CONCURRENT_THUMBNAIL_TASKS {
@@ -1261,7 +1269,7 @@ impl App {
         let generation = self.canvas.zoom_generation;
         iced::Task::perform(
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
                 generation
             },
             Message::ZoomDebounceExpired,
@@ -1330,7 +1338,7 @@ fn overlay_text_input_style(
     iced::widget::text_input::Style {
         background: iced::Background::Color(iced::Color::TRANSPARENT),
         border: iced::Border {
-            color: iced::Color::from_rgb(0.2, 0.5, 1.0),
+            color: canvas::SELECTION_COLOR,
             width: 1.5,
             radius: 2.0.into(),
         },
@@ -1349,7 +1357,7 @@ fn overlay_text_editor_style(
     iced::widget::text_editor::Style {
         background: iced::Background::Color(iced::Color::TRANSPARENT),
         border: iced::Border {
-            color: iced::Color::from_rgb(0.2, 0.5, 1.0),
+            color: canvas::SELECTION_COLOR,
             width: 1.5,
             radius: 2.0.into(),
         },
