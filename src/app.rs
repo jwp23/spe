@@ -673,7 +673,7 @@ impl App {
             iced::widget::center(iced::widget::text("Open a PDF to get started").size(20)).into()
         };
 
-        let mut main_column = iced::widget::column![toolbar, content];
+        let mut main_column = iced::widget::column![toolbar];
 
         if let Some((msg, _)) = &self.status_message {
             let toast = iced::widget::container(iced::widget::text(msg.as_str()).size(14))
@@ -688,6 +688,8 @@ impl App {
                 });
             main_column = main_column.push(toast);
         }
+
+        main_column = main_column.push(content);
 
         main_column.into()
     }
@@ -790,23 +792,36 @@ impl App {
     /// Wrap the scrollable canvas in a stack with a floating text widget when editing an overlay.
     /// Single-line overlays (width == None) get a text_input; multi-line overlays (width == Some)
     /// get a text_editor. Returns the scrollable unchanged when not editing.
+    /// Build floating text widget overlay if editing, then wrap scrollable in a
+    /// stack. The stack is ALWAYS used (even when not editing) so the widget tree
+    /// structure stays consistent and Iced preserves scroll position.
     fn floating_text_input<'a>(
         &'a self,
         doc: &'a DocumentState,
         layout: &canvas::PageLayout,
         scrollable_canvas: iced::Element<'a, Message>,
     ) -> iced::Element<'a, Message> {
-        let Some(idx) = self.canvas.active_overlay else {
-            return scrollable_canvas;
-        };
-        if !self.canvas.editing {
-            return scrollable_canvas;
-        }
-        let Some(overlay) = doc.overlays.get(idx) else {
-            return scrollable_canvas;
-        };
+        let overlay_widget = self.build_editing_widget(doc, layout);
 
-        // Estimate canvas width for page rect centering: window minus sidebar minus scrollbar gutter
+        match overlay_widget {
+            Some(positioned) => iced::widget::stack![scrollable_canvas, positioned].into(),
+            None => iced::widget::stack![scrollable_canvas].into(),
+        }
+    }
+
+    /// Build the positioned floating text widget if currently editing an overlay.
+    /// Returns None when not editing or when required state is unavailable.
+    fn build_editing_widget<'a>(
+        &'a self,
+        doc: &'a DocumentState,
+        layout: &canvas::PageLayout,
+    ) -> Option<iced::Element<'a, Message>> {
+        let idx = self.canvas.active_overlay?;
+        if !self.canvas.editing {
+            return None;
+        }
+        let overlay = doc.overlays.get(idx)?;
+
         const SCROLLBAR_MARGIN: f32 = 16.0;
         let sidebar_w = if self.sidebar.visible {
             self.sidebar.width
@@ -821,14 +836,11 @@ impl App {
         let dpi = canvas::effective_dpi(self.canvas.zoom);
 
         if layout.page_tops.is_empty() {
-            return scrollable_canvas;
+            return None;
         }
 
         let page_rect = canvas::page_rect_in_canvas(layout, overlay.page, canvas_w);
-
-        let Some((_, page_h)) = doc.page_dimensions.get(&overlay.page) else {
-            return scrollable_canvas;
-        };
+        let (_, page_h) = doc.page_dimensions.get(&overlay.page)?;
 
         let params = ConversionParams {
             zoom: self.canvas.zoom,
@@ -840,25 +852,20 @@ impl App {
 
         let (screen_x, screen_y) = pdf_to_screen(overlay.position.x, overlay.position.y, &params);
 
-        // Adjust y from canvas coordinates to viewport coordinates by subtracting scroll offset.
-        // The PDF y is at the baseline; shift up by font_size so input appears above the baseline.
         let scale = self.canvas.zoom * dpi / 72.0;
         let scaled_font_size = overlay.font_size * scale;
         let top_offset = (screen_y - self.canvas.scroll_y - scaled_font_size).max(0.0);
         let left_offset = screen_x.max(0.0);
 
         let widget: iced::Element<Message> = if let Some(pdf_width) = overlay.width {
-            // Multi-line overlay: use text_editor with fixed width matching the overlay drag width.
-            let Some(content) = &self.editor_content else {
-                return scrollable_canvas;
-            };
+            let content = self.editor_content.as_ref()?;
             let screen_width = pdf_width * scale;
             iced::widget::text_editor(content)
                 .on_action(Message::TextEditorAction)
                 .width(screen_width)
+                .style(overlay_text_editor_style)
                 .into()
         } else {
-            // Single-line overlay: use text_input with auto-growing width.
             let text_width =
                 overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size).width * scale;
             let input_width = (80.0_f32).max(text_width);
@@ -866,6 +873,7 @@ impl App {
                 .on_input(Message::UpdateOverlayText)
                 .on_submit(Message::CommitText)
                 .width(input_width)
+                .style(overlay_text_input_style)
                 .into()
         };
 
@@ -877,7 +885,7 @@ impl App {
             .align_y(iced::alignment::Vertical::Top)
             .into();
 
-        iced::widget::stack![scrollable_canvas, positioned].into()
+        Some(positioned)
     }
 
     fn handle_commit_text(&mut self) -> iced::Task<Message> {
@@ -1325,6 +1333,43 @@ fn render_thumbnail_batch_task(
     )
 }
 
+/// Transparent background with blue outline for the floating text input overlay.
+fn overlay_text_input_style(
+    _theme: &iced::Theme,
+    _status: iced::widget::text_input::Status,
+) -> iced::widget::text_input::Style {
+    iced::widget::text_input::Style {
+        background: iced::Background::Color(iced::Color::TRANSPARENT),
+        border: iced::Border {
+            color: iced::Color::from_rgb(0.2, 0.5, 1.0),
+            width: 1.5,
+            radius: 2.0.into(),
+        },
+        icon: iced::Color::BLACK,
+        placeholder: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+        value: iced::Color::BLACK,
+        selection: iced::Color::from_rgba(0.2, 0.5, 1.0, 0.3),
+    }
+}
+
+/// Transparent background with blue outline for the floating text editor overlay.
+fn overlay_text_editor_style(
+    _theme: &iced::Theme,
+    _status: iced::widget::text_editor::Status,
+) -> iced::widget::text_editor::Style {
+    iced::widget::text_editor::Style {
+        background: iced::Background::Color(iced::Color::TRANSPARENT),
+        border: iced::Border {
+            color: iced::Color::from_rgb(0.2, 0.5, 1.0),
+            width: 1.5,
+            radius: 2.0.into(),
+        },
+        placeholder: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+        value: iced::Color::BLACK,
+        selection: iced::Color::from_rgba(0.2, 0.5, 1.0, 0.3),
+    }
+}
+
 /// Map a keyboard event to an application message.
 fn key_to_message(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<Message> {
     use keyboard::key::Named;
@@ -1333,6 +1378,7 @@ fn key_to_message(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<
         keyboard::Key::Named(named) => match (named, modifiers.command(), modifiers.shift()) {
             (Named::Delete, false, false) => Some(Message::DeleteOverlay),
             (Named::Escape, false, false) => Some(Message::DeselectOverlay),
+            (Named::Enter, true, false) => Some(Message::CommitText),
             (Named::PageUp, false, false) => Some(Message::PreviousPage),
             (Named::PageDown, false, false) => Some(Message::NextPage),
             (Named::F9, false, false) => Some(Message::ToggleSidebar),
