@@ -157,11 +157,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
 
                 if let Some((page, page_rect)) = self.page_at_canvas_y(canvas_y, bounds.width) {
                     // Convert cursor to page-local coordinates for hit testing
-                    let page_screen_rect = iced::Rectangle {
-                        x: page_rect.x + bounds.x,
-                        y: page_rect.y + bounds.y,
-                        ..page_rect
-                    };
+                    let page_screen_rect = to_screen_rect(page_rect, &bounds);
                     let params = self.conversion_params_for_page(page, &page_screen_rect)?;
 
                     // Check if we hit the resize handle of the selected multi-line overlay first.
@@ -219,11 +215,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                         state.placement_drag = Some(PlacementDragState {
                             start_screen: cursor_pos,
                             page,
-                            page_screen_rect: iced::Rectangle {
-                                x: page_rect.x + bounds.x,
-                                y: page_rect.y + bounds.y,
-                                ..page_rect
-                            },
+                            page_screen_rect: to_screen_rect(page_rect, &bounds),
                         });
                         Some(canvas::Action::capture())
                     } else {
@@ -308,11 +300,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                     let overlay = self.overlays.get(resize.overlay_index)?;
                     let page_rect =
                         page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
-                    let page_screen_rect = iced::Rectangle {
-                        x: page_rect.x + bounds.x,
-                        y: page_rect.y + bounds.y,
-                        ..page_rect
-                    };
+                    let page_screen_rect = to_screen_rect(page_rect, &bounds);
                     let params =
                         self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
                     let (cursor_pdf_x, _) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
@@ -335,11 +323,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 // Use the overlay's page for coordinate conversion
                 let overlay = self.overlays.get(drag.overlay_index)?;
                 let page_rect = page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
-                let page_screen_rect = iced::Rectangle {
-                    x: page_rect.x + bounds.x,
-                    y: page_rect.y + bounds.y,
-                    ..page_rect
-                };
+                let page_screen_rect = to_screen_rect(page_rect, &bounds);
                 let params = self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
 
                 let overlay_screen_x = cursor_pos.x - drag.grab_offset_x;
@@ -570,11 +554,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
             return mouse::Interaction::default();
         };
 
-        let page_screen_rect = iced::Rectangle {
-            x: page_rect.x + bounds.x,
-            y: page_rect.y + bounds.y,
-            ..page_rect
-        };
+        let page_screen_rect = to_screen_rect(page_rect, &bounds);
         let Some(params) = self.conversion_params_for_page(page, &page_screen_rect) else {
             return mouse::Interaction::default();
         };
@@ -599,6 +579,14 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
         }
 
         mouse::Interaction::default()
+    }
+}
+
+fn to_screen_rect(page_rect: iced::Rectangle, bounds: &iced::Rectangle) -> iced::Rectangle {
+    iced::Rectangle {
+        x: page_rect.x + bounds.x,
+        y: page_rect.y + bounds.y,
+        ..page_rect
     }
 }
 
