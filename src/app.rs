@@ -50,6 +50,8 @@ pub struct App {
     pub status_message: Option<(String, std::time::Instant)>,
     /// Content state for the floating multi-line text_editor (width-Some overlays).
     pub editor_content: Option<iced::widget::text_editor::Content>,
+    /// Stable ID for the floating text widget, used for programmatic focus.
+    pub text_input_id: iced::widget::Id,
 }
 
 /// All messages the application can process.
@@ -144,6 +146,7 @@ impl App {
             scrollable_id: iced::widget::Id::unique(),
             status_message: None,
             editor_content: None,
+            text_input_id: iced::widget::Id::unique(),
         };
         let font_task = iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded);
         (app, font_task)
@@ -248,6 +251,7 @@ impl App {
                         self.editor_content =
                             Some(iced::widget::text_editor::Content::with_text(""));
                     }
+                    return iced::widget::operation::focus(self.text_input_id.clone());
                 }
             }
             Message::UpdateOverlayText(text) => {
@@ -386,6 +390,7 @@ impl App {
                             &doc.overlays[index].text,
                         ));
                     }
+                    return iced::widget::operation::focus(self.text_input_id.clone());
                 }
             }
             Message::DeselectOverlay => {
@@ -873,6 +878,7 @@ impl App {
             let screen_width = pdf_width * scale;
             iced::widget::text_editor(content)
                 .on_action(Message::TextEditorAction)
+                .id(self.text_input_id.clone())
                 .width(screen_width)
                 .style(overlay_text_editor_style)
                 .into()
@@ -881,6 +887,7 @@ impl App {
                 overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size).width * scale;
             let input_width = (80.0_f32).max(text_width);
             iced::widget::text_input("", &overlay.text)
+                .id(self.text_input_id.clone())
                 .on_input(Message::UpdateOverlayText)
                 .on_submit(Message::CommitText)
                 .width(input_width)
@@ -2911,5 +2918,78 @@ mod tests {
             element.is_some(),
             "stack must have a second child when editing"
         );
+    }
+
+    // =====================================================================
+    // spe-910: text_input focus after overlay placement
+    // =====================================================================
+
+    #[test]
+    fn place_overlay_returns_focus_task() {
+        let mut app = test_app_with_document();
+        let task = app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        let debug = format!("{task:?}");
+        assert!(
+            !debug.contains("units: 0"),
+            "PlaceOverlay should return a focus Task, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn place_multiline_overlay_returns_focus_task() {
+        let mut app = test_app_with_document();
+        let task = app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: Some(200.0),
+        });
+        let debug = format!("{task:?}");
+        assert!(
+            !debug.contains("units: 0"),
+            "PlaceOverlay (multi-line) should return a focus Task, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn edit_overlay_returns_focus_task() {
+        let mut app = test_app_with_overlay();
+        let task = app.update(Message::EditOverlay(0));
+        let debug = format!("{task:?}");
+        assert!(
+            !debug.contains("units: 0"),
+            "EditOverlay should return a focus Task, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn edit_multiline_overlay_returns_focus_task() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: Some(200.0),
+        });
+        app.update(Message::CommitText);
+        let task = app.update(Message::EditOverlay(0));
+        let debug = format!("{task:?}");
+        assert!(
+            !debug.contains("units: 0"),
+            "EditOverlay (multi-line) should return a focus Task, got: {debug}"
+        );
+    }
+
+    // =====================================================================
+    // spe-zr9: text_input has matching font size and zero padding
+    // =====================================================================
+
+    #[test]
+    fn app_has_text_input_id() {
+        let (app, _) = App::new();
+        // text_input_id must exist for focus operations
+        let _id = &app.text_input_id;
     }
 }
