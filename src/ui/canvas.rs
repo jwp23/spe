@@ -237,8 +237,11 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 }
             }
 
-            canvas::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                state.cursor_position = Some(*position);
+            canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                // Use cursor.position() (scroll-adjusted) instead of the raw event
+                // position, so state.cursor_position matches the coordinate space
+                // used by cursor.position() in press/release handlers.
+                state.cursor_position = cursor.position();
                 if state.drag.is_some()
                     || state.placement_drag.is_some()
                     || state.resize_drag.is_some()
