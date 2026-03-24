@@ -800,24 +800,20 @@ impl App {
         layout: &canvas::PageLayout,
         scrollable_canvas: iced::Element<'a, Message>,
     ) -> iced::Element<'a, Message> {
-        // stack_overlay_element always returns Some, keeping the Stack child count
-        // at exactly 2 regardless of editing state.
-        let overlay_child = self.stack_overlay_element(doc, layout).unwrap();
+        let overlay_child = self.stack_overlay_element(doc, layout);
         iced::widget::stack![scrollable_canvas, overlay_child].into()
     }
 
     /// Returns the second child for the floating text Stack.
-    /// Always returns Some to keep the Stack child count consistent across editing
-    /// state changes, preventing Iced from resetting the canvas ProgramState.
+    /// Always returns an element to keep the Stack child count consistent across
+    /// editing state changes, preventing Iced from resetting the canvas ProgramState.
     fn stack_overlay_element<'a>(
         &'a self,
         doc: &'a DocumentState,
         layout: &canvas::PageLayout,
-    ) -> Option<iced::Element<'a, Message>> {
-        if let Some(widget) = self.build_editing_widget(doc, layout) {
-            return Some(widget);
-        }
-        Some(iced::widget::Space::new().into())
+    ) -> iced::Element<'a, Message> {
+        self.build_editing_widget(doc, layout)
+            .unwrap_or_else(|| iced::widget::Space::new().into())
     }
 
     /// Build the positioned floating text widget if currently editing an overlay.
@@ -1274,6 +1270,27 @@ impl App {
 }
 
 /// Launch an async task to render a batch of PDF pages via pdftoppm.
+fn render_batch(
+    pdf_path: PathBuf,
+    first_page: u32,
+    last_page: u32,
+    dpi: u32,
+) -> Option<Vec<(u32, Handle)>> {
+    let renderer = PdftoppmRenderer;
+    match renderer.render_page_batch(&pdf_path, first_page, last_page, dpi) {
+        Ok(images) => Some(
+            images
+                .into_iter()
+                .map(|(page, img)| (page, canvas::image_to_handle(img)))
+                .collect(),
+        ),
+        Err(e) => {
+            eprintln!("Failed to render batch {first_page}-{last_page}: {e}");
+            None
+        }
+    }
+}
+
 fn render_page_batch_task(
     pdf_path: PathBuf,
     first_page: u32,
@@ -1281,22 +1298,7 @@ fn render_page_batch_task(
     dpi: u32,
 ) -> iced::Task<Message> {
     iced::Task::perform(
-        async move {
-            let renderer = PdftoppmRenderer;
-            match renderer.render_page_batch(&pdf_path, first_page, last_page, dpi) {
-                Ok(images) => {
-                    let handles: Vec<(u32, Handle)> = images
-                        .into_iter()
-                        .map(|(page, img)| (page, canvas::image_to_handle(img)))
-                        .collect();
-                    Some(handles)
-                }
-                Err(e) => {
-                    eprintln!("Failed to render page batch {first_page}-{last_page}: {e}");
-                    None
-                }
-            }
-        },
+        async move { render_batch(pdf_path, first_page, last_page, dpi) },
         |result| match result {
             Some(handles) => Message::PageBatchRendered(handles),
             None => Message::Noop,
@@ -1304,7 +1306,6 @@ fn render_page_batch_task(
     )
 }
 
-/// Launch an async task to render a batch of PDF page thumbnails via pdftoppm.
 fn render_thumbnail_batch_task(
     pdf_path: PathBuf,
     first_page: u32,
@@ -1313,22 +1314,7 @@ fn render_thumbnail_batch_task(
     generation: u64,
 ) -> iced::Task<Message> {
     iced::Task::perform(
-        async move {
-            let renderer = PdftoppmRenderer;
-            match renderer.render_page_batch(&pdf_path, first_page, last_page, dpi) {
-                Ok(images) => {
-                    let handles: Vec<(u32, Handle)> = images
-                        .into_iter()
-                        .map(|(page, img)| (page, canvas::image_to_handle(img)))
-                        .collect();
-                    Some((handles, generation))
-                }
-                Err(e) => {
-                    eprintln!("Failed to render thumbnail batch {first_page}-{last_page}: {e}");
-                    None
-                }
-            }
-        },
+        async move { render_batch(pdf_path, first_page, last_page, dpi).map(|h| (h, generation)) },
         |result| match result {
             Some((handles, batch_gen)) => Message::ThumbnailBatchRendered(handles, batch_gen),
             None => Message::Noop,
@@ -2871,13 +2857,11 @@ mod tests {
         let layout =
             canvas::page_layout(&doc.page_dimensions, doc.page_count, app.canvas.zoom, dpi);
 
-        // stack_overlay_element must return Some even when not editing,
+        // stack_overlay_element must return an element even when not editing,
         // so that floating_text_input always builds a 2-child Stack.
-        let element = app.stack_overlay_element(doc, &layout);
-        assert!(
-            element.is_some(),
-            "stack must always have a second child for widget tree consistency"
-        );
+        // Calling it without panic verifies correctness; the non-Option return
+        // type guarantees a value at compile time.
+        let _element = app.stack_overlay_element(doc, &layout);
     }
 
     #[test]
@@ -2898,11 +2882,8 @@ mod tests {
         let layout =
             canvas::page_layout(&doc.page_dimensions, doc.page_count, app.canvas.zoom, dpi);
 
-        let element = app.stack_overlay_element(doc, &layout);
-        assert!(
-            element.is_some(),
-            "stack must have a second child when editing"
-        );
+        // Calling stack_overlay_element while editing must not panic.
+        let _element = app.stack_overlay_element(doc, &layout);
     }
 
     // =====================================================================
