@@ -32,6 +32,11 @@ pub enum Command {
         old_size: f32,
         new_size: f32,
     },
+    ResizeOverlay {
+        index: usize,
+        old_width: f32,
+        new_width: f32,
+    },
 }
 
 impl Command {
@@ -54,6 +59,11 @@ impl Command {
             } => {
                 overlays[*index].font_size = *new_size;
             }
+            Self::ResizeOverlay {
+                index, new_width, ..
+            } => {
+                overlays[*index].width = Some(*new_width);
+            }
         }
     }
 
@@ -75,6 +85,11 @@ impl Command {
                 index, old_size, ..
             } => {
                 overlays[*index].font_size = *old_size;
+            }
+            Self::ResizeOverlay {
+                index, old_width, ..
+            } => {
+                overlays[*index].width = Some(*old_width);
             }
         }
     }
@@ -248,5 +263,26 @@ mod tests {
         cmd.reverse(&mut overlays);
         assert_eq!(overlays.len(), 3);
         assert_eq!(overlays[1].text, "Second");
+    }
+
+    #[test]
+    fn resize_overlay_round_trip() {
+        let mut overlays = vec![TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: Standard14Font::Helvetica,
+            font_size: 12.0,
+            width: Some(200.0),
+        }];
+        let cmd = Command::ResizeOverlay {
+            index: 0,
+            old_width: 200.0,
+            new_width: 300.0,
+        };
+        cmd.apply(&mut overlays);
+        assert!((overlays[0].width.unwrap() - 300.0).abs() < f32::EPSILON);
+        cmd.reverse(&mut overlays);
+        assert!((overlays[0].width.unwrap() - 200.0).abs() < f32::EPSILON);
     }
 }
