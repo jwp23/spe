@@ -790,23 +790,34 @@ impl App {
     }
 
     /// Wrap the scrollable canvas in a stack with a floating text widget when editing an overlay.
-    /// Single-line overlays (width == None) get a text_input; multi-line overlays (width == Some)
-    /// get a text_editor. Returns the scrollable unchanged when not editing.
-    /// Build floating text widget overlay if editing, then wrap scrollable in a
-    /// stack. The stack is ALWAYS used (even when not editing) so the widget tree
-    /// structure stays consistent and Iced preserves scroll position.
+    /// Wrap the scrollable canvas in a 2-child Stack. The second child is
+    /// either the editing widget (text_input or text_editor) or an invisible
+    /// placeholder. The child count MUST stay constant so Iced's widget tree
+    /// reconciliation preserves the canvas ProgramState across editing transitions.
     fn floating_text_input<'a>(
         &'a self,
         doc: &'a DocumentState,
         layout: &canvas::PageLayout,
         scrollable_canvas: iced::Element<'a, Message>,
     ) -> iced::Element<'a, Message> {
-        let overlay_widget = self.build_editing_widget(doc, layout);
+        // stack_overlay_element always returns Some, keeping the Stack child count
+        // at exactly 2 regardless of editing state.
+        let overlay_child = self.stack_overlay_element(doc, layout).unwrap();
+        iced::widget::stack![scrollable_canvas, overlay_child].into()
+    }
 
-        match overlay_widget {
-            Some(positioned) => iced::widget::stack![scrollable_canvas, positioned].into(),
-            None => iced::widget::stack![scrollable_canvas].into(),
+    /// Returns the second child for the floating text Stack.
+    /// Always returns Some to keep the Stack child count consistent across editing
+    /// state changes, preventing Iced from resetting the canvas ProgramState.
+    fn stack_overlay_element<'a>(
+        &'a self,
+        doc: &'a DocumentState,
+        layout: &canvas::PageLayout,
+    ) -> Option<iced::Element<'a, Message>> {
+        if let Some(widget) = self.build_editing_widget(doc, layout) {
+            return Some(widget);
         }
+        Some(iced::widget::Space::new().into())
     }
 
     /// Build the positioned floating text widget if currently editing an overlay.
@@ -2844,5 +2855,61 @@ mod tests {
 
         // Text should be restored to "Hello"
         assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+    }
+
+    #[test]
+    fn stack_overlay_element_returns_placeholder_when_not_editing() {
+        // Regression: floating_text_input built a Stack with 1 child when not editing
+        // and 2 children when editing, causing Iced to reset canvas ProgramState
+        // on commit, which made overlays disappear during drag.
+        let mut app = test_app_with_document();
+        let doc = app.document.as_mut().unwrap();
+        doc.page_dimensions.insert(1, (612.0, 792.0));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        app.update(Message::CommitText);
+        // After commit: editing=false, active_overlay=Some(0)
+        assert!(!app.canvas.editing);
+
+        let doc = app.document.as_ref().unwrap();
+        let dpi = canvas::effective_dpi(app.canvas.zoom);
+        let layout =
+            canvas::page_layout(&doc.page_dimensions, doc.page_count, app.canvas.zoom, dpi);
+
+        // stack_overlay_element must return Some even when not editing,
+        // so that floating_text_input always builds a 2-child Stack.
+        let element = app.stack_overlay_element(doc, &layout);
+        assert!(
+            element.is_some(),
+            "stack must always have a second child for widget tree consistency"
+        );
+    }
+
+    #[test]
+    fn stack_overlay_element_returns_widget_when_editing() {
+        let mut app = test_app_with_document();
+        let doc = app.document.as_mut().unwrap();
+        doc.page_dimensions.insert(1, (612.0, 792.0));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        // After PlaceOverlay: editing=true
+        assert!(app.canvas.editing);
+
+        let doc = app.document.as_ref().unwrap();
+        let dpi = canvas::effective_dpi(app.canvas.zoom);
+        let layout =
+            canvas::page_layout(&doc.page_dimensions, doc.page_count, app.canvas.zoom, dpi);
+
+        let element = app.stack_overlay_element(doc, &layout);
+        assert!(
+            element.is_some(),
+            "stack must have a second child when editing"
+        );
     }
 }
