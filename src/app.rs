@@ -46,6 +46,7 @@ pub struct App {
     pub window_size: Option<iced::Size>,
     pub scale_factor: f32,
     pub scrollable_id: iced::widget::Id,
+    pub status_message: Option<(String, std::time::Instant)>,
 }
 
 /// All messages the application can process.
@@ -80,6 +81,8 @@ pub enum Message {
     DeselectOverlay,
     /// No-op: used when an async task (render, dialog) produces no actionable result.
     Noop,
+    /// Dismiss the status toast if it has been visible for at least 5 seconds.
+    DismissToast,
 
     // Canvas
     ZoomIn,
@@ -128,6 +131,7 @@ impl App {
             window_size: None,
             scale_factor: 1.0,
             scrollable_id: iced::widget::Id::unique(),
+            status_message: None,
         };
         let font_task = iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded);
         (app, font_task)
@@ -326,6 +330,13 @@ impl App {
                 self.canvas.editing = false;
             }
             Message::Noop => {}
+            Message::DismissToast => {
+                if let Some((_, time)) = &self.status_message
+                    && time.elapsed() >= std::time::Duration::from_secs(5)
+                {
+                    self.status_message = None;
+                }
+            }
 
             // --- Canvas (zoom with debounce) ---
             Message::ZoomIn => {
@@ -592,7 +603,23 @@ impl App {
             iced::widget::center(iced::widget::text("Open a PDF to get started").size(20)).into()
         };
 
-        iced::widget::column![toolbar, content].into()
+        let mut main_column = iced::widget::column![toolbar, content];
+
+        if let Some((msg, _)) = &self.status_message {
+            let toast = iced::widget::container(iced::widget::text(msg.as_str()).size(14))
+                .padding(8)
+                .width(iced::Length::Fill)
+                .style(|_theme: &iced::Theme| iced::widget::container::Style {
+                    background: Some(iced::Background::Color(iced::Color::from_rgb(
+                        0.15, 0.15, 0.2,
+                    ))),
+                    text_color: Some(iced::Color::WHITE),
+                    ..Default::default()
+                });
+            main_column = main_column.push(toast);
+        }
+
+        main_column.into()
     }
 
     /// Compute canvas widget dimensions for multi-page layout.
@@ -680,7 +707,14 @@ impl App {
             iced::Subscription::none()
         };
 
-        iced::Subscription::batch([event_sub, shimmer_sub])
+        // Tick once per second to auto-dismiss the toast after 5 seconds.
+        let toast_sub = if self.status_message.is_some() {
+            iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::DismissToast)
+        } else {
+            iced::Subscription::none()
+        };
+
+        iced::Subscription::batch([event_sub, shimmer_sub, toast_sub])
     }
 
     fn handle_toolbar_message(&mut self, msg: toolbar::Message) -> iced::Task<Message> {
@@ -814,7 +848,12 @@ impl App {
             let dest = save_path.clone();
             let overlays = doc.overlays.clone();
             if let Err(e) = crate::pdf::writer::write_overlays(&source, &dest, &overlays) {
-                eprintln!("Save failed: {e}");
+                self.status_message =
+                    Some((format!("Save failed: {e}"), std::time::Instant::now()));
+            } else {
+                let filename = dest.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+                self.status_message =
+                    Some((format!("Saved to {filename}"), std::time::Instant::now()));
             }
             return iced::Task::none();
         }
@@ -842,14 +881,21 @@ impl App {
             // Prevent saving over the source file to avoid data loss on
             // write failure (the source would already be truncated).
             if path == doc.source_path {
-                eprintln!("Cannot save to the same file as the source. Use a different filename.");
+                self.status_message = Some((
+                    "Save failed: cannot overwrite the source file".to_string(),
+                    std::time::Instant::now(),
+                ));
                 return;
             }
             let source = doc.source_path.clone();
             let overlays = doc.overlays.clone();
             if let Err(e) = crate::pdf::writer::write_overlays(&source, &path, &overlays) {
-                eprintln!("Save failed: {e}");
+                self.status_message =
+                    Some((format!("Save failed: {e}"), std::time::Instant::now()));
             } else {
+                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+                self.status_message =
+                    Some((format!("Saved to {filename}"), std::time::Instant::now()));
                 doc.save_path = Some(path);
             }
         }
@@ -2117,5 +2163,69 @@ mod tests {
         app.update(Message::Noop);
         assert!(app.canvas.active_overlay.is_some());
         assert!(app.canvas.editing);
+    }
+
+    #[test]
+    fn save_destination_sets_status_message_on_success() {
+        let mut app = test_app_with_document();
+        let tmp_source = make_temp_pdf();
+        let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+        let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
+        app.update(Message::SaveDestinationChosen(
+            tmp_dest.path().to_path_buf(),
+        ));
+        assert!(app.status_message.is_some());
+        let (msg, _) = app.status_message.as_ref().unwrap();
+        assert!(msg.contains("Saved to"), "expected 'Saved to' in '{msg}'");
+    }
+
+    #[test]
+    fn save_destination_sets_status_message_on_failure() {
+        let mut app = test_app_with_document();
+        let tmp_source = make_temp_pdf();
+        let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+        // Try to save to source path — this should fail (same-file guard)
+        let source_path = app.document.as_ref().unwrap().source_path.clone();
+        app.update(Message::SaveDestinationChosen(source_path));
+        assert!(app.status_message.is_some());
+        let (msg, _) = app.status_message.as_ref().unwrap();
+        assert!(
+            msg.contains("Save failed"),
+            "expected 'Save failed' in '{msg}'"
+        );
+    }
+
+    #[test]
+    fn dismiss_toast_clears_message_after_five_seconds() {
+        let (mut app, _) = App::new();
+        // Plant a message that is already 6 seconds old
+        let old_time = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(6))
+            .unwrap();
+        app.status_message = Some(("test".to_string(), old_time));
+        app.update(Message::DismissToast);
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn dismiss_toast_keeps_message_before_five_seconds() {
+        let (mut app, _) = App::new();
+        // Plant a message that is only 1 second old
+        app.status_message = Some(("test".to_string(), std::time::Instant::now()));
+        app.update(Message::DismissToast);
+        assert!(app.status_message.is_some());
+    }
+
+    #[test]
+    fn app_default_has_no_status_message() {
+        let (app, _) = App::new();
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn view_with_toast_does_not_panic() {
+        let (mut app, _) = App::new();
+        app.status_message = Some(("Saved to foo.pdf".to_string(), std::time::Instant::now()));
+        let _element = app.view();
     }
 }
