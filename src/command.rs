@@ -267,14 +267,9 @@ mod tests {
 
     #[test]
     fn resize_overlay_round_trip() {
-        let mut overlays = vec![TextOverlay {
-            page: 1,
-            position: PdfPosition { x: 72.0, y: 720.0 },
-            text: "Hello".to_string(),
-            font: Standard14Font::Helvetica,
-            font_size: 12.0,
-            width: Some(200.0),
-        }];
+        let mut overlay = sample_overlay();
+        overlay.width = Some(200.0);
+        let mut overlays = vec![overlay];
         let cmd = Command::ResizeOverlay {
             index: 0,
             old_width: 200.0,
