@@ -850,7 +850,6 @@ mod tests {
         let doc = Document::load(dst.path()).expect("load failed");
         let pages = doc.get_pages();
         let &page_id = pages.get(&1).expect("page 1");
-        let ops = collect_page_operations(&doc, page_id);
 
         // The original test PDF has 1 Tj ("Test"), plus 1 from the overlay = 2 total.
         let overlay_stream_id = *doc.get_page_contents(page_id).last().expect("stream");
@@ -862,7 +861,6 @@ mod tests {
             .iter()
             .filter(|o| o.operator == "Tj")
             .count();
-        let _ = ops; // suppress unused warning
         assert_eq!(
             tj_in_overlay, 1,
             "width:None should produce exactly 1 Tj, got {tj_in_overlay}"
