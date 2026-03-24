@@ -8,6 +8,7 @@ use iced::widget::image::Handle;
 
 use crate::command::Command as UndoCommand;
 use crate::config::AppConfig;
+use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen};
 use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
 use crate::pdf::renderer::PdftoppmRenderer;
 use crate::ui::canvas::{self, CanvasState, PdfCanvasProgram};
@@ -231,6 +232,7 @@ impl App {
                     let idx = doc.overlays.len() - 1;
                     self.canvas.active_overlay = Some(idx);
                     self.canvas.editing = true;
+                    self.canvas.edit_start_text = Some(String::new());
                 }
             }
             Message::UpdateOverlayText(text) => {
@@ -244,6 +246,7 @@ impl App {
             Message::CommitText => {
                 // Text editing is committed as a single undoable action
                 self.canvas.editing = false;
+                self.canvas.edit_start_text = None;
             }
             Message::MoveOverlay(index, new_position) => {
                 if let Some(doc) = &mut self.document
@@ -326,6 +329,10 @@ impl App {
                 }
             }
             Message::DeselectOverlay => {
+                if self.canvas.editing {
+                    // Escape during editing commits text rather than deselecting
+                    return self.handle_commit_text();
+                }
                 self.canvas.active_overlay = None;
                 self.canvas.editing = false;
             }
@@ -567,6 +574,9 @@ impl App {
                 .height(iced::Length::Fill)
                 .into();
 
+            let canvas_area_element: iced::Element<Message> =
+                self.floating_text_input(doc, dpi, scrollable_canvas);
+
             if self.sidebar.visible {
                 let sidebar = crate::ui::sidebar::sidebar_view(
                     &self.sidebar,
@@ -595,9 +605,9 @@ impl App {
                     .on_press(Message::SidebarDragStart(0.0))
                     .interaction(iced::mouse::Interaction::ResizingHorizontally);
 
-                iced::widget::row![sidebar, handle, scrollable_canvas].into()
+                iced::widget::row![sidebar, handle, canvas_area_element].into()
             } else {
-                scrollable_canvas
+                canvas_area_element
             }
         } else {
             iced::widget::center(iced::widget::text("Open a PDF to get started").size(20)).into()
@@ -715,6 +725,98 @@ impl App {
         };
 
         iced::Subscription::batch([event_sub, shimmer_sub, toast_sub])
+    }
+
+    /// Wrap the scrollable canvas in a stack with a floating text_input when editing a
+    /// single-line overlay. Returns the scrollable unchanged when not editing.
+    fn floating_text_input<'a>(
+        &'a self,
+        doc: &'a DocumentState,
+        dpi: f32,
+        scrollable_canvas: iced::Element<'a, Message>,
+    ) -> iced::Element<'a, Message> {
+        // Only show floating input when editing a single-line overlay (width == None)
+        let Some(idx) = self.canvas.active_overlay else {
+            return scrollable_canvas;
+        };
+        if !self.canvas.editing {
+            return scrollable_canvas;
+        }
+        let Some(overlay) = doc.overlays.get(idx) else {
+            return scrollable_canvas;
+        };
+        if overlay.width.is_some() {
+            return scrollable_canvas;
+        }
+
+        // Estimate canvas width for page rect centering: window minus sidebar minus scrollbar gutter
+        const SCROLLBAR_MARGIN: f32 = 16.0;
+        let sidebar_w = if self.sidebar.visible {
+            self.sidebar.width
+        } else {
+            0.0
+        };
+        let canvas_w = self
+            .window_size
+            .map(|s| (s.width - sidebar_w - SCROLLBAR_MARGIN).max(1.0))
+            .unwrap_or(800.0);
+
+        let layout =
+            canvas::page_layout(&doc.page_dimensions, doc.page_count, self.canvas.zoom, dpi);
+
+        if layout.page_tops.is_empty() {
+            return scrollable_canvas;
+        }
+
+        let page_rect = canvas::page_rect_in_canvas(&layout, overlay.page, canvas_w);
+
+        let Some((_, page_h)) = doc.page_dimensions.get(&overlay.page) else {
+            return scrollable_canvas;
+        };
+
+        let params = ConversionParams {
+            zoom: self.canvas.zoom,
+            dpi,
+            page_height: *page_h,
+            offset_x: page_rect.x,
+            offset_y: page_rect.y,
+        };
+
+        let (screen_x, screen_y) = pdf_to_screen(overlay.position.x, overlay.position.y, &params);
+
+        // Adjust y from canvas coordinates to viewport coordinates by subtracting scroll offset.
+        // The PDF y is at the baseline; shift up by font_size so input appears above the baseline.
+        let scale = self.canvas.zoom * dpi / 72.0;
+        let scaled_font_size = overlay.font_size * scale;
+        let top_offset = (screen_y - self.canvas.scroll_y - scaled_font_size).max(0.0);
+        let left_offset = screen_x.max(0.0);
+
+        // Auto-grow width with 80px minimum
+        let text_width =
+            overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size).width * scale;
+        let input_width = (80.0_f32).max(text_width);
+
+        let input: iced::Element<Message> = iced::widget::text_input("", &overlay.text)
+            .on_input(Message::UpdateOverlayText)
+            .on_submit(Message::CommitText)
+            .width(input_width)
+            .into();
+
+        let positioned: iced::Element<Message> = iced::widget::container(input)
+            .padding(iced::Padding::ZERO.top(top_offset).left(left_offset))
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
+            .align_x(iced::alignment::Horizontal::Left)
+            .align_y(iced::alignment::Vertical::Top)
+            .into();
+
+        iced::widget::stack![scrollable_canvas, positioned].into()
+    }
+
+    fn handle_commit_text(&mut self) -> iced::Task<Message> {
+        self.canvas.editing = false;
+        self.canvas.edit_start_text = None;
+        iced::Task::none()
     }
 
     fn handle_toolbar_message(&mut self, msg: toolbar::Message) -> iced::Task<Message> {
@@ -2249,6 +2351,81 @@ mod tests {
     fn view_with_toast_does_not_panic() {
         let (mut app, _) = App::new();
         app.status_message = Some(("Saved to foo.pdf".to_string(), std::time::Instant::now()));
+        let _element = app.view();
+    }
+
+    // --- Floating text input (spe-vnm.3.1) ---
+
+    #[test]
+    fn canvas_state_edit_start_text_defaults_to_none() {
+        let state = CanvasState::default();
+        assert!(state.edit_start_text.is_none());
+    }
+
+    #[test]
+    fn place_overlay_sets_edit_start_text_to_empty_string() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        assert_eq!(app.canvas.edit_start_text, Some(String::new()));
+    }
+
+    #[test]
+    fn commit_text_clears_edit_start_text() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        app.update(Message::CommitText);
+        assert!(app.canvas.edit_start_text.is_none());
+    }
+
+    #[test]
+    fn deselect_overlay_while_editing_commits_text_instead_of_deselecting() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        // While editing, DeselectOverlay should commit, not deselect
+        assert!(app.canvas.editing);
+        app.update(Message::DeselectOverlay);
+        // After commit: editing is false, but selection is preserved
+        assert!(!app.canvas.editing);
+        assert!(app.canvas.active_overlay.is_some());
+    }
+
+    #[test]
+    fn deselect_overlay_when_not_editing_clears_selection() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        app.update(Message::CommitText); // exit edit mode
+        assert!(!app.canvas.editing);
+        app.update(Message::DeselectOverlay);
+        assert!(app.canvas.active_overlay.is_none());
+    }
+
+    #[test]
+    fn view_with_editing_overlay_does_not_panic() {
+        let mut app = test_app_with_document();
+        let doc = app.document.as_mut().unwrap();
+        doc.page_dimensions.insert(1, (612.0, 792.0));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        assert!(app.canvas.editing);
         let _element = app.view();
     }
 }

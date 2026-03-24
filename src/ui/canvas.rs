@@ -13,6 +13,8 @@ pub struct CanvasState {
     pub zoom: f32,
     pub active_overlay: Option<usize>,
     pub editing: bool,
+    /// The overlay text at the start of an edit session, for undo support.
+    pub edit_start_text: Option<String>,
     /// Counter incremented on each zoom change; used to debounce re-renders.
     pub zoom_generation: u64,
     /// Current vertical scroll offset in pixels.
@@ -27,6 +29,7 @@ impl Default for CanvasState {
             zoom: 1.0,
             active_overlay: None,
             editing: false,
+            edit_start_text: None,
             zoom_generation: 0,
             scroll_y: 0.0,
             viewport_height: 0.0,
