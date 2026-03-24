@@ -101,6 +101,7 @@ pub struct TextOverlay {
     pub text: String,
     pub font: Standard14Font,
     pub font_size: f32,
+    /// Wrap width in PDF points. `None` = single-line, `Some(w)` = multi-line with wrapping.
     pub width: Option<f32>,
 }
 
@@ -175,6 +176,7 @@ mod tests {
         assert_eq!(overlay.text, "Hello");
         assert_eq!(overlay.font, Standard14Font::Helvetica);
         assert_eq!(overlay.font_size, 12.0);
+        assert!(overlay.width.is_none());
     }
 
     #[test]
