@@ -1,6 +1,9 @@
 ---
 name: readme-sync
 description: Use when completing code changes that affect user workflows, CLI flags, prerequisites, or project structure. Use proactively after feature implementation before session close.
+context: fork
+agent: general-purpose
+model: sonnet
 ---
 
 # README Sync
