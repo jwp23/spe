@@ -456,6 +456,48 @@ fn times_bold_width(code: u8) -> f32 {
     }
 }
 
+/// Wrap text into lines that fit within max_width (in PDF points).
+/// Splits on explicit `\n` first, then wraps each line at word boundaries.
+/// Words wider than max_width are kept intact (no mid-word break).
+pub fn word_wrap(text: &str, font: Standard14Font, font_size: f32, max_width: f32) -> Vec<String> {
+    let mut result = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            result.push(String::new());
+            continue;
+        }
+        let words: Vec<&str> = paragraph.split_whitespace().collect();
+        if words.is_empty() {
+            result.push(String::new());
+            continue;
+        }
+        let mut current_line = String::new();
+        let mut current_width: f32 = 0.0;
+        let space_width = char_width(font, ' ') * font_size / 1000.0;
+
+        for word in &words {
+            let word_width = overlay_bounding_box(word, font, font_size).width;
+            if current_line.is_empty() {
+                current_line.push_str(word);
+                current_width = word_width;
+            } else if current_width + space_width + word_width <= max_width {
+                current_line.push(' ');
+                current_line.push_str(word);
+                current_width += space_width + word_width;
+            } else {
+                result.push(current_line);
+                current_line = word.to_string();
+                current_width = word_width;
+            }
+        }
+        result.push(current_line);
+    }
+    if result.is_empty() {
+        result.push(String::new());
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +643,49 @@ mod tests {
         let small = overlay_bounding_box("Hello", Standard14Font::Helvetica, 12.0);
         let large = overlay_bounding_box("Hello", Standard14Font::Helvetica, 24.0);
         assert!((large.width - small.width * 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn word_wrap_single_line_fits() {
+        let lines = word_wrap("Hello", Standard14Font::Courier, 12.0, 200.0);
+        assert_eq!(lines, vec!["Hello"]);
+    }
+
+    #[test]
+    fn word_wrap_explicit_newline() {
+        let lines = word_wrap("Line 1\nLine 2", Standard14Font::Courier, 12.0, 200.0);
+        assert_eq!(lines, vec!["Line 1", "Line 2"]);
+    }
+
+    #[test]
+    fn word_wrap_breaks_at_width() {
+        // Courier 12pt: each char = 600/1000 * 12 = 7.2pt
+        // "AAAA BBBB" = 9 chars. At width 40pt, "AAAA " = 5*7.2=36pt fits, "BBBB" wraps.
+        let lines = word_wrap("AAAA BBBB", Standard14Font::Courier, 12.0, 40.0);
+        assert_eq!(lines, vec!["AAAA", "BBBB"]);
+    }
+
+    #[test]
+    fn word_wrap_empty_text() {
+        let lines = word_wrap("", Standard14Font::Courier, 12.0, 200.0);
+        assert_eq!(lines, vec![""]);
+    }
+
+    #[test]
+    fn word_wrap_single_word_wider_than_width() {
+        // "ABCDEFGHIJ" at Courier 12pt = 10*7.2=72pt, width=30pt
+        // Word overflows — kept as-is on one line (no mid-word break)
+        let lines = word_wrap("ABCDEFGHIJ", Standard14Font::Courier, 12.0, 30.0);
+        assert_eq!(lines, vec!["ABCDEFGHIJ"]);
+    }
+
+    #[test]
+    fn word_wrap_multiple_words_across_lines() {
+        // Each word "AAA" = 3*7.2=21.6pt, space=600/1000*12=7.2pt (Courier space is 600)
+        // "AAA AAA AAA" — width 55pt:
+        // "AAA AAA" = 21.6+7.2+21.6=50.4 fits
+        // "AAA AAA AAA" = 50.4+7.2+21.6=79.2 doesn't fit → wrap
+        let lines = word_wrap("AAA AAA AAA", Standard14Font::Courier, 12.0, 55.0);
+        assert_eq!(lines, vec!["AAA AAA", "AAA"]);
     }
 }
