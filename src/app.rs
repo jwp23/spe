@@ -879,17 +879,22 @@ impl App {
             iced::widget::text_editor(content)
                 .on_action(Message::TextEditorAction)
                 .id(self.text_input_id.clone())
+                .size(iced::Pixels(scaled_font_size))
+                .padding(iced::Padding::ZERO)
                 .width(screen_width)
                 .style(overlay_text_editor_style)
                 .into()
         } else {
             let text_width =
                 overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size).width * scale;
-            let input_width = (80.0_f32).max(text_width);
+            let buffer = scaled_font_size * 2.0;
+            let input_width = (scaled_font_size * 6.0).max(text_width + buffer);
             iced::widget::text_input("", &overlay.text)
                 .id(self.text_input_id.clone())
                 .on_input(Message::UpdateOverlayText)
                 .on_submit(Message::CommitText)
+                .size(iced::Pixels(scaled_font_size))
+                .padding(iced::Padding::ZERO)
                 .width(input_width)
                 .style(overlay_text_input_style)
                 .into()
