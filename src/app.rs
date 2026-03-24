@@ -65,7 +65,10 @@ pub enum Message {
     PageBatchRendered(Vec<(u32, Handle)>),
 
     // Overlay editing (undoable)
-    PlaceOverlay { page: u32, position: PdfPosition },
+    PlaceOverlay {
+        page: u32,
+        position: PdfPosition,
+    },
     UpdateOverlayText(String),
     CommitText,
     MoveOverlay(usize, PdfPosition),
@@ -74,6 +77,8 @@ pub enum Message {
     DeleteOverlay,
     SelectOverlay(usize),
     DeselectOverlay,
+    /// No-op: used when an async task (render, dialog) produces no actionable result.
+    Noop,
 
     // Canvas
     ZoomIn,
@@ -314,6 +319,7 @@ impl App {
                 self.canvas.active_overlay = None;
                 self.canvas.editing = false;
             }
+            Message::Noop => {}
 
             // --- Canvas (zoom with debounce) ---
             Message::ZoomIn => {
@@ -722,7 +728,7 @@ impl App {
             },
             |path| match path {
                 Some(p) => Message::FileOpened(p),
-                None => Message::DeselectOverlay, // user cancelled, no-op
+                None => Message::Noop,
             },
         )
     }
@@ -820,7 +826,7 @@ impl App {
             },
             |path| match path {
                 Some(p) => Message::SaveDestinationChosen(p),
-                None => Message::DeselectOverlay,
+                None => Message::Noop,
             },
         )
     }
@@ -1034,7 +1040,7 @@ fn render_page_batch_task(
         },
         |result| match result {
             Some(handles) => Message::PageBatchRendered(handles),
-            None => Message::DeselectOverlay,
+            None => Message::Noop,
         },
     )
 }
@@ -1066,7 +1072,7 @@ fn render_thumbnail_batch_task(
         },
         |result| match result {
             Some((handles, batch_gen)) => Message::ThumbnailBatchRendered(handles, batch_gen),
-            None => Message::DeselectOverlay,
+            None => Message::Noop,
         },
     )
 }
@@ -2083,5 +2089,19 @@ mod tests {
         let _ = app.schedule_thumbnail_backfill();
         // One batch task was scheduled; counter should be 1.
         assert_eq!(app.sidebar.active_batch_tasks, 1);
+    }
+
+    #[test]
+    fn noop_preserves_active_overlay() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+        });
+        assert!(app.canvas.active_overlay.is_some());
+        assert!(app.canvas.editing);
+        app.update(Message::Noop);
+        assert!(app.canvas.active_overlay.is_some());
+        assert!(app.canvas.editing);
     }
 }
