@@ -465,14 +465,16 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, &local_params);
                 let scaled_size = overlay.font_size * scale;
 
-                draw_overlay_text(
-                    &mut frame,
-                    &overlay.text,
-                    sx,
-                    sy,
-                    scaled_size,
-                    overlay_color,
-                );
+                if should_draw_overlay_text(self.editing, self.active_overlay, i) {
+                    draw_overlay_text(
+                        &mut frame,
+                        &overlay.text,
+                        sx,
+                        sy,
+                        scaled_size,
+                        overlay_color,
+                    );
+                }
 
                 if self.active_overlay == Some(i) {
                     draw_selection_box(
@@ -598,6 +600,12 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
 
         mouse::Interaction::default()
     }
+}
+
+/// Whether to draw overlay text on the canvas for a given overlay.
+/// Returns false when the overlay is being actively edited via the floating widget.
+fn should_draw_overlay_text(editing: bool, active_overlay: Option<usize>, index: usize) -> bool {
+    !(editing && active_overlay == Some(index))
 }
 
 /// Draw overlay text at a screen position on the canvas frame.
@@ -2667,5 +2675,41 @@ mod tests {
             }
             other => panic!("Expected MoveOverlay, got {other:?}"),
         }
+    }
+
+    // =====================================================================
+    // spe-zr9: hide canvas overlay text while floating widget is editing
+    // =====================================================================
+
+    #[test]
+    fn should_draw_overlay_text_false_when_editing_active_overlay() {
+        assert!(
+            !super::should_draw_overlay_text(true, Some(0), 0),
+            "should not draw overlay text for the overlay being edited"
+        );
+    }
+
+    #[test]
+    fn should_draw_overlay_text_true_for_non_active_overlay_during_editing() {
+        assert!(
+            super::should_draw_overlay_text(true, Some(0), 1),
+            "should draw overlay text for non-active overlays even during editing"
+        );
+    }
+
+    #[test]
+    fn should_draw_overlay_text_true_when_not_editing() {
+        assert!(
+            super::should_draw_overlay_text(false, Some(0), 0),
+            "should draw overlay text when not editing, even for active overlay"
+        );
+    }
+
+    #[test]
+    fn should_draw_overlay_text_true_when_no_active_overlay() {
+        assert!(
+            super::should_draw_overlay_text(true, None, 0),
+            "should draw when no overlay is active"
+        );
     }
 }
