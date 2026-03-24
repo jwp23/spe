@@ -173,7 +173,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
 
             canvas::Event::Mouse(mouse::Event::CursorMoved { position }) => {
                 state.cursor_position = Some(*position);
-                if state.drag.is_some() {
+                if state.drag.is_some() || state.placement_drag.is_some() {
                     Some(canvas::Action::request_redraw())
                 } else {
                     None
@@ -409,6 +409,36 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 preview_screen_y,
                 scaled_size,
                 preview_color,
+            );
+        }
+
+        // Placement drag preview (rectangle from start to cursor)
+        if let Some(placement) = &state.placement_drag
+            && let Some(cursor_pos) = state.cursor_position
+        {
+            let dx = (cursor_pos.x - placement.start_screen.x).abs();
+            let dy = (cursor_pos.y - placement.start_screen.y).abs();
+            let distance = (dx * dx + dy * dy).sqrt();
+            if distance < 10.0 {
+                return vec![frame.into_geometry()];
+            }
+
+            let start_canvas = iced::Point::new(
+                placement.start_screen.x - bounds.x,
+                placement.start_screen.y - bounds.y,
+            );
+            let end_canvas = iced::Point::new(cursor_pos.x - bounds.x, cursor_pos.y - bounds.y);
+            let rect_x = start_canvas.x.min(end_canvas.x);
+            let rect_y = start_canvas.y.min(end_canvas.y);
+            let rect_w = (end_canvas.x - start_canvas.x).abs();
+            let rect_h = (end_canvas.y - start_canvas.y).abs();
+
+            frame.stroke_rectangle(
+                iced::Point::new(rect_x, rect_y),
+                iced::Size::new(rect_w, rect_h),
+                canvas::Stroke::default()
+                    .with_color(iced::Color::from_rgb(0.2, 0.5, 1.0))
+                    .with_width(1.5),
             );
         }
 
