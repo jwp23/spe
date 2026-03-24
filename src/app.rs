@@ -108,6 +108,12 @@ pub enum Message {
     SidebarPageClicked(u32),
     ShimmerTick,
 
+    ResizeOverlay {
+        index: usize,
+        old_width: f32,
+        new_width: f32,
+    },
+
     // Undo/Redo
     Undo,
     Redo,
@@ -276,6 +282,24 @@ impl App {
                         index,
                         from: old_position,
                         to: new_position,
+                    };
+                    cmd.apply(&mut doc.overlays);
+                    self.undo_stack.push(cmd);
+                    self.redo_stack.clear();
+                }
+            }
+            Message::ResizeOverlay {
+                index,
+                old_width,
+                new_width,
+            } => {
+                if let Some(doc) = &mut self.document
+                    && index < doc.overlays.len()
+                {
+                    let cmd = UndoCommand::ResizeOverlay {
+                        index,
+                        old_width,
+                        new_width,
                     };
                     cmd.apply(&mut doc.overlays);
                     self.undo_stack.push(cmd);
