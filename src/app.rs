@@ -847,17 +847,29 @@ impl App {
             let source = doc.source_path.clone();
             let dest = save_path.clone();
             let overlays = doc.overlays.clone();
-            if let Err(e) = crate::pdf::writer::write_overlays(&source, &dest, &overlays) {
-                self.status_message =
-                    Some((format!("Save failed: {e}"), std::time::Instant::now()));
-            } else {
+            let result = crate::pdf::writer::write_overlays(&source, &dest, &overlays);
+            self.set_save_result(result, &dest);
+            return iced::Task::none();
+        }
+        self.handle_save_as()
+    }
+
+    fn set_save_result(
+        &mut self,
+        result: Result<(), impl std::fmt::Display>,
+        dest: &std::path::Path,
+    ) {
+        match result {
+            Ok(()) => {
                 let filename = dest.file_name().and_then(|n| n.to_str()).unwrap_or("file");
                 self.status_message =
                     Some((format!("Saved to {filename}"), std::time::Instant::now()));
             }
-            return iced::Task::none();
+            Err(e) => {
+                self.status_message =
+                    Some((format!("Save failed: {e}"), std::time::Instant::now()));
+            }
         }
-        self.handle_save_as()
     }
 
     fn handle_save_as(&mut self) -> iced::Task<Message> {
@@ -889,14 +901,11 @@ impl App {
             }
             let source = doc.source_path.clone();
             let overlays = doc.overlays.clone();
-            if let Err(e) = crate::pdf::writer::write_overlays(&source, &path, &overlays) {
-                self.status_message =
-                    Some((format!("Save failed: {e}"), std::time::Instant::now()));
-            } else {
-                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-                self.status_message =
-                    Some((format!("Saved to {filename}"), std::time::Instant::now()));
-                doc.save_path = Some(path);
+            let result = crate::pdf::writer::write_overlays(&source, &path, &overlays);
+            let succeeded = result.is_ok();
+            self.set_save_result(result, &path);
+            if succeeded {
+                self.document.as_mut().unwrap().save_path = Some(path);
             }
         }
     }
@@ -2193,6 +2202,20 @@ mod tests {
             msg.contains("Save failed"),
             "expected 'Save failed' in '{msg}'"
         );
+    }
+
+    #[test]
+    fn handle_save_with_existing_path_sets_status_message() {
+        let mut app = test_app_with_document();
+        let tmp_source = make_temp_pdf();
+        let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+        let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
+        // Set save_path so handle_save takes the quick-save branch.
+        app.document.as_mut().unwrap().save_path = Some(tmp_dest.path().to_path_buf());
+        app.update(Message::Save);
+        assert!(app.status_message.is_some());
+        let (msg, _) = app.status_message.as_ref().unwrap();
+        assert!(msg.contains("Saved to"), "expected 'Saved to' in '{msg}'");
     }
 
     #[test]
