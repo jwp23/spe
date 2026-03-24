@@ -237,8 +237,11 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 }
             }
 
-            canvas::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                state.cursor_position = Some(*position);
+            canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                // Use cursor.position() (scroll-adjusted) instead of the raw event
+                // position, so state.cursor_position matches the coordinate space
+                // used by cursor.position() in press/release handlers.
+                state.cursor_position = cursor.position();
                 if state.drag.is_some()
                     || state.placement_drag.is_some()
                     || state.resize_drag.is_some()
@@ -495,19 +498,13 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
             let preview_screen_x = cursor_pos.x - drag.grab_offset_x - bounds.x;
             let preview_screen_y = cursor_pos.y - drag.grab_offset_y - bounds.y;
             let scaled_size = overlay.font_size * scale;
-            let preview_color = iced::Color::from_rgba(
-                self.overlay_color[0],
-                self.overlay_color[1],
-                self.overlay_color[2],
-                0.5,
-            );
             draw_overlay_text(
                 &mut frame,
                 &overlay.text,
                 preview_screen_x,
                 preview_screen_y,
                 scaled_size,
-                preview_color,
+                overlay_color,
             );
         }
 
@@ -2590,5 +2587,85 @@ mod tests {
         // Blank area click starts placement drag, no message on press
         assert!(msg.is_none());
         assert!(state.placement_drag.is_some());
+    }
+
+    #[test]
+    fn drag_after_commit_preserves_overlay() {
+        // Regression: overlay disappeared when drag-moving after text commit.
+        // Simulates: editing overlay → commit → click overlay → drag → release.
+        // The ProgramState persists across program changes (editing → not editing).
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let bounds = test_canvas_bounds();
+        let mut state = ProgramState::default();
+
+        // Phase 1: User is editing. Move cursor to overlay position to set cursor_position.
+        let editing_program = PdfCanvasProgram {
+            editing: true,
+            active_overlay: Some(0),
+            ..test_program(&overlays, &imgs, &dims)
+        };
+        let cursor = cursor_at(270.0, 75.0);
+        editing_program.update(&mut state, &cursor_moved_event(270.0, 75.0), bounds, cursor);
+        assert!(
+            state.cursor_position.is_some(),
+            "cursor_position must be set before commit"
+        );
+
+        // Phase 2: User commits text (Enter). Program is recreated with editing=false.
+        // Click while editing produces CommitText.
+        let action = editing_program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, _) = decompose(action);
+        assert!(matches!(msg, Some(Message::CommitText)));
+
+        // Phase 3: After commit, program changes to editing=false.
+        // ProgramState MUST persist — cursor_position must survive.
+        let committed_program = PdfCanvasProgram {
+            editing: false,
+            active_overlay: Some(0),
+            ..test_program(&overlays, &imgs, &dims)
+        };
+        assert!(
+            state.cursor_position.is_some(),
+            "cursor_position must survive program change (commit)"
+        );
+
+        // Phase 4: Click on overlay to start drag.
+        let action = committed_program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, _) = decompose(action);
+        assert!(
+            matches!(msg, Some(Message::SelectOverlay(0))),
+            "click on overlay after commit should select it"
+        );
+        assert!(state.drag.is_some(), "drag must start on overlay click");
+
+        // Phase 5: Drag preview requires cursor_position to be Some.
+        // If cursor_position is None, the overlay would be invisible during drag
+        // (skipped from normal rendering AND no preview drawn).
+        assert!(
+            state.cursor_position.is_some(),
+            "cursor_position must be Some during drag for preview to render"
+        );
+
+        // Phase 6: Move cursor and release to complete the drag.
+        let new_cursor = cursor_at(370.0, 175.0);
+        committed_program.update(
+            &mut state,
+            &cursor_moved_event(370.0, 175.0),
+            bounds,
+            new_cursor,
+        );
+        let action =
+            committed_program.update(&mut state, &left_release_event(), bounds, new_cursor);
+        let (msg, _) = decompose(action);
+        match msg {
+            Some(Message::MoveOverlay(idx, pos)) => {
+                assert_eq!(idx, 0);
+                assert!((pos.x - 172.0).abs() < 1.0);
+                assert!((pos.y - 620.0).abs() < 1.0);
+            }
+            other => panic!("Expected MoveOverlay, got {other:?}"),
+        }
     }
 }
