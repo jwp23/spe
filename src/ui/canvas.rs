@@ -498,19 +498,13 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
             let preview_screen_x = cursor_pos.x - drag.grab_offset_x - bounds.x;
             let preview_screen_y = cursor_pos.y - drag.grab_offset_y - bounds.y;
             let scaled_size = overlay.font_size * scale;
-            let preview_color = iced::Color::from_rgba(
-                self.overlay_color[0],
-                self.overlay_color[1],
-                self.overlay_color[2],
-                0.5,
-            );
             draw_overlay_text(
                 &mut frame,
                 &overlay.text,
                 preview_screen_x,
                 preview_screen_y,
                 scaled_size,
-                preview_color,
+                overlay_color,
             );
         }
 
