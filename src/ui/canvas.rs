@@ -899,6 +899,7 @@ mod tests {
             text: text.to_string(),
             font: Standard14Font::Courier,
             font_size: 12.0,
+            width: None,
         }
     }
 
@@ -1226,6 +1227,7 @@ mod tests {
             text: "On page 2".to_string(),
             font: Standard14Font::Courier,
             font_size: 12.0,
+            width: None,
         }];
         let result = hit_test(80.0, 65.0, &overlays, 1, &params);
         assert!(result.is_none());

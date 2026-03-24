@@ -378,6 +378,7 @@ mod tests {
             text: "Hello".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
@@ -408,6 +409,7 @@ mod tests {
             text: "Hello".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
@@ -476,6 +478,7 @@ mod tests {
             text: "Reuse".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
@@ -523,6 +526,7 @@ mod tests {
                 text: "Helvetica text".to_string(),
                 font: Standard14Font::Helvetica,
                 font_size: 12.0,
+                width: None,
             },
             TextOverlay {
                 page: 1,
@@ -530,6 +534,7 @@ mod tests {
                 text: "Courier text".to_string(),
                 font: Standard14Font::Courier,
                 font_size: 12.0,
+                width: None,
             },
         ];
 
@@ -645,6 +650,7 @@ mod tests {
                 text: "First".to_string(),
                 font: Standard14Font::Helvetica,
                 font_size: 12.0,
+                width: None,
             },
             TextOverlay {
                 page: 1,
@@ -652,6 +658,7 @@ mod tests {
                 text: "Second".to_string(),
                 font: Standard14Font::Helvetica,
                 font_size: 12.0,
+                width: None,
             },
         ];
 
@@ -724,6 +731,7 @@ mod tests {
             text: "Ghost".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         };
 
         let result = write_overlays(src.path(), dst.path(), &[overlay]);

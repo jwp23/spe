@@ -91,6 +91,7 @@ mod tests {
             text: "Hello".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         }
     }
 
@@ -224,6 +225,7 @@ mod tests {
                 text: "Second".to_string(),
                 font: Standard14Font::Courier,
                 font_size: 14.0,
+                width: None,
             },
             TextOverlay {
                 page: 1,
@@ -231,6 +233,7 @@ mod tests {
                 text: "Third".to_string(),
                 font: Standard14Font::TimesRoman,
                 font_size: 16.0,
+                width: None,
             },
         ];
         let deleted = overlays[1].clone();

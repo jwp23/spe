@@ -211,6 +211,7 @@ impl App {
                         text: String::new(),
                         font: self.toolbar.font,
                         font_size: self.toolbar.font_size,
+                        width: None,
                     };
                     let cmd = UndoCommand::PlaceOverlay {
                         overlay: overlay.clone(),

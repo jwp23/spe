@@ -340,6 +340,7 @@ fn canvas_renders_with_overlays_on_page() {
         text: "Hello, world!".to_string(),
         font: Standard14Font::Helvetica,
         font_size: 12.0,
+        width: None,
     });
     app.document = Some(doc);
     verify_view_renders(&app);
@@ -358,6 +359,7 @@ fn canvas_renders_with_selected_overlay() {
         text: "Selected text".to_string(),
         font: Standard14Font::Courier,
         font_size: 14.0,
+        width: None,
     });
     app.document = Some(doc);
     app.canvas.active_overlay = Some(0);

@@ -84,6 +84,7 @@ fn write_and_read_back_overlay() {
         text: "Integration test overlay".to_string(),
         font: Standard14Font::CourierBold,
         font_size: 16.0,
+        width: None,
     };
 
     write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
@@ -190,6 +191,7 @@ fn write_multiple_overlays_across_pages() {
             text: "Page one text".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         },
         TextOverlay {
             page: 2,
@@ -197,6 +199,7 @@ fn write_multiple_overlays_across_pages() {
             text: "Page two text".to_string(),
             font: Standard14Font::TimesRoman,
             font_size: 14.0,
+            width: None,
         },
     ];
 
