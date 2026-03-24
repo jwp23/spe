@@ -60,6 +60,8 @@ pub struct ProgramState {
     pub drag: Option<LocalDragState>,
     pub placement_drag: Option<PlacementDragState>,
     pub keyboard_modifiers: iced::keyboard::Modifiers,
+    /// Tracks the time and position of the last left-click for double-click detection.
+    pub last_click: Option<(std::time::Instant, iced::Point)>,
 }
 
 /// Tracks an in-progress placement drag (click-and-drag to create a multi-line overlay).
@@ -142,6 +144,20 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                     if let Some(idx) =
                         hit_test(cursor_pos.x, cursor_pos.y, self.overlays, page, &params)
                     {
+                        let is_double_click =
+                            state.last_click.as_ref().is_some_and(|(time, pos)| {
+                                time.elapsed().as_millis() < 500
+                                    && (pos.x - cursor_pos.x).abs() < 5.0
+                                    && (pos.y - cursor_pos.y).abs() < 5.0
+                            });
+                        state.last_click = Some((std::time::Instant::now(), cursor_pos));
+
+                        if is_double_click {
+                            return Some(
+                                canvas::Action::publish(Message::EditOverlay(idx)).and_capture(),
+                            );
+                        }
+
                         let (overlay_sx, overlay_sy) = pdf_to_screen(
                             self.overlays[idx].position.x,
                             self.overlays[idx].position.y,
@@ -2072,5 +2088,126 @@ mod tests {
         let (msg, status) = decompose(action);
         assert_eq!(status, event::Status::Ignored);
         assert!(msg.is_none());
+    }
+
+    // =====================================================================
+    // Double-click to re-edit tests
+    // =====================================================================
+
+    #[test]
+    fn program_state_default_has_no_last_click() {
+        let state = ProgramState::default();
+        assert!(state.last_click.is_none());
+    }
+
+    #[test]
+    fn single_click_on_overlay_emits_select_not_edit() {
+        // First click on overlay — no previous click — should emit SelectOverlay.
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(270.0, 75.0);
+
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(matches!(msg, Some(Message::SelectOverlay(0))));
+        // last_click is recorded after a hit
+        assert!(state.last_click.is_some());
+    }
+
+    #[test]
+    fn double_click_on_overlay_emits_edit_overlay() {
+        // Two rapid clicks at the same position on an overlay → EditOverlay.
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(270.0, 75.0);
+
+        // First click: sets last_click, emits SelectOverlay
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, _) = decompose(action);
+        assert!(matches!(msg, Some(Message::SelectOverlay(0))));
+        assert!(state.last_click.is_some());
+
+        // Second click immediately: should emit EditOverlay
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(matches!(msg, Some(Message::EditOverlay(0))));
+    }
+
+    #[test]
+    fn double_click_too_far_away_does_not_edit() {
+        // Two clicks where second is more than 5px away from first → still SelectOverlay.
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+
+        // First click at (270, 75)
+        let cursor1 = cursor_at(270.0, 75.0);
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor1);
+        let (msg, _) = decompose(action);
+        assert!(matches!(msg, Some(Message::SelectOverlay(0))));
+
+        // Second click at (280, 75) — 10px away, beyond 5px threshold
+        let cursor2 = cursor_at(280.0, 75.0);
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor2);
+        let (msg, _) = decompose(action);
+        assert!(matches!(msg, Some(Message::SelectOverlay(0))));
+    }
+
+    #[test]
+    fn double_click_records_last_click_after_edit() {
+        // After a double-click, last_click is updated with the second click's position.
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(270.0, 75.0);
+
+        program.update(&mut state, &left_press_event(), bounds, cursor);
+        program.update(&mut state, &left_press_event(), bounds, cursor);
+
+        // last_click should reflect the position of the second (double) click
+        let (_, pos) = state.last_click.as_ref().unwrap();
+        assert!((pos.x - 270.0).abs() < 0.5);
+        assert!((pos.y - 75.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn click_on_empty_page_after_overlay_click_resets_double_click_tracking() {
+        // Clicking blank page area still sets last_click and does NOT edit.
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+
+        // First: click on overlay to set last_click
+        let cursor1 = cursor_at(270.0, 75.0);
+        program.update(&mut state, &left_press_event(), bounds, cursor1);
+        assert!(state.last_click.is_some());
+
+        // Second: click on blank page area — should start placement drag, not edit
+        // 300, 500 is well inside the page but away from the overlay
+        let cursor2 = cursor_at(300.0, 500.0);
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor2);
+        let (msg, _) = decompose(action);
+        // Blank area click starts placement drag, no message on press
+        assert!(msg.is_none());
+        assert!(state.placement_drag.is_some());
     }
 }

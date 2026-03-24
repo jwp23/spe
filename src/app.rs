@@ -82,6 +82,7 @@ pub enum Message {
     ChangeFontSize(f32),
     DeleteOverlay,
     SelectOverlay(usize),
+    EditOverlay(usize),
     DeselectOverlay,
     /// No-op: used when an async task (render, dialog) produces no actionable result.
     Noop,
@@ -344,6 +345,23 @@ impl App {
                     self.toolbar.font = doc.overlays[index].font;
                     self.toolbar.font_size = doc.overlays[index].font_size;
                     self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
+                }
+            }
+            Message::EditOverlay(index) => {
+                if let Some(doc) = &self.document
+                    && index < doc.overlays.len()
+                {
+                    self.canvas.active_overlay = Some(index);
+                    self.canvas.editing = true;
+                    self.canvas.edit_start_text = Some(doc.overlays[index].text.clone());
+                    self.toolbar.font = doc.overlays[index].font;
+                    self.toolbar.font_size = doc.overlays[index].font_size;
+                    self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
+                    if doc.overlays[index].width.is_some() {
+                        self.editor_content = Some(iced::widget::text_editor::Content::with_text(
+                            &doc.overlays[index].text,
+                        ));
+                    }
                 }
             }
             Message::DeselectOverlay => {
@@ -2524,5 +2542,121 @@ mod tests {
         assert!(app.editor_content.is_some());
         app.update(Message::CommitText);
         assert!(app.editor_content.is_none());
+    }
+
+    // =====================================================================
+    // EditOverlay tests
+    // =====================================================================
+
+    fn test_app_with_overlay() -> App {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        // Commit so we start in non-editing state
+        app.update(Message::CommitText);
+        app
+    }
+
+    #[test]
+    fn edit_overlay_sets_active_and_editing() {
+        let mut app = test_app_with_overlay();
+        app.update(Message::SelectOverlay(0));
+        assert!(!app.canvas.editing);
+
+        app.update(Message::EditOverlay(0));
+        assert_eq!(app.canvas.active_overlay, Some(0));
+        assert!(app.canvas.editing);
+    }
+
+    #[test]
+    fn edit_overlay_syncs_toolbar_font_and_size() {
+        let mut app = test_app_with_document();
+        // Place an overlay with a specific font configuration
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        app.update(Message::ChangeFont(Standard14Font::Courier));
+        app.update(Message::ChangeFontSize(18.0));
+        app.update(Message::CommitText);
+
+        // Change toolbar to something different
+        app.toolbar.font = Standard14Font::Helvetica;
+        app.toolbar.font_size = 12.0;
+        app.toolbar.font_size_input = "12".to_string();
+
+        app.update(Message::EditOverlay(0));
+        assert_eq!(app.toolbar.font, Standard14Font::Courier);
+        assert!((app.toolbar.font_size - 18.0).abs() < f32::EPSILON);
+        assert_eq!(app.toolbar.font_size_input, "18");
+    }
+
+    #[test]
+    fn edit_overlay_snapshots_text_to_edit_start_text() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        // Type some text
+        app.update(Message::UpdateOverlayText("original text".to_string()));
+        app.update(Message::CommitText);
+
+        app.update(Message::EditOverlay(0));
+        assert_eq!(
+            app.canvas.edit_start_text,
+            Some("original text".to_string())
+        );
+    }
+
+    #[test]
+    fn edit_overlay_initializes_editor_content_for_multiline() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: Some(200.0),
+        });
+        app.update(Message::CommitText);
+
+        // Before EditOverlay, editor_content is None
+        assert!(app.editor_content.is_none());
+
+        app.update(Message::EditOverlay(0));
+        // Multi-line overlay (width.is_some()) should initialize editor_content
+        assert!(app.editor_content.is_some());
+    }
+
+    #[test]
+    fn edit_overlay_does_not_initialize_editor_content_for_single_line() {
+        let mut app = test_app_with_overlay();
+        // Single-line overlay (width is None)
+        app.update(Message::EditOverlay(0));
+        assert!(app.editor_content.is_none());
+    }
+
+    #[test]
+    fn edit_overlay_out_of_range_is_noop() {
+        let mut app = test_app_with_overlay();
+        app.canvas.active_overlay = None;
+        app.canvas.editing = false;
+
+        app.update(Message::EditOverlay(99));
+        assert!(app.canvas.active_overlay.is_none());
+        assert!(!app.canvas.editing);
+    }
+
+    #[test]
+    fn edit_overlay_without_document_is_noop() {
+        let (mut app, _) = App::new();
+        // No document — should not panic
+        app.update(Message::EditOverlay(0));
+        assert!(app.canvas.active_overlay.is_none());
+        assert!(!app.canvas.editing);
     }
 }
