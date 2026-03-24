@@ -1,4 +1,7 @@
 // Integration tests for PDF text overlay writing via lopdf.
+//
+// Note: tests marked #[ignore] require external system utilities (pdftoppm).
+// Run with `cargo test -- --ignored` in CI.
 
 use std::path::Path;
 
@@ -84,6 +87,7 @@ fn write_and_read_back_overlay() {
         text: "Integration test overlay".to_string(),
         font: Standard14Font::CourierBold,
         font_size: 16.0,
+        width: None,
     };
 
     write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
@@ -190,6 +194,7 @@ fn write_multiple_overlays_across_pages() {
             text: "Page one text".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         },
         TextOverlay {
             page: 2,
@@ -197,6 +202,7 @@ fn write_multiple_overlays_across_pages() {
             text: "Page two text".to_string(),
             font: Standard14Font::TimesRoman,
             font_size: 14.0,
+            width: None,
         },
     ];
 
@@ -235,4 +241,136 @@ fn write_multiple_overlays_across_pages() {
             std::str::from_utf8(expected_text).unwrap()
         );
     }
+}
+
+#[test]
+fn write_and_read_back_multiline_overlay() {
+    let src = NamedTempFile::new().expect("temp file");
+    create_test_pdf(src.path());
+
+    let dst = NamedTempFile::new().expect("temp file");
+
+    let overlay = TextOverlay {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 720.0 },
+        text: "First line\nSecond line\nThird line".to_string(),
+        font: Standard14Font::Helvetica,
+        font_size: 12.0,
+        width: Some(300.0),
+    };
+
+    write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
+
+    let doc = Document::load(dst.path()).expect("load output");
+    let pages = doc.get_pages();
+    assert_eq!(pages.len(), 1);
+
+    let &page_id = pages.get(&1).expect("page 1");
+
+    // The overlay stream is the last content stream added.
+    let content_ids = doc.get_page_contents(page_id);
+    let overlay_stream_id = *content_ids.last().expect("no content streams");
+    let stream_obj = doc.get_object(overlay_stream_id).expect("stream obj");
+    let stream = stream_obj.as_stream().expect("stream");
+    let content = stream.decode_content().expect("decode");
+    let ops = &content.operations;
+
+    // 3 lines → 3 Tj operators.
+    let tj_count = ops.iter().filter(|o| o.operator == "Tj").count();
+    assert_eq!(tj_count, 3, "expected 3 Tj ops, got {tj_count}");
+
+    // 3 lines → 3 Td operators (first absolute, next two relative with leading).
+    let td_ops: Vec<&Operation> = ops.iter().filter(|o| o.operator == "Td").collect();
+    assert_eq!(td_ops.len(), 3, "expected 3 Td ops, got {}", td_ops.len());
+
+    // First Td: absolute position (72, 720).
+    let first_x = match &td_ops[0].operands[0] {
+        Object::Real(v) => *v as f64,
+        Object::Integer(v) => *v as f64,
+        other => panic!("unexpected type: {other:?}"),
+    };
+    let first_y = match &td_ops[0].operands[1] {
+        Object::Real(v) => *v as f64,
+        Object::Integer(v) => *v as f64,
+        other => panic!("unexpected type: {other:?}"),
+    };
+    assert!((first_x - 72.0).abs() < 0.01, "first Td x={first_x}");
+    assert!((first_y - 720.0).abs() < 0.01, "first Td y={first_y}");
+
+    // Subsequent Td: relative offset (0, -leading) where leading = font_size * 1.2.
+    let expected_leading = 12.0_f64 * 1.2;
+    for (i, td) in td_ops[1..].iter().enumerate() {
+        let rx = match &td.operands[0] {
+            Object::Real(v) => *v as f64,
+            Object::Integer(v) => *v as f64,
+            other => panic!("unexpected type: {other:?}"),
+        };
+        let ry = match &td.operands[1] {
+            Object::Real(v) => *v as f64,
+            Object::Integer(v) => *v as f64,
+            other => panic!("unexpected type: {other:?}"),
+        };
+        assert!(rx.abs() < 0.01, "Td[{i}] x should be 0, got {rx}");
+        assert!(
+            (ry - (-expected_leading)).abs() < 0.01,
+            "Td[{i}] y should be -{expected_leading}, got {ry}"
+        );
+    }
+
+    // All three line texts must appear in Tj operators.
+    for expected in ["First line", "Second line", "Third line"] {
+        let found = ops.iter().any(|o| {
+            o.operator == "Tj"
+                && matches!(&o.operands[0], Object::String(b, _) if b == expected.as_bytes())
+        });
+        assert!(found, "line {:?} not found in Tj operators", expected);
+    }
+}
+
+#[test]
+fn write_multiline_word_wrap_breaks_at_width_boundary() {
+    // Use Courier (monospaced, 600 units/char) at 12pt so each char = 7.2pt.
+    // "AAAA BBBB" = needs ~72pt. At width=40pt "AAAA" fits (28.8pt), "BBBB" wraps.
+    let src = NamedTempFile::new().expect("temp file");
+    create_test_pdf(src.path());
+
+    let dst = NamedTempFile::new().expect("temp file");
+
+    let overlay = TextOverlay {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 720.0 },
+        text: "AAAA BBBB".to_string(),
+        font: Standard14Font::Courier,
+        font_size: 12.0,
+        width: Some(40.0),
+    };
+
+    write_overlays(src.path(), dst.path(), &[overlay]).expect("write failed");
+
+    let doc = Document::load(dst.path()).expect("load output");
+    let pages = doc.get_pages();
+    let &page_id = pages.get(&1).expect("page 1");
+
+    let content_ids = doc.get_page_contents(page_id);
+    let overlay_stream_id = *content_ids.last().expect("no content streams");
+    let stream_obj = doc.get_object(overlay_stream_id).expect("stream obj");
+    let stream = stream_obj.as_stream().expect("stream");
+    let content = stream.decode_content().expect("decode");
+    let ops = &content.operations;
+
+    // Word wrap produces 2 lines: "AAAA" and "BBBB" → 2 Tj ops.
+    let tj_count = ops.iter().filter(|o| o.operator == "Tj").count();
+    assert_eq!(
+        tj_count, 2,
+        "expected 2 Tj ops after word wrap, got {tj_count}"
+    );
+
+    let has_aaaa = ops.iter().any(|o| {
+        o.operator == "Tj" && matches!(&o.operands[0], Object::String(b, _) if b == b"AAAA")
+    });
+    let has_bbbb = ops.iter().any(|o| {
+        o.operator == "Tj" && matches!(&o.operands[0], Object::String(b, _) if b == b"BBBB")
+    });
+    assert!(has_aaaa, "expected 'AAAA' in Tj ops");
+    assert!(has_bbbb, "expected 'BBBB' in Tj ops");
 }

@@ -8,6 +8,7 @@ use iced::widget::image::Handle;
 
 use crate::command::Command as UndoCommand;
 use crate::config::AppConfig;
+use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen};
 use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
 use crate::pdf::renderer::PdftoppmRenderer;
 use crate::ui::canvas::{self, CanvasState, PdfCanvasProgram};
@@ -46,6 +47,9 @@ pub struct App {
     pub window_size: Option<iced::Size>,
     pub scale_factor: f32,
     pub scrollable_id: iced::widget::Id,
+    pub status_message: Option<(String, std::time::Instant)>,
+    /// Content state for the floating multi-line text_editor (width-Some overlays).
+    pub editor_content: Option<iced::widget::text_editor::Content>,
 }
 
 /// All messages the application can process.
@@ -68,17 +72,22 @@ pub enum Message {
     PlaceOverlay {
         page: u32,
         position: PdfPosition,
+        width: Option<f32>,
     },
     UpdateOverlayText(String),
+    TextEditorAction(iced::widget::text_editor::Action),
     CommitText,
     MoveOverlay(usize, PdfPosition),
     ChangeFont(Standard14Font),
     ChangeFontSize(f32),
     DeleteOverlay,
     SelectOverlay(usize),
+    EditOverlay(usize),
     DeselectOverlay,
     /// No-op: used when an async task (render, dialog) produces no actionable result.
     Noop,
+    /// Dismiss the status toast if it has been visible for at least 5 seconds.
+    DismissToast,
 
     // Canvas
     ZoomIn,
@@ -98,6 +107,12 @@ pub enum Message {
     SidebarResizeDebounceExpired(u64),
     SidebarPageClicked(u32),
     ShimmerTick,
+
+    ResizeOverlay {
+        index: usize,
+        old_width: f32,
+        new_width: f32,
+    },
 
     // Undo/Redo
     Undo,
@@ -127,6 +142,8 @@ impl App {
             window_size: None,
             scale_factor: 1.0,
             scrollable_id: iced::widget::Id::unique(),
+            status_message: None,
+            editor_content: None,
         };
         let font_task = iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded);
         (app, font_task)
@@ -203,7 +220,11 @@ impl App {
             }
 
             // --- Overlay editing (undoable) ---
-            Message::PlaceOverlay { page, position } => {
+            Message::PlaceOverlay {
+                page,
+                position,
+                width,
+            } => {
                 if let Some(doc) = &mut self.document {
                     let overlay = TextOverlay {
                         page,
@@ -211,6 +232,7 @@ impl App {
                         text: String::new(),
                         font: self.toolbar.font,
                         font_size: self.toolbar.font_size,
+                        width,
                     };
                     let cmd = UndoCommand::PlaceOverlay {
                         overlay: overlay.clone(),
@@ -221,6 +243,11 @@ impl App {
                     let idx = doc.overlays.len() - 1;
                     self.canvas.active_overlay = Some(idx);
                     self.canvas.editing = true;
+                    self.canvas.edit_start_text = Some(String::new());
+                    if width.is_some() {
+                        self.editor_content =
+                            Some(iced::widget::text_editor::Content::with_text(""));
+                    }
                 }
             }
             Message::UpdateOverlayText(text) => {
@@ -231,9 +258,20 @@ impl App {
                     doc.overlays[idx].text = text;
                 }
             }
+            Message::TextEditorAction(action) => {
+                if let Some(content) = &mut self.editor_content {
+                    content.perform(action);
+                    let new_text = content.text();
+                    if let Some(doc) = &mut self.document
+                        && let Some(idx) = self.canvas.active_overlay
+                        && idx < doc.overlays.len()
+                    {
+                        doc.overlays[idx].text = new_text;
+                    }
+                }
+            }
             Message::CommitText => {
-                // Text editing is committed as a single undoable action
-                self.canvas.editing = false;
+                return self.handle_commit_text();
             }
             Message::MoveOverlay(index, new_position) => {
                 if let Some(doc) = &mut self.document
@@ -244,6 +282,24 @@ impl App {
                         index,
                         from: old_position,
                         to: new_position,
+                    };
+                    cmd.apply(&mut doc.overlays);
+                    self.undo_stack.push(cmd);
+                    self.redo_stack.clear();
+                }
+            }
+            Message::ResizeOverlay {
+                index,
+                old_width,
+                new_width,
+            } => {
+                if let Some(doc) = &mut self.document
+                    && index < doc.overlays.len()
+                {
+                    let cmd = UndoCommand::ResizeOverlay {
+                        index,
+                        old_width,
+                        new_width,
                     };
                     cmd.apply(&mut doc.overlays);
                     self.undo_stack.push(cmd);
@@ -315,11 +371,39 @@ impl App {
                     self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
                 }
             }
+            Message::EditOverlay(index) => {
+                if let Some(doc) = &self.document
+                    && index < doc.overlays.len()
+                {
+                    self.canvas.active_overlay = Some(index);
+                    self.canvas.editing = true;
+                    self.canvas.edit_start_text = Some(doc.overlays[index].text.clone());
+                    self.toolbar.font = doc.overlays[index].font;
+                    self.toolbar.font_size = doc.overlays[index].font_size;
+                    self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
+                    if doc.overlays[index].width.is_some() {
+                        self.editor_content = Some(iced::widget::text_editor::Content::with_text(
+                            &doc.overlays[index].text,
+                        ));
+                    }
+                }
+            }
             Message::DeselectOverlay => {
+                if self.canvas.editing {
+                    // Escape during editing commits text rather than deselecting
+                    return self.handle_commit_text();
+                }
                 self.canvas.active_overlay = None;
                 self.canvas.editing = false;
             }
             Message::Noop => {}
+            Message::DismissToast => {
+                if let Some((_, time)) = &self.status_message
+                    && time.elapsed() >= std::time::Duration::from_secs(5)
+                {
+                    self.status_message = None;
+                }
+            }
 
             // --- Canvas (zoom with debounce) ---
             Message::ZoomIn => {
@@ -517,7 +601,7 @@ impl App {
 
             let program = PdfCanvasProgram {
                 page_images: &doc.page_images,
-                page_layout: layout,
+                page_layout: layout.clone(),
                 page_dimensions: &doc.page_dimensions,
                 page_count: doc.page_count,
                 scroll_y: self.canvas.scroll_y,
@@ -550,6 +634,9 @@ impl App {
                 .height(iced::Length::Fill)
                 .into();
 
+            let canvas_area_element: iced::Element<Message> =
+                self.floating_text_input(doc, &layout, scrollable_canvas);
+
             if self.sidebar.visible {
                 let sidebar = crate::ui::sidebar::sidebar_view(
                     &self.sidebar,
@@ -578,15 +665,33 @@ impl App {
                     .on_press(Message::SidebarDragStart(0.0))
                     .interaction(iced::mouse::Interaction::ResizingHorizontally);
 
-                iced::widget::row![sidebar, handle, scrollable_canvas].into()
+                iced::widget::row![sidebar, handle, canvas_area_element].into()
             } else {
-                scrollable_canvas
+                canvas_area_element
             }
         } else {
             iced::widget::center(iced::widget::text("Open a PDF to get started").size(20)).into()
         };
 
-        iced::widget::column![toolbar, content].into()
+        let mut main_column = iced::widget::column![toolbar];
+
+        if let Some((msg, _)) = &self.status_message {
+            let toast = iced::widget::container(iced::widget::text(msg.as_str()).size(14))
+                .padding(8)
+                .width(iced::Length::Fill)
+                .style(|_theme: &iced::Theme| iced::widget::container::Style {
+                    background: Some(iced::Background::Color(iced::Color::from_rgb(
+                        0.15, 0.15, 0.2,
+                    ))),
+                    text_color: Some(iced::Color::WHITE),
+                    ..Default::default()
+                });
+            main_column = main_column.push(toast);
+        }
+
+        main_column = main_column.push(content);
+
+        main_column.into()
     }
 
     /// Compute canvas widget dimensions for multi-page layout.
@@ -674,7 +779,136 @@ impl App {
             iced::Subscription::none()
         };
 
-        iced::Subscription::batch([event_sub, shimmer_sub])
+        // Tick once per second to auto-dismiss the toast after 5 seconds.
+        let toast_sub = if self.status_message.is_some() {
+            iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::DismissToast)
+        } else {
+            iced::Subscription::none()
+        };
+
+        iced::Subscription::batch([event_sub, shimmer_sub, toast_sub])
+    }
+
+    /// Wrap the scrollable canvas in a stack with a floating text widget when editing an overlay.
+    /// Single-line overlays (width == None) get a text_input; multi-line overlays (width == Some)
+    /// get a text_editor. Returns the scrollable unchanged when not editing.
+    /// Build floating text widget overlay if editing, then wrap scrollable in a
+    /// stack. The stack is ALWAYS used (even when not editing) so the widget tree
+    /// structure stays consistent and Iced preserves scroll position.
+    fn floating_text_input<'a>(
+        &'a self,
+        doc: &'a DocumentState,
+        layout: &canvas::PageLayout,
+        scrollable_canvas: iced::Element<'a, Message>,
+    ) -> iced::Element<'a, Message> {
+        let overlay_widget = self.build_editing_widget(doc, layout);
+
+        match overlay_widget {
+            Some(positioned) => iced::widget::stack![scrollable_canvas, positioned].into(),
+            None => iced::widget::stack![scrollable_canvas].into(),
+        }
+    }
+
+    /// Build the positioned floating text widget if currently editing an overlay.
+    /// Returns None when not editing or when required state is unavailable.
+    fn build_editing_widget<'a>(
+        &'a self,
+        doc: &'a DocumentState,
+        layout: &canvas::PageLayout,
+    ) -> Option<iced::Element<'a, Message>> {
+        let idx = self.canvas.active_overlay?;
+        if !self.canvas.editing {
+            return None;
+        }
+        let overlay = doc.overlays.get(idx)?;
+
+        const SCROLLBAR_MARGIN: f32 = 16.0;
+        let sidebar_w = if self.sidebar.visible {
+            self.sidebar.width
+        } else {
+            0.0
+        };
+        let canvas_w = self
+            .window_size
+            .map(|s| (s.width - sidebar_w - SCROLLBAR_MARGIN).max(1.0))
+            .unwrap_or(800.0);
+
+        let dpi = canvas::effective_dpi(self.canvas.zoom);
+
+        if layout.page_tops.is_empty() {
+            return None;
+        }
+
+        let page_rect = canvas::page_rect_in_canvas(layout, overlay.page, canvas_w);
+        let (_, page_h) = doc.page_dimensions.get(&overlay.page)?;
+
+        let params = ConversionParams {
+            zoom: self.canvas.zoom,
+            dpi,
+            page_height: *page_h,
+            offset_x: page_rect.x,
+            offset_y: page_rect.y,
+        };
+
+        let (screen_x, screen_y) = pdf_to_screen(overlay.position.x, overlay.position.y, &params);
+
+        let scale = self.canvas.zoom * dpi / 72.0;
+        let scaled_font_size = overlay.font_size * scale;
+        let top_offset = (screen_y - self.canvas.scroll_y - scaled_font_size).max(0.0);
+        let left_offset = screen_x.max(0.0);
+
+        let widget: iced::Element<Message> = if let Some(pdf_width) = overlay.width {
+            let content = self.editor_content.as_ref()?;
+            let screen_width = pdf_width * scale;
+            iced::widget::text_editor(content)
+                .on_action(Message::TextEditorAction)
+                .width(screen_width)
+                .style(overlay_text_editor_style)
+                .into()
+        } else {
+            let text_width =
+                overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size).width * scale;
+            let input_width = (80.0_f32).max(text_width);
+            iced::widget::text_input("", &overlay.text)
+                .on_input(Message::UpdateOverlayText)
+                .on_submit(Message::CommitText)
+                .width(input_width)
+                .style(overlay_text_input_style)
+                .into()
+        };
+
+        let positioned: iced::Element<Message> = iced::widget::container(widget)
+            .padding(iced::Padding::ZERO.top(top_offset).left(left_offset))
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
+            .align_x(iced::alignment::Horizontal::Left)
+            .align_y(iced::alignment::Vertical::Top)
+            .into();
+
+        Some(positioned)
+    }
+
+    fn handle_commit_text(&mut self) -> iced::Task<Message> {
+        if let Some(doc) = &self.document
+            && let Some(idx) = self.canvas.active_overlay
+            && idx < doc.overlays.len()
+            && let Some(old_text) = self.canvas.edit_start_text.take()
+        {
+            let new_text = doc.overlays[idx].text.clone();
+            if old_text != new_text {
+                let cmd = UndoCommand::EditText {
+                    index: idx,
+                    old_text,
+                    new_text,
+                };
+                self.undo_stack.push(cmd);
+                self.redo_stack.clear();
+            }
+        }
+        self.canvas.editing = false;
+        self.canvas.edit_start_text = None;
+        self.editor_content = None;
+        iced::Task::none()
     }
 
     fn handle_toolbar_message(&mut self, msg: toolbar::Message) -> iced::Task<Message> {
@@ -750,6 +984,7 @@ impl App {
                 self.undo_stack.clear();
                 self.redo_stack.clear();
                 self.canvas = CanvasState::default();
+                self.editor_content = None;
                 self.sidebar.thumbnails.clear();
                 self.sidebar.active_batch_tasks = 0;
                 self.toolbar.page_input = "1".to_string();
@@ -807,12 +1042,29 @@ impl App {
             let source = doc.source_path.clone();
             let dest = save_path.clone();
             let overlays = doc.overlays.clone();
-            if let Err(e) = crate::pdf::writer::write_overlays(&source, &dest, &overlays) {
-                eprintln!("Save failed: {e}");
-            }
+            let result = crate::pdf::writer::write_overlays(&source, &dest, &overlays);
+            self.set_save_result(result, &dest);
             return iced::Task::none();
         }
         self.handle_save_as()
+    }
+
+    fn set_save_result(
+        &mut self,
+        result: Result<(), impl std::fmt::Display>,
+        dest: &std::path::Path,
+    ) {
+        match result {
+            Ok(()) => {
+                let filename = dest.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+                self.status_message =
+                    Some((format!("Saved to {filename}"), std::time::Instant::now()));
+            }
+            Err(e) => {
+                self.status_message =
+                    Some((format!("Save failed: {e}"), std::time::Instant::now()));
+            }
+        }
     }
 
     fn handle_save_as(&mut self) -> iced::Task<Message> {
@@ -836,15 +1088,19 @@ impl App {
             // Prevent saving over the source file to avoid data loss on
             // write failure (the source would already be truncated).
             if path == doc.source_path {
-                eprintln!("Cannot save to the same file as the source. Use a different filename.");
+                self.status_message = Some((
+                    "Save failed: cannot overwrite the source file".to_string(),
+                    std::time::Instant::now(),
+                ));
                 return;
             }
             let source = doc.source_path.clone();
             let overlays = doc.overlays.clone();
-            if let Err(e) = crate::pdf::writer::write_overlays(&source, &path, &overlays) {
-                eprintln!("Save failed: {e}");
-            } else {
-                doc.save_path = Some(path);
+            let result = crate::pdf::writer::write_overlays(&source, &path, &overlays);
+            let succeeded = result.is_ok();
+            self.set_save_result(result, &path);
+            if succeeded {
+                self.document.as_mut().unwrap().save_path = Some(path);
             }
         }
     }
@@ -1077,6 +1333,43 @@ fn render_thumbnail_batch_task(
     )
 }
 
+/// Transparent background with blue outline for the floating text input overlay.
+fn overlay_text_input_style(
+    _theme: &iced::Theme,
+    _status: iced::widget::text_input::Status,
+) -> iced::widget::text_input::Style {
+    iced::widget::text_input::Style {
+        background: iced::Background::Color(iced::Color::TRANSPARENT),
+        border: iced::Border {
+            color: iced::Color::from_rgb(0.2, 0.5, 1.0),
+            width: 1.5,
+            radius: 2.0.into(),
+        },
+        icon: iced::Color::BLACK,
+        placeholder: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+        value: iced::Color::BLACK,
+        selection: iced::Color::from_rgba(0.2, 0.5, 1.0, 0.3),
+    }
+}
+
+/// Transparent background with blue outline for the floating text editor overlay.
+fn overlay_text_editor_style(
+    _theme: &iced::Theme,
+    _status: iced::widget::text_editor::Status,
+) -> iced::widget::text_editor::Style {
+    iced::widget::text_editor::Style {
+        background: iced::Background::Color(iced::Color::TRANSPARENT),
+        border: iced::Border {
+            color: iced::Color::from_rgb(0.2, 0.5, 1.0),
+            width: 1.5,
+            radius: 2.0.into(),
+        },
+        placeholder: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+        value: iced::Color::BLACK,
+        selection: iced::Color::from_rgba(0.2, 0.5, 1.0, 0.3),
+    }
+}
+
 /// Map a keyboard event to an application message.
 fn key_to_message(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<Message> {
     use keyboard::key::Named;
@@ -1085,6 +1378,7 @@ fn key_to_message(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<
         keyboard::Key::Named(named) => match (named, modifiers.command(), modifiers.shift()) {
             (Named::Delete, false, false) => Some(Message::DeleteOverlay),
             (Named::Escape, false, false) => Some(Message::DeselectOverlay),
+            (Named::Enter, true, false) => Some(Message::CommitText),
             (Named::PageUp, false, false) => Some(Message::PreviousPage),
             (Named::PageDown, false, false) => Some(Message::NextPage),
             (Named::F9, false, false) => Some(Message::ToggleSidebar),
@@ -1201,6 +1495,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
         assert_eq!(app.undo_stack.len(), 1);
@@ -1215,6 +1510,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
 
@@ -1233,6 +1529,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         app.update(Message::Undo);
         assert_eq!(app.redo_stack.len(), 1);
@@ -1240,6 +1537,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 200.0, y: 600.0 },
+            width: None,
         });
         assert!(app.redo_stack.is_empty());
     }
@@ -1250,6 +1548,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         // PlaceOverlay sets active_overlay
         app.update(Message::DeleteOverlay);
@@ -1263,6 +1562,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         app.update(Message::ChangeFont(Standard14Font::Courier));
         assert_eq!(
@@ -1369,6 +1669,7 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         app.update(Message::ChangeFont(Standard14Font::CourierBold));
         app.update(Message::DeselectOverlay);
@@ -2068,6 +2369,20 @@ mod tests {
     }
 
     #[test]
+    fn handle_file_opened_clears_editor_content() {
+        let mut app = test_app_with_document();
+        // Simulate a stale editor_content from a previous multi-line overlay
+        app.editor_content = Some(iced::widget::text_editor::Content::with_text("stale text"));
+        assert!(app.editor_content.is_some());
+
+        let tmp = make_temp_pdf();
+        let _ = app.handle_file_opened(tmp.path().to_path_buf());
+
+        // editor_content should be cleared when opening a new PDF
+        assert!(app.editor_content.is_none());
+    }
+
+    #[test]
     fn render_visible_thumbnails_increments_active_batch_tasks_when_below_limit() {
         let mut app = test_app_with_document();
         app.sidebar.visible = true;
@@ -2097,11 +2412,437 @@ mod tests {
         app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
         });
         assert!(app.canvas.active_overlay.is_some());
         assert!(app.canvas.editing);
         app.update(Message::Noop);
         assert!(app.canvas.active_overlay.is_some());
         assert!(app.canvas.editing);
+    }
+
+    #[test]
+    fn save_destination_sets_status_message_on_success() {
+        let mut app = test_app_with_document();
+        let tmp_source = make_temp_pdf();
+        let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+        let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
+        app.update(Message::SaveDestinationChosen(
+            tmp_dest.path().to_path_buf(),
+        ));
+        assert!(app.status_message.is_some());
+        let (msg, _) = app.status_message.as_ref().unwrap();
+        assert!(msg.contains("Saved to"), "expected 'Saved to' in '{msg}'");
+    }
+
+    #[test]
+    fn save_destination_sets_status_message_on_failure() {
+        let mut app = test_app_with_document();
+        let tmp_source = make_temp_pdf();
+        let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+        // Try to save to source path — this should fail (same-file guard)
+        let source_path = app.document.as_ref().unwrap().source_path.clone();
+        app.update(Message::SaveDestinationChosen(source_path));
+        assert!(app.status_message.is_some());
+        let (msg, _) = app.status_message.as_ref().unwrap();
+        assert!(
+            msg.contains("Save failed"),
+            "expected 'Save failed' in '{msg}'"
+        );
+    }
+
+    #[test]
+    fn handle_save_with_existing_path_sets_status_message() {
+        let mut app = test_app_with_document();
+        let tmp_source = make_temp_pdf();
+        let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+        let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
+        // Set save_path so handle_save takes the quick-save branch.
+        app.document.as_mut().unwrap().save_path = Some(tmp_dest.path().to_path_buf());
+        app.update(Message::Save);
+        assert!(app.status_message.is_some());
+        let (msg, _) = app.status_message.as_ref().unwrap();
+        assert!(msg.contains("Saved to"), "expected 'Saved to' in '{msg}'");
+    }
+
+    #[test]
+    fn dismiss_toast_clears_message_after_five_seconds() {
+        let (mut app, _) = App::new();
+        // Plant a message that is already 6 seconds old
+        let old_time = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(6))
+            .unwrap();
+        app.status_message = Some(("test".to_string(), old_time));
+        app.update(Message::DismissToast);
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn dismiss_toast_keeps_message_before_five_seconds() {
+        let (mut app, _) = App::new();
+        // Plant a message that is only 1 second old
+        app.status_message = Some(("test".to_string(), std::time::Instant::now()));
+        app.update(Message::DismissToast);
+        assert!(app.status_message.is_some());
+    }
+
+    #[test]
+    fn app_default_has_no_status_message() {
+        let (app, _) = App::new();
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn view_with_toast_does_not_panic() {
+        let (mut app, _) = App::new();
+        app.status_message = Some(("Saved to foo.pdf".to_string(), std::time::Instant::now()));
+        let _element = app.view();
+    }
+
+    // --- Floating text input (spe-vnm.3.1) ---
+
+    #[test]
+    fn canvas_state_edit_start_text_defaults_to_none() {
+        let state = CanvasState::default();
+        assert!(state.edit_start_text.is_none());
+    }
+
+    #[test]
+    fn place_overlay_sets_edit_start_text_to_empty_string() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        assert_eq!(app.canvas.edit_start_text, Some(String::new()));
+    }
+
+    #[test]
+    fn commit_text_clears_edit_start_text() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        app.update(Message::CommitText);
+        assert!(app.canvas.edit_start_text.is_none());
+    }
+
+    #[test]
+    fn deselect_overlay_while_editing_commits_text_instead_of_deselecting() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        // While editing, DeselectOverlay should commit, not deselect
+        assert!(app.canvas.editing);
+        app.update(Message::DeselectOverlay);
+        // After commit: editing is false, but selection is preserved
+        assert!(!app.canvas.editing);
+        assert!(app.canvas.active_overlay.is_some());
+    }
+
+    #[test]
+    fn deselect_overlay_when_not_editing_clears_selection() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        app.update(Message::CommitText); // exit edit mode
+        assert!(!app.canvas.editing);
+        app.update(Message::DeselectOverlay);
+        assert!(app.canvas.active_overlay.is_none());
+    }
+
+    #[test]
+    fn view_with_editing_overlay_does_not_panic() {
+        let mut app = test_app_with_document();
+        let doc = app.document.as_mut().unwrap();
+        doc.page_dimensions.insert(1, (612.0, 792.0));
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        assert!(app.canvas.editing);
+        let _element = app.view();
+    }
+
+    // --- text_editor (multi-line) tests ---
+
+    #[test]
+    fn place_multiline_overlay_initializes_editor_content() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 500.0 },
+            width: Some(200.0),
+        });
+        assert!(app.editor_content.is_some());
+    }
+
+    #[test]
+    fn place_singleline_overlay_does_not_initialize_editor_content() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 500.0 },
+            width: None,
+        });
+        assert!(app.editor_content.is_none());
+    }
+
+    #[test]
+    fn text_editor_action_syncs_text_to_overlay() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 500.0 },
+            width: Some(200.0),
+        });
+        // Insert the character 'H' into the editor
+        app.update(Message::TextEditorAction(
+            iced::widget::text_editor::Action::Edit(iced::widget::text_editor::Edit::Insert('H')),
+        ));
+        let text = app.document.as_ref().unwrap().overlays[0].text.clone();
+        assert!(
+            text.contains('H'),
+            "overlay text should contain 'H', got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn commit_text_clears_editor_content() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 500.0 },
+            width: Some(200.0),
+        });
+        assert!(app.editor_content.is_some());
+        app.update(Message::CommitText);
+        assert!(app.editor_content.is_none());
+    }
+
+    // =====================================================================
+    // EditOverlay tests
+    // =====================================================================
+
+    fn test_app_with_overlay() -> App {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        // Commit so we start in non-editing state
+        app.update(Message::CommitText);
+        app
+    }
+
+    #[test]
+    fn edit_overlay_sets_active_and_editing() {
+        let mut app = test_app_with_overlay();
+        app.update(Message::SelectOverlay(0));
+        assert!(!app.canvas.editing);
+
+        app.update(Message::EditOverlay(0));
+        assert_eq!(app.canvas.active_overlay, Some(0));
+        assert!(app.canvas.editing);
+    }
+
+    #[test]
+    fn edit_overlay_syncs_toolbar_font_and_size() {
+        let mut app = test_app_with_document();
+        // Place an overlay with a specific font configuration
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        app.update(Message::ChangeFont(Standard14Font::Courier));
+        app.update(Message::ChangeFontSize(18.0));
+        app.update(Message::CommitText);
+
+        // Change toolbar to something different
+        app.toolbar.font = Standard14Font::Helvetica;
+        app.toolbar.font_size = 12.0;
+        app.toolbar.font_size_input = "12".to_string();
+
+        app.update(Message::EditOverlay(0));
+        assert_eq!(app.toolbar.font, Standard14Font::Courier);
+        assert!((app.toolbar.font_size - 18.0).abs() < f32::EPSILON);
+        assert_eq!(app.toolbar.font_size_input, "18");
+    }
+
+    #[test]
+    fn edit_overlay_snapshots_text_to_edit_start_text() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        // Type some text
+        app.update(Message::UpdateOverlayText("original text".to_string()));
+        app.update(Message::CommitText);
+
+        app.update(Message::EditOverlay(0));
+        assert_eq!(
+            app.canvas.edit_start_text,
+            Some("original text".to_string())
+        );
+    }
+
+    #[test]
+    fn edit_overlay_initializes_editor_content_for_multiline() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: Some(200.0),
+        });
+        app.update(Message::CommitText);
+
+        // Before EditOverlay, editor_content is None
+        assert!(app.editor_content.is_none());
+
+        app.update(Message::EditOverlay(0));
+        // Multi-line overlay (width.is_some()) should initialize editor_content
+        assert!(app.editor_content.is_some());
+    }
+
+    #[test]
+    fn edit_overlay_does_not_initialize_editor_content_for_single_line() {
+        let mut app = test_app_with_overlay();
+        // Single-line overlay (width is None)
+        app.update(Message::EditOverlay(0));
+        assert!(app.editor_content.is_none());
+    }
+
+    #[test]
+    fn edit_overlay_out_of_range_is_noop() {
+        let mut app = test_app_with_overlay();
+        app.canvas.active_overlay = None;
+        app.canvas.editing = false;
+
+        app.update(Message::EditOverlay(99));
+        assert!(app.canvas.active_overlay.is_none());
+        assert!(!app.canvas.editing);
+    }
+
+    #[test]
+    fn edit_overlay_without_document_is_noop() {
+        let (mut app, _) = App::new();
+        // No document — should not panic
+        app.update(Message::EditOverlay(0));
+        assert!(app.canvas.active_overlay.is_none());
+        assert!(!app.canvas.editing);
+    }
+
+    #[test]
+    fn commit_text_pushes_edit_text_command_when_text_changed() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        // PlaceOverlay should push one command
+        assert_eq!(app.undo_stack.len(), 1);
+
+        // Simulate typing text
+        let overlay = &mut app.document.as_mut().unwrap().overlays[0];
+        overlay.text = "Hello".to_string();
+
+        // Commit the text change
+        app.update(Message::CommitText);
+
+        // Should have pushed EditText command
+        assert_eq!(app.undo_stack.len(), 2);
+        if let UndoCommand::EditText {
+            old_text, new_text, ..
+        } = &app.undo_stack[1]
+        {
+            assert_eq!(old_text, "");
+            assert_eq!(new_text, "Hello");
+        } else {
+            panic!("Expected EditText command at index 1");
+        }
+    }
+
+    #[test]
+    fn commit_text_no_command_when_text_unchanged() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+        assert_eq!(app.undo_stack.len(), 1);
+
+        // Commit without typing anything (text unchanged from "")
+        app.update(Message::CommitText);
+
+        // Should NOT push EditText command
+        assert_eq!(app.undo_stack.len(), 1);
+    }
+
+    #[test]
+    fn undo_after_text_edit_restores_previous_text() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+
+        // Type text
+        let overlay = &mut app.document.as_mut().unwrap().overlays[0];
+        overlay.text = "Hello".to_string();
+
+        // Commit
+        let _ = app.update(Message::CommitText);
+        assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+
+        // Undo
+        let _ = app.update(Message::Undo);
+
+        // Text should be restored to empty
+        assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "");
+    }
+
+    #[test]
+    fn redo_after_undo_restores_edited_text() {
+        let mut app = test_app_with_document();
+        app.update(Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 700.0 },
+            width: None,
+        });
+
+        // Type text
+        let overlay = &mut app.document.as_mut().unwrap().overlays[0];
+        overlay.text = "Hello".to_string();
+
+        // Commit
+        let _ = app.update(Message::CommitText);
+        assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+
+        // Undo
+        let _ = app.update(Message::Undo);
+        assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "");
+
+        // Redo
+        let _ = app.update(Message::Redo);
+
+        // Text should be restored to "Hello"
+        assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
     }
 }

@@ -101,6 +101,8 @@ pub struct TextOverlay {
     pub text: String,
     pub font: Standard14Font,
     pub font_size: f32,
+    /// Wrap width in PDF points. `None` = single-line, `Some(w)` = multi-line with wrapping.
+    pub width: Option<f32>,
 }
 
 #[cfg(test)]
@@ -166,6 +168,7 @@ mod tests {
             text: "Hello".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         };
         assert_eq!(overlay.page, 1);
         assert_eq!(overlay.position.x, 72.0);
@@ -173,6 +176,7 @@ mod tests {
         assert_eq!(overlay.text, "Hello");
         assert_eq!(overlay.font, Standard14Font::Helvetica);
         assert_eq!(overlay.font_size, 12.0);
+        assert!(overlay.width.is_none());
     }
 
     #[test]
@@ -183,6 +187,7 @@ mod tests {
             text: "Hello".to_string(),
             font: Standard14Font::Courier,
             font_size: 14.0,
+            width: None,
         };
         let cloned = overlay.clone();
         assert_eq!(overlay, cloned);
@@ -200,5 +205,31 @@ mod tests {
     #[test]
     fn standard14font_all_has_14_entries() {
         assert_eq!(Standard14Font::ALL.len(), 14);
+    }
+
+    #[test]
+    fn text_overlay_width_none_by_default() {
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: Standard14Font::Helvetica,
+            font_size: 12.0,
+            width: None,
+        };
+        assert!(overlay.width.is_none());
+    }
+
+    #[test]
+    fn text_overlay_width_some_for_multiline() {
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: Standard14Font::Helvetica,
+            font_size: 12.0,
+            width: Some(200.0),
+        };
+        assert!((overlay.width.unwrap() - 200.0).abs() < f32::EPSILON);
     }
 }

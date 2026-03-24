@@ -8,11 +8,18 @@ use crate::app::Message;
 use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen, screen_to_pdf};
 use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
 
+/// Time window for double-click detection (milliseconds).
+const DOUBLE_CLICK_TIMEOUT_MS: u128 = 500;
+/// Maximum distance for double-click detection (pixels).
+const DOUBLE_CLICK_DISTANCE_PX: f32 = 5.0;
+
 /// State for the PDF canvas view (persistent, lives in App).
 pub struct CanvasState {
     pub zoom: f32,
     pub active_overlay: Option<usize>,
     pub editing: bool,
+    /// The overlay text at the start of an edit session, for undo support.
+    pub edit_start_text: Option<String>,
     /// Counter incremented on each zoom change; used to debounce re-renders.
     pub zoom_generation: u64,
     /// Current vertical scroll offset in pixels.
@@ -27,6 +34,7 @@ impl Default for CanvasState {
             zoom: 1.0,
             active_overlay: None,
             editing: false,
+            edit_start_text: None,
             zoom_generation: 0,
             scroll_y: 0.0,
             viewport_height: 0.0,
@@ -51,11 +59,40 @@ pub struct PdfCanvasProgram<'a> {
 }
 
 /// Widget-local mutable state managed by Iced's canvas infrastructure.
-#[derive(Default)]
 pub struct ProgramState {
     pub cursor_position: Option<iced::Point>,
     pub drag: Option<LocalDragState>,
+    pub placement_drag: Option<PlacementDragState>,
+    pub resize_drag: Option<ResizeDragState>,
     pub keyboard_modifiers: iced::keyboard::Modifiers,
+    /// Tracks the time and position of the last left-click for double-click detection.
+    pub last_click: Option<(std::time::Instant, iced::Point)>,
+}
+
+impl Default for ProgramState {
+    fn default() -> Self {
+        Self {
+            cursor_position: None,
+            drag: None,
+            placement_drag: None,
+            resize_drag: None,
+            keyboard_modifiers: iced::keyboard::Modifiers::empty(),
+            last_click: None,
+        }
+    }
+}
+
+/// Tracks an in-progress resize drag on a multi-line overlay.
+pub struct ResizeDragState {
+    pub overlay_index: usize,
+    pub initial_width: f32,
+}
+
+/// Tracks an in-progress placement drag (click-and-drag to create a multi-line overlay).
+pub struct PlacementDragState {
+    pub start_screen: iced::Point,
+    pub page: u32,
+    pub page_screen_rect: iced::Rectangle,
 }
 
 /// Tracks an in-progress overlay drag within the canvas widget.
@@ -127,10 +164,44 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                     };
                     let params = self.conversion_params_for_page(page, &page_screen_rect)?;
 
+                    // Check if we hit the resize handle of the selected multi-line overlay first.
+                    if let Some(active_idx) = self.active_overlay
+                        && let Some(overlay) = self.overlays.get(active_idx)
+                        && overlay.page == page
+                        && let Some(width_pts) = overlay.width
+                        && resize_handle_hit(
+                            cursor_pos.x,
+                            cursor_pos.y,
+                            overlay,
+                            width_pts,
+                            &params,
+                        )
+                    {
+                        state.resize_drag = Some(ResizeDragState {
+                            overlay_index: active_idx,
+                            initial_width: width_pts,
+                        });
+                        return Some(canvas::Action::capture());
+                    }
+
                     // Check if we hit an existing overlay on this page
                     if let Some(idx) =
                         hit_test(cursor_pos.x, cursor_pos.y, self.overlays, page, &params)
                     {
+                        let is_double_click =
+                            state.last_click.as_ref().is_some_and(|(time, pos)| {
+                                time.elapsed().as_millis() < DOUBLE_CLICK_TIMEOUT_MS
+                                    && (pos.x - cursor_pos.x).abs() < DOUBLE_CLICK_DISTANCE_PX
+                                    && (pos.y - cursor_pos.y).abs() < DOUBLE_CLICK_DISTANCE_PX
+                            });
+                        state.last_click = Some((std::time::Instant::now(), cursor_pos));
+
+                        if is_double_click {
+                            return Some(
+                                canvas::Action::publish(Message::EditOverlay(idx)).and_capture(),
+                            );
+                        }
+
                         let (overlay_sx, overlay_sy) = pdf_to_screen(
                             self.overlays[idx].position.x,
                             self.overlays[idx].position.y,
@@ -144,26 +215,34 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                         });
                         Some(canvas::Action::publish(Message::SelectOverlay(idx)).and_capture())
                     } else if page_rect.contains(iced::Point::new(canvas_x, canvas_y)) {
-                        let (pdf_x, pdf_y) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
-                        Some(
-                            canvas::Action::publish(Message::PlaceOverlay {
-                                page,
-                                position: PdfPosition { x: pdf_x, y: pdf_y },
-                            })
-                            .and_capture(),
-                        )
+                        state.last_click = None;
+                        state.placement_drag = Some(PlacementDragState {
+                            start_screen: cursor_pos,
+                            page,
+                            page_screen_rect: iced::Rectangle {
+                                x: page_rect.x + bounds.x,
+                                y: page_rect.y + bounds.y,
+                                ..page_rect
+                            },
+                        });
+                        Some(canvas::Action::capture())
                     } else {
+                        state.last_click = None;
                         Some(canvas::Action::publish(Message::DeselectOverlay).and_capture())
                     }
                 } else {
                     // Click in gap or outside pages
+                    state.last_click = None;
                     Some(canvas::Action::publish(Message::DeselectOverlay).and_capture())
                 }
             }
 
             canvas::Event::Mouse(mouse::Event::CursorMoved { position }) => {
                 state.cursor_position = Some(*position);
-                if state.drag.is_some() {
+                if state.drag.is_some()
+                    || state.placement_drag.is_some()
+                    || state.resize_drag.is_some()
+                {
                     Some(canvas::Action::request_redraw())
                 } else {
                     None
@@ -172,6 +251,82 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
 
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 let cursor_pos = cursor.position()?;
+
+                // Check for placement drag first (click-to-place or drag-to-size)
+                if let Some(placement) = state.placement_drag.take() {
+                    let dx = cursor_pos.x - placement.start_screen.x;
+                    let dy = cursor_pos.y - placement.start_screen.y;
+                    let distance = (dx * dx + dy * dy).sqrt();
+
+                    let params = self
+                        .conversion_params_for_page(placement.page, &placement.page_screen_rect)?;
+
+                    if distance < MIN_DRAG_DISTANCE {
+                        // Short drag / click: single-line overlay
+                        let (pdf_x, pdf_y) = screen_to_pdf(
+                            placement.start_screen.x,
+                            placement.start_screen.y,
+                            &params,
+                        );
+                        return Some(
+                            canvas::Action::publish(Message::PlaceOverlay {
+                                page: placement.page,
+                                position: PdfPosition { x: pdf_x, y: pdf_y },
+                                width: None,
+                            })
+                            .and_capture(),
+                        );
+                    } else {
+                        // Drag: multi-line overlay — width defined by horizontal drag distance
+                        let (start_pdf_x, start_pdf_y) = screen_to_pdf(
+                            placement.start_screen.x,
+                            placement.start_screen.y,
+                            &params,
+                        );
+                        let (end_pdf_x, _) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
+                        let width_pts = (end_pdf_x - start_pdf_x).abs();
+                        let pdf_x = start_pdf_x.min(end_pdf_x);
+                        return Some(
+                            canvas::Action::publish(Message::PlaceOverlay {
+                                page: placement.page,
+                                position: PdfPosition {
+                                    x: pdf_x,
+                                    y: start_pdf_y,
+                                },
+                                width: Some(width_pts),
+                            })
+                            .and_capture(),
+                        );
+                    }
+                }
+
+                // Handle resize drag end before overlay move drag
+                if let Some(resize) = state.resize_drag.take() {
+                    let overlay = self.overlays.get(resize.overlay_index)?;
+                    let page_rect =
+                        page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
+                    let page_screen_rect = iced::Rectangle {
+                        x: page_rect.x + bounds.x,
+                        y: page_rect.y + bounds.y,
+                        ..page_rect
+                    };
+                    let params =
+                        self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
+                    let (cursor_pdf_x, _) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
+                    let new_width = (cursor_pdf_x - overlay.position.x).max(20.0);
+                    if (new_width - resize.initial_width).abs() > 0.1 {
+                        return Some(
+                            canvas::Action::publish(Message::ResizeOverlay {
+                                index: resize.overlay_index,
+                                old_width: resize.initial_width,
+                                new_width,
+                            })
+                            .and_capture(),
+                        );
+                    }
+                    return Some(canvas::Action::capture());
+                }
+
                 let drag = state.drag.take()?;
 
                 // Use the overlay's page for coordinate conversion
@@ -326,6 +481,9 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                         sy,
                         scale,
                     );
+                    if let Some(width_pts) = overlay.width {
+                        draw_resize_handle(&mut frame, sx, sy, width_pts, scale, overlay.font_size);
+                    }
                 }
             }
         }
@@ -353,6 +511,36 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
             );
         }
 
+        // Placement drag preview (rectangle from start to cursor)
+        if let Some(placement) = &state.placement_drag
+            && let Some(cursor_pos) = state.cursor_position
+        {
+            let dx = cursor_pos.x - placement.start_screen.x;
+            let dy = cursor_pos.y - placement.start_screen.y;
+            let distance = (dx * dx + dy * dy).sqrt();
+            if distance < MIN_DRAG_DISTANCE {
+                return vec![frame.into_geometry()];
+            }
+
+            let start_canvas = iced::Point::new(
+                placement.start_screen.x - bounds.x,
+                placement.start_screen.y - bounds.y,
+            );
+            let end_canvas = iced::Point::new(cursor_pos.x - bounds.x, cursor_pos.y - bounds.y);
+            let rect_x = start_canvas.x.min(end_canvas.x);
+            let rect_y = start_canvas.y.min(end_canvas.y);
+            let rect_w = (end_canvas.x - start_canvas.x).abs();
+            let rect_h = (end_canvas.y - start_canvas.y).abs();
+
+            frame.stroke_rectangle(
+                iced::Point::new(rect_x, rect_y),
+                iced::Size::new(rect_w, rect_h),
+                canvas::Stroke::default()
+                    .with_color(iced::Color::from_rgb(0.2, 0.5, 1.0))
+                    .with_width(1.5),
+            );
+        }
+
         vec![frame.into_geometry()]
     }
 
@@ -364,6 +552,10 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
     ) -> mouse::Interaction {
         if state.drag.is_some() {
             return mouse::Interaction::Grabbing;
+        }
+
+        if state.resize_drag.is_some() {
+            return mouse::Interaction::ResizingHorizontally;
         }
 
         let Some(cursor_pos) = cursor.position() else {
@@ -387,6 +579,16 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
         let Some(params) = self.conversion_params_for_page(page, &page_screen_rect) else {
             return mouse::Interaction::default();
         };
+
+        // Show resize cursor when hovering the resize handle of the selected multi-line overlay.
+        if let Some(active_idx) = self.active_overlay
+            && let Some(overlay) = self.overlays.get(active_idx)
+            && overlay.page == page
+            && let Some(width_pts) = overlay.width
+            && resize_handle_hit(cursor_pos.x, cursor_pos.y, overlay, width_pts, &params)
+        {
+            return mouse::Interaction::ResizingHorizontally;
+        }
 
         if hit_test(cursor_pos.x, cursor_pos.y, self.overlays, page, &params).is_some() {
             return mouse::Interaction::Pointer;
@@ -445,10 +647,53 @@ fn draw_selection_box(
     );
 }
 
+/// Half-width of the resize handle hit area in screen pixels.
+const RESIZE_HANDLE_HIT_RADIUS: f32 = 4.0;
+
+/// Draw a vertical bar resize handle on the right edge of a multi-line overlay.
+fn draw_resize_handle(
+    frame: &mut canvas::Frame,
+    overlay_sx: f32,
+    overlay_sy: f32,
+    width_pts: f32,
+    scale: f32,
+    font_size: f32,
+) {
+    let handle_x = overlay_sx + width_pts * scale;
+    let scaled_size = font_size * scale;
+    frame.fill_rectangle(
+        iced::Point::new(handle_x - 2.0, overlay_sy - scaled_size),
+        iced::Size::new(4.0, scaled_size),
+        iced::Color::from_rgb(0.2, 0.5, 1.0),
+    );
+}
+
+/// Return true if a screen-space click lands on the resize handle of a multi-line overlay.
+fn resize_handle_hit(
+    screen_x: f32,
+    screen_y: f32,
+    overlay: &TextOverlay,
+    width_pts: f32,
+    params: &ConversionParams,
+) -> bool {
+    let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
+    let scale = params.zoom * params.dpi / 72.0;
+    let handle_x = sx + width_pts * scale;
+    let scaled_size = overlay.font_size * scale;
+    // Hit box: x within ±RESIZE_HANDLE_HIT_RADIUS of handle_x, y within [sy - scaled_size, sy]
+    (screen_x - handle_x).abs() <= RESIZE_HANDLE_HIT_RADIUS
+        && screen_y >= sy - scaled_size
+        && screen_y <= sy
+}
+
 /// Gap between pages in continuous scrolling mode (pixels).
 pub const PAGE_GAP: f32 = 16.0;
 
+/// Minimum drag distance in pixels to initiate a resize. Clicks below this distance are treated as single-line overlays.
+const MIN_DRAG_DISTANCE: f32 = 10.0;
+
 /// Layout of all pages stacked vertically for continuous scrolling.
+#[derive(Clone)]
 pub struct PageLayout {
     /// Y-offset of each page's top edge in canvas space. Index 0 = page 1.
     pub page_tops: Vec<f32>,
@@ -899,6 +1144,7 @@ mod tests {
             text: text.to_string(),
             font: Standard14Font::Courier,
             font_size: 12.0,
+            width: None,
         }
     }
 
@@ -996,6 +1242,24 @@ mod tests {
         let state = ProgramState::default();
         assert!(state.cursor_position.is_none());
         assert!(state.drag.is_none());
+        assert!(state.placement_drag.is_none());
+    }
+
+    // --- PlacementDragState tests ---
+
+    #[test]
+    fn placement_drag_state_construction() {
+        let state = PlacementDragState {
+            start_screen: iced::Point::new(100.0, 200.0),
+            page: 1,
+            page_screen_rect: iced::Rectangle::new(
+                iced::Point::ORIGIN,
+                iced::Size::new(612.0, 792.0),
+            ),
+        };
+        assert_eq!(state.page, 1);
+        assert!((state.start_screen.x - 100.0).abs() < f32::EPSILON);
+        assert!((state.start_screen.y - 200.0).abs() < f32::EPSILON);
     }
 
     // --- LocalDragState tests ---
@@ -1226,6 +1490,7 @@ mod tests {
             text: "On page 2".to_string(),
             font: Standard14Font::Courier,
             font_size: 12.0,
+            width: None,
         }];
         let result = hit_test(80.0, 65.0, &overlays, 1, &params);
         assert!(result.is_none());
@@ -1343,7 +1608,32 @@ mod tests {
     }
 
     #[test]
-    fn update_click_on_empty_page_places_overlay() {
+    fn update_click_on_empty_page_records_placement_drag_on_press() {
+        // On mouse-down over a blank page area, placement is deferred to mouse-up.
+        // In multi-page mode, page 1 starts at y=PAGE_GAP/2=8, centered at x=194.
+        let overlays: Vec<TextOverlay> = vec![];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(300.0, 200.0);
+
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        // Capture event but do not emit a message yet
+        assert_eq!(status, event::Status::Captured);
+        assert!(msg.is_none());
+        // Placement drag state must be recorded
+        assert!(state.placement_drag.is_some());
+        let pd = state.placement_drag.as_ref().unwrap();
+        assert_eq!(pd.page, 1);
+        assert!((pd.start_screen.x - 300.0).abs() < 0.5);
+        assert!((pd.start_screen.y - 200.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn update_click_on_empty_page_places_single_line_overlay_on_release() {
         // In multi-page mode, page 1 starts at y=PAGE_GAP/2=8, centered at x=194
         // Page rect: (194, 8) to (806, 800)
         // Click at screen (300, 200):
@@ -1357,14 +1647,69 @@ mod tests {
         let bounds = test_canvas_bounds();
         let cursor = cursor_at(300.0, 200.0);
 
-        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        // Press to start placement drag
+        program.update(&mut state, &left_press_event(), bounds, cursor);
+        assert!(state.placement_drag.is_some());
+
+        // Release at same spot (distance < 10px) → single-line PlaceOverlay
+        let action = program.update(&mut state, &left_release_event(), bounds, cursor);
         let (msg, status) = decompose(action);
         assert_eq!(status, event::Status::Captured);
+        assert!(state.placement_drag.is_none());
         match msg {
-            Some(Message::PlaceOverlay { page, position }) => {
+            Some(Message::PlaceOverlay {
+                page,
+                position,
+                width,
+            }) => {
                 assert_eq!(page, 1);
                 assert!((position.x - 106.0).abs() < 0.5);
                 assert!((position.y - 600.0).abs() < 0.5);
+                assert!(
+                    width.is_none(),
+                    "click should produce single-line (no width)"
+                );
+            }
+            other => panic!("Expected PlaceOverlay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_drag_on_empty_page_places_multi_line_overlay_on_release() {
+        // Drag from screen (300, 200) to (450, 200) — 150px horizontal drag
+        // At zoom=1, dpi=72 (scale=1.0): 150 screen px = 150 PDF pts
+        // Start: pdf_x = 300 - 194 = 106, pdf_y = 792 - (200 - 8) = 600
+        // End: pdf_x = 450 - 194 = 256
+        // Width = |256 - 106| = 150 pts
+        let overlays: Vec<TextOverlay> = vec![];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+
+        // Press at (300, 200)
+        let cursor_start = cursor_at(300.0, 200.0);
+        program.update(&mut state, &left_press_event(), bounds, cursor_start);
+        assert!(state.placement_drag.is_some());
+
+        // Release at (450, 200) — 150px drag, well over the 10px threshold
+        let cursor_end = cursor_at(450.0, 200.0);
+        let action = program.update(&mut state, &left_release_event(), bounds, cursor_end);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(state.placement_drag.is_none());
+        match msg {
+            Some(Message::PlaceOverlay {
+                page,
+                position,
+                width,
+            }) => {
+                assert_eq!(page, 1);
+                assert!((position.x - 106.0).abs() < 1.0);
+                assert!((position.y - 600.0).abs() < 1.0);
+                let w = width.expect("drag should produce multi-line (width Some)");
+                assert!((w - 150.0).abs() < 1.0, "expected width ~150, got {w}");
             }
             other => panic!("Expected PlaceOverlay, got {other:?}"),
         }
@@ -1876,5 +2221,374 @@ mod tests {
         let (msg, status) = decompose(action);
         assert_eq!(status, event::Status::Ignored);
         assert!(msg.is_none());
+    }
+
+    // =====================================================================
+    // Double-click to re-edit tests
+    // =====================================================================
+
+    #[test]
+    fn program_state_default_has_no_last_click() {
+        let state = ProgramState::default();
+        assert!(state.last_click.is_none());
+    }
+
+    #[test]
+    fn single_click_on_overlay_emits_select_not_edit() {
+        // First click on overlay — no previous click — should emit SelectOverlay.
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(270.0, 75.0);
+
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(matches!(msg, Some(Message::SelectOverlay(0))));
+        // last_click is recorded after a hit
+        assert!(state.last_click.is_some());
+    }
+
+    #[test]
+    fn double_click_on_overlay_emits_edit_overlay() {
+        // Two rapid clicks at the same position on an overlay → EditOverlay.
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(270.0, 75.0);
+
+        // First click: sets last_click, emits SelectOverlay
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, _) = decompose(action);
+        assert!(matches!(msg, Some(Message::SelectOverlay(0))));
+        assert!(state.last_click.is_some());
+
+        // Second click immediately: should emit EditOverlay
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(matches!(msg, Some(Message::EditOverlay(0))));
+    }
+
+    #[test]
+    fn double_click_too_far_away_does_not_edit() {
+        // Two clicks where second is more than 5px away from first → still SelectOverlay.
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+
+        // First click at (270, 75)
+        let cursor1 = cursor_at(270.0, 75.0);
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor1);
+        let (msg, _) = decompose(action);
+        assert!(matches!(msg, Some(Message::SelectOverlay(0))));
+
+        // Second click at (280, 75) — 10px away, beyond 5px threshold
+        let cursor2 = cursor_at(280.0, 75.0);
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor2);
+        let (msg, _) = decompose(action);
+        assert!(matches!(msg, Some(Message::SelectOverlay(0))));
+    }
+
+    #[test]
+    fn double_click_records_last_click_after_edit() {
+        // After a double-click, last_click is updated with the second click's position.
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(270.0, 75.0);
+
+        program.update(&mut state, &left_press_event(), bounds, cursor);
+        program.update(&mut state, &left_press_event(), bounds, cursor);
+
+        // last_click should reflect the position of the second (double) click
+        let (_, pos) = state.last_click.as_ref().unwrap();
+        assert!((pos.x - 270.0).abs() < 0.5);
+        assert!((pos.y - 75.0).abs() < 0.5);
+    }
+
+    // =====================================================================
+    // Resize handle tests
+    // =====================================================================
+
+    /// Build a multi-line overlay (width = Some) for resize handle tests.
+    fn multiline_overlay_at(x: f32, y: f32, width: f32, text: &str) -> TextOverlay {
+        TextOverlay {
+            page: 1,
+            position: PdfPosition { x, y },
+            text: text.to_string(),
+            font: Standard14Font::Courier,
+            font_size: 12.0,
+            width: Some(width),
+        }
+    }
+
+    #[test]
+    fn resize_drag_state_construction() {
+        let state = ResizeDragState {
+            overlay_index: 2,
+            initial_width: 150.0,
+        };
+        assert_eq!(state.overlay_index, 2);
+        assert!((state.initial_width - 150.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn program_state_default_has_no_resize_drag() {
+        let state = ProgramState::default();
+        assert!(state.resize_drag.is_none());
+    }
+
+    // --- Resize handle hit-test helpers ---
+    // The handle occupies +-4px on the right edge of a multi-line overlay's width.
+    // At zoom=1, dpi=72 (scale=1.0):
+    //   overlay at PDF (72, 720), width=150pt → handle_screen_x = 194 + 72 + 150 = 416
+    //   (page left x = (1000-612)/2 = 194, page top y = 8)
+    //
+    // Handle hit area: x in [412, 420], y in [sy-h, sy] (full overlay height vertically)
+
+    #[test]
+    fn click_on_resize_handle_starts_resize_drag() {
+        // Multi-line overlay at PDF (72, 720), width=150pt.
+        // At scale=1: handle_screen_x = 194 + 72 + 150 = 416
+        // Overlay screen y = 792-720 + 8 = 80 (baseline). Height = 12*1 = 12.
+        // Handle y range: [68, 80].
+        // Click at (416, 75): should start resize_drag, not overlay move drag.
+        let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = PdfCanvasProgram {
+            active_overlay: Some(0),
+            ..test_program(&overlays, &imgs, &dims)
+        };
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(416.0, 75.0);
+
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        // Should capture event. Resize drag started, no message on press.
+        assert!(
+            msg.is_none(),
+            "expected None message on resize handle press, got {msg:?}"
+        );
+        assert!(state.resize_drag.is_some(), "resize_drag should be set");
+        assert!(state.drag.is_none(), "overlay move drag should NOT be set");
+        let rd = state.resize_drag.as_ref().unwrap();
+        assert_eq!(rd.overlay_index, 0);
+        assert!((rd.initial_width - 150.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn resize_drag_on_single_line_overlay_does_not_start() {
+        // Single-line overlays (width=None) have no resize handle.
+        // Click at the same x position should fall through to normal overlay hit test.
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")]; // width=None
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = PdfCanvasProgram {
+            active_overlay: Some(0),
+            ..test_program(&overlays, &imgs, &dims)
+        };
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        // Click at x=416, y=75 — but overlay has no width, so no handle exists there
+        let cursor = cursor_at(416.0, 75.0);
+
+        program.update(&mut state, &left_press_event(), bounds, cursor);
+        assert!(
+            state.resize_drag.is_none(),
+            "single-line overlay should have no resize drag"
+        );
+    }
+
+    #[test]
+    fn resize_drag_only_starts_on_selected_overlay() {
+        // The resize handle only appears for the active (selected) overlay.
+        // If no overlay is selected, clicking the handle position starts placement drag.
+        let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        // active_overlay is None — not selected
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(416.0, 75.0);
+
+        program.update(&mut state, &left_press_event(), bounds, cursor);
+        assert!(
+            state.resize_drag.is_none(),
+            "resize drag should not start when overlay not selected"
+        );
+    }
+
+    #[test]
+    fn resize_drag_release_publishes_resize_overlay_message() {
+        // Drag from handle at x=416 to x=516 (100px rightward) → new_width = 150 + 100 = 250pt
+        let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = PdfCanvasProgram {
+            active_overlay: Some(0),
+            ..test_program(&overlays, &imgs, &dims)
+        };
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+
+        // Press on handle
+        let cursor_press = cursor_at(416.0, 75.0);
+        program.update(&mut state, &left_press_event(), bounds, cursor_press);
+        assert!(state.resize_drag.is_some());
+
+        // Release 100px to the right
+        let cursor_release = cursor_at(516.0, 75.0);
+        let action = program.update(&mut state, &left_release_event(), bounds, cursor_release);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(state.resize_drag.is_none());
+        match msg {
+            Some(Message::ResizeOverlay {
+                index,
+                old_width,
+                new_width,
+            }) => {
+                assert_eq!(index, 0);
+                assert!(
+                    (old_width - 150.0).abs() < 1.0,
+                    "old_width should be 150, got {old_width}"
+                );
+                // new_width: cursor_release pdf_x - overlay.position.x
+                // cursor_release.x = 516, page_left = 194, scale=1 → pdf_x = 516-194 = 322
+                // overlay.position.x = 72 → new_width = 322 - 72 = 250
+                assert!(
+                    (new_width - 250.0).abs() < 1.0,
+                    "new_width should be ~250, got {new_width}"
+                );
+            }
+            other => panic!("Expected ResizeOverlay message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resize_drag_release_enforces_minimum_width() {
+        // Drag leftward past the overlay's left edge. Width clamped to 20pt.
+        let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = PdfCanvasProgram {
+            active_overlay: Some(0),
+            ..test_program(&overlays, &imgs, &dims)
+        };
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+
+        // Press on handle
+        let cursor_press = cursor_at(416.0, 75.0);
+        program.update(&mut state, &left_press_event(), bounds, cursor_press);
+
+        // Release far to the left (cursor_pdf_x < overlay_pdf_x + 20)
+        // page_left=194, overlay.position.x=72 → at x=194+72+5=271 → pdf_x=77 → width=5 < 20
+        let cursor_release = cursor_at(271.0, 75.0);
+        let action = program.update(&mut state, &left_release_event(), bounds, cursor_release);
+        let (msg, _status) = decompose(action);
+        match msg {
+            Some(Message::ResizeOverlay { new_width, .. }) => {
+                assert!(
+                    new_width >= 20.0,
+                    "new_width should be at least 20, got {new_width}"
+                );
+            }
+            other => panic!("Expected ResizeOverlay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resize_drag_release_at_same_position_emits_no_message() {
+        // If the user presses and releases the handle without moving, no resize needed.
+        let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = PdfCanvasProgram {
+            active_overlay: Some(0),
+            ..test_program(&overlays, &imgs, &dims)
+        };
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+
+        let cursor = cursor_at(416.0, 75.0);
+        program.update(&mut state, &left_press_event(), bounds, cursor);
+        assert!(state.resize_drag.is_some());
+
+        let action = program.update(&mut state, &left_release_event(), bounds, cursor);
+        let (msg, status) = decompose(action);
+        assert_eq!(status, event::Status::Captured);
+        assert!(state.resize_drag.is_none());
+        assert!(
+            msg.is_none(),
+            "no change in width → no ResizeOverlay message, got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn cursor_move_requests_redraw_during_resize_drag() {
+        let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = PdfCanvasProgram {
+            active_overlay: Some(0),
+            ..test_program(&overlays, &imgs, &dims)
+        };
+        let mut state = ProgramState::default();
+        state.resize_drag = Some(ResizeDragState {
+            overlay_index: 0,
+            initial_width: 150.0,
+        });
+        let bounds = test_canvas_bounds();
+        let cursor = cursor_at(450.0, 75.0);
+
+        let action = program.update(&mut state, &cursor_moved_event(450.0, 75.0), bounds, cursor);
+        // Should request redraw
+        assert!(
+            action.is_some(),
+            "cursor move during resize drag should return Some(action)"
+        );
+    }
+
+    #[test]
+    fn click_on_empty_page_between_overlay_clicks_prevents_double_click() {
+        // Clicking blank page area clears last_click and prevents false-positive double-click.
+        let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+        let imgs = test_page_images();
+        let dims = test_page_dimensions();
+        let program = test_program(&overlays, &imgs, &dims);
+        let mut state = ProgramState::default();
+        let bounds = test_canvas_bounds();
+
+        // First: click on overlay to set last_click
+        let cursor1 = cursor_at(270.0, 75.0);
+        program.update(&mut state, &left_press_event(), bounds, cursor1);
+        assert!(state.last_click.is_some());
+
+        // Second: click on blank page area — should start placement drag, not edit
+        // 300, 500 is well inside the page but away from the overlay
+        let cursor2 = cursor_at(300.0, 500.0);
+        let action = program.update(&mut state, &left_press_event(), bounds, cursor2);
+        let (msg, _) = decompose(action);
+        // Blank area click starts placement drag, no message on press
+        assert!(msg.is_none());
+        assert!(state.placement_drag.is_some());
     }
 }

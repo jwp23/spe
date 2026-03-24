@@ -32,6 +32,11 @@ pub enum Command {
         old_size: f32,
         new_size: f32,
     },
+    ResizeOverlay {
+        index: usize,
+        old_width: f32,
+        new_width: f32,
+    },
 }
 
 impl Command {
@@ -53,6 +58,11 @@ impl Command {
                 index, new_size, ..
             } => {
                 overlays[*index].font_size = *new_size;
+            }
+            Self::ResizeOverlay {
+                index, new_width, ..
+            } => {
+                overlays[*index].width = Some(*new_width);
             }
         }
     }
@@ -76,6 +86,11 @@ impl Command {
             } => {
                 overlays[*index].font_size = *old_size;
             }
+            Self::ResizeOverlay {
+                index, old_width, ..
+            } => {
+                overlays[*index].width = Some(*old_width);
+            }
         }
     }
 }
@@ -91,6 +106,7 @@ mod tests {
             text: "Hello".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         }
     }
 
@@ -224,6 +240,7 @@ mod tests {
                 text: "Second".to_string(),
                 font: Standard14Font::Courier,
                 font_size: 14.0,
+                width: None,
             },
             TextOverlay {
                 page: 1,
@@ -231,6 +248,7 @@ mod tests {
                 text: "Third".to_string(),
                 font: Standard14Font::TimesRoman,
                 font_size: 16.0,
+                width: None,
             },
         ];
         let deleted = overlays[1].clone();
@@ -245,5 +263,21 @@ mod tests {
         cmd.reverse(&mut overlays);
         assert_eq!(overlays.len(), 3);
         assert_eq!(overlays[1].text, "Second");
+    }
+
+    #[test]
+    fn resize_overlay_round_trip() {
+        let mut overlay = sample_overlay();
+        overlay.width = Some(200.0);
+        let mut overlays = vec![overlay];
+        let cmd = Command::ResizeOverlay {
+            index: 0,
+            old_width: 200.0,
+            new_width: 300.0,
+        };
+        cmd.apply(&mut overlays);
+        assert!((overlays[0].width.unwrap() - 300.0).abs() < f32::EPSILON);
+        cmd.reverse(&mut overlays);
+        assert!((overlays[0].width.unwrap() - 200.0).abs() < f32::EPSILON);
     }
 }

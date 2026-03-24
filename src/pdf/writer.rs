@@ -181,20 +181,38 @@ pub fn write_overlays(
                     Object::Real(overlay.font_size),
                 ],
             ));
-            operations.push(Operation::new(
-                "Td",
-                vec![
-                    Object::Real(overlay.position.x),
-                    Object::Real(overlay.position.y),
-                ],
-            ));
-            operations.push(Operation::new(
-                "Tj",
-                vec![Object::String(
-                    overlay.text.as_bytes().to_vec(),
-                    lopdf::StringFormat::Literal,
-                )],
-            ));
+
+            let lines = if let Some(width) = overlay.width {
+                crate::coordinate::word_wrap(&overlay.text, overlay.font, overlay.font_size, width)
+            } else {
+                vec![overlay.text.clone()]
+            };
+
+            let leading = overlay.font_size * 1.2;
+            for (i, line) in lines.iter().enumerate() {
+                if i == 0 {
+                    operations.push(Operation::new(
+                        "Td",
+                        vec![
+                            Object::Real(overlay.position.x),
+                            Object::Real(overlay.position.y),
+                        ],
+                    ));
+                } else {
+                    operations.push(Operation::new(
+                        "Td",
+                        vec![Object::Real(0.0), Object::Real(-leading)],
+                    ));
+                }
+                operations.push(Operation::new(
+                    "Tj",
+                    vec![Object::String(
+                        line.as_bytes().to_vec(),
+                        lopdf::StringFormat::Literal,
+                    )],
+                ));
+            }
+
             operations.push(Operation::new("ET", vec![]));
         }
 
@@ -378,6 +396,7 @@ mod tests {
             text: "Hello".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
@@ -408,6 +427,7 @@ mod tests {
             text: "Hello".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
@@ -476,6 +496,7 @@ mod tests {
             text: "Reuse".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
@@ -523,6 +544,7 @@ mod tests {
                 text: "Helvetica text".to_string(),
                 font: Standard14Font::Helvetica,
                 font_size: 12.0,
+                width: None,
             },
             TextOverlay {
                 page: 1,
@@ -530,6 +552,7 @@ mod tests {
                 text: "Courier text".to_string(),
                 font: Standard14Font::Courier,
                 font_size: 12.0,
+                width: None,
             },
         ];
 
@@ -645,6 +668,7 @@ mod tests {
                 text: "First".to_string(),
                 font: Standard14Font::Helvetica,
                 font_size: 12.0,
+                width: None,
             },
             TextOverlay {
                 page: 1,
@@ -652,6 +676,7 @@ mod tests {
                 text: "Second".to_string(),
                 font: Standard14Font::Helvetica,
                 font_size: 12.0,
+                width: None,
             },
         ];
 
@@ -724,6 +749,7 @@ mod tests {
             text: "Ghost".to_string(),
             font: Standard14Font::Helvetica,
             font_size: 12.0,
+            width: None,
         };
 
         let result = write_overlays(src.path(), dst.path(), &[overlay]);
@@ -739,6 +765,105 @@ mod tests {
                 }
             ),
             "expected PageNotFound for page 99, got: {err}"
+        );
+    }
+
+    #[test]
+    fn write_multiline_overlay_produces_multiple_tj_operators() {
+        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst = NamedTempFile::new().expect("temp file");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Line 1\nLine 2\nLine 3".to_string(),
+            font: Standard14Font::Helvetica,
+            font_size: 12.0,
+            width: Some(200.0),
+        };
+
+        write_overlays(src.path(), dst.path(), &[overlay]).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1");
+
+        // Inspect only the overlay stream (the last content stream added by write_overlays).
+        let content_ids = doc.get_page_contents(page_id);
+        let overlay_stream_id = *content_ids.last().expect("no content streams");
+        let stream_obj = doc.get_object(overlay_stream_id).expect("stream obj");
+        let stream = stream_obj.as_stream().expect("stream");
+        let content = stream.decode_content().expect("decode");
+        let ops = &content.operations;
+
+        // Should have 3 Tj operators (one per line)
+        let tj_count = ops.iter().filter(|o| o.operator == "Tj").count();
+        assert_eq!(tj_count, 3, "expected 3 Tj ops for 3 lines, got {tj_count}");
+
+        // Should have 3 Td operators, one per line.
+        let td_ops: Vec<&Operation> = ops.iter().filter(|o| o.operator == "Td").collect();
+        assert_eq!(td_ops.len(), 3, "expected 3 Td ops, got {}", td_ops.len());
+
+        // Verify leading offset for the second Td: (0, -(12.0 * 1.2)) = (0, -14.4)
+        let leading = 12.0_f64 * 1.2;
+        let second_td = td_ops[1];
+        let x = match &second_td.operands[0] {
+            Object::Real(v) => *v as f64,
+            Object::Integer(v) => *v as f64,
+            other => panic!("expected numeric x in second Td, got {other:?}"),
+        };
+        let y = match &second_td.operands[1] {
+            Object::Real(v) => *v as f64,
+            Object::Integer(v) => *v as f64,
+            other => panic!("expected numeric y in second Td, got {other:?}"),
+        };
+        assert!(x.abs() < 0.01, "second Td x should be 0, got {x}");
+        assert!(
+            (y - (-leading)).abs() < 0.01,
+            "second Td y should be -{leading}, got {y}"
+        );
+    }
+
+    #[test]
+    fn write_single_line_overlay_width_none_unchanged() {
+        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+
+        // Confirm the single-line (width: None) path still emits exactly 1 Tj.
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst = NamedTempFile::new().expect("temp file");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Single line".to_string(),
+            font: Standard14Font::Helvetica,
+            font_size: 12.0,
+            width: None,
+        };
+
+        write_overlays(src.path(), dst.path(), &[overlay]).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1");
+
+        // The original test PDF has 1 Tj ("Test"), plus 1 from the overlay = 2 total.
+        let overlay_stream_id = *doc.get_page_contents(page_id).last().expect("stream");
+        let stream_obj = doc.get_object(overlay_stream_id).expect("obj");
+        let stream = stream_obj.as_stream().expect("stream");
+        let content = stream.decode_content().expect("decode");
+        let tj_in_overlay = content
+            .operations
+            .iter()
+            .filter(|o| o.operator == "Tj")
+            .count();
+        assert_eq!(
+            tj_in_overlay, 1,
+            "width:None should produce exactly 1 Tj, got {tj_in_overlay}"
         );
     }
 
