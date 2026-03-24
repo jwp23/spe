@@ -166,6 +166,14 @@ impl App {
         }
     }
 
+    fn execute_command(&mut self, cmd: UndoCommand) {
+        if let Some(doc) = &mut self.document {
+            cmd.apply(&mut doc.overlays);
+            self.undo_stack.push(cmd);
+            self.redo_stack.clear();
+        }
+    }
+
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
             // --- Toolbar message forwarding ---
@@ -228,7 +236,7 @@ impl App {
                 position,
                 width,
             } => {
-                if let Some(doc) = &mut self.document {
+                if self.document.is_some() {
                     let overlay = TextOverlay {
                         page,
                         position,
@@ -240,9 +248,8 @@ impl App {
                     let cmd = UndoCommand::PlaceOverlay {
                         overlay: overlay.clone(),
                     };
-                    cmd.apply(&mut doc.overlays);
-                    self.undo_stack.push(cmd);
-                    self.redo_stack.clear();
+                    self.execute_command(cmd);
+                    let doc = self.document.as_ref().unwrap();
                     let idx = doc.overlays.len() - 1;
                     self.canvas.active_overlay = Some(idx);
                     self.canvas.editing = true;
@@ -278,18 +285,15 @@ impl App {
                 return self.handle_commit_text();
             }
             Message::MoveOverlay(index, new_position) => {
-                if let Some(doc) = &mut self.document
+                if let Some(doc) = &self.document
                     && index < doc.overlays.len()
                 {
-                    let old_position = doc.overlays[index].position;
                     let cmd = UndoCommand::MoveOverlay {
                         index,
-                        from: old_position,
+                        from: doc.overlays[index].position,
                         to: new_position,
                     };
-                    cmd.apply(&mut doc.overlays);
-                    self.undo_stack.push(cmd);
-                    self.redo_stack.clear();
+                    self.execute_command(cmd);
                 }
             }
             Message::ResizeOverlay {
@@ -297,7 +301,7 @@ impl App {
                 old_width,
                 new_width,
             } => {
-                if let Some(doc) = &mut self.document
+                if let Some(doc) = &self.document
                     && index < doc.overlays.len()
                 {
                     let cmd = UndoCommand::ResizeOverlay {
@@ -305,61 +309,52 @@ impl App {
                         old_width,
                         new_width,
                     };
-                    cmd.apply(&mut doc.overlays);
-                    self.undo_stack.push(cmd);
-                    self.redo_stack.clear();
+                    self.execute_command(cmd);
                 }
             }
             Message::ChangeFont(font) => {
-                if let Some(doc) = &mut self.document {
+                if self.document.is_some() {
                     if let Some(idx) = self.canvas.active_overlay
+                        && let Some(doc) = &self.document
                         && idx < doc.overlays.len()
                     {
-                        let old_font = doc.overlays[idx].font;
                         let cmd = UndoCommand::ChangeOverlayFont {
                             index: idx,
-                            old_font,
+                            old_font: doc.overlays[idx].font,
                             new_font: font,
                         };
-                        cmd.apply(&mut doc.overlays);
-                        self.undo_stack.push(cmd);
-                        self.redo_stack.clear();
+                        self.execute_command(cmd);
                     }
                     self.toolbar.font = font;
                 }
             }
             Message::ChangeFontSize(size) => {
-                if let Some(doc) = &mut self.document {
+                if self.document.is_some() {
                     if let Some(idx) = self.canvas.active_overlay
+                        && let Some(doc) = &self.document
                         && idx < doc.overlays.len()
                     {
-                        let old_size = doc.overlays[idx].font_size;
                         let cmd = UndoCommand::ChangeOverlayFontSize {
                             index: idx,
-                            old_size,
+                            old_size: doc.overlays[idx].font_size,
                             new_size: size,
                         };
-                        cmd.apply(&mut doc.overlays);
-                        self.undo_stack.push(cmd);
-                        self.redo_stack.clear();
+                        self.execute_command(cmd);
                     }
                     self.toolbar.font_size = size;
                     self.toolbar.font_size_input = format!("{size}");
                 }
             }
             Message::DeleteOverlay => {
-                if let Some(doc) = &mut self.document
+                if let Some(doc) = &self.document
                     && let Some(idx) = self.canvas.active_overlay
                     && idx < doc.overlays.len()
                 {
-                    let overlay = doc.overlays[idx].clone();
                     let cmd = UndoCommand::DeleteOverlay {
-                        overlay,
+                        overlay: doc.overlays[idx].clone(),
                         index: idx,
                     };
-                    cmd.apply(&mut doc.overlays);
-                    self.undo_stack.push(cmd);
-                    self.redo_stack.clear();
+                    self.execute_command(cmd);
                     self.canvas.active_overlay = None;
                     self.canvas.editing = false;
                 }
