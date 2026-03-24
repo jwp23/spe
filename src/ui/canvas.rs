@@ -5,7 +5,9 @@ use iced::widget::canvas;
 use iced::widget::image::Handle;
 
 use crate::app::Message;
-use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen, screen_to_pdf};
+use crate::coordinate::{
+    ConversionParams, overlay_bounding_box, pdf_to_screen, render_scale, screen_to_pdf,
+};
 use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
 
 /// Time window for double-click detection (milliseconds).
@@ -403,7 +405,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
             self.overlay_color[2],
             self.overlay_color[3],
         );
-        let scale = self.zoom * self.dpi / 72.0;
+        let scale = render_scale(self.zoom, self.dpi);
 
         // Determine visible pages
         let (first, last) = visible_pages(&self.page_layout, self.scroll_y, self.viewport_height);
@@ -670,7 +672,7 @@ fn resize_handle_hit(
     params: &ConversionParams,
 ) -> bool {
     let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
-    let scale = params.zoom * params.dpi / 72.0;
+    let scale = params.scale();
     let handle_x = sx + width_pts * scale;
     let scaled_size = overlay.font_size * scale;
     // Hit box: x within ±RESIZE_HANDLE_HIT_RADIUS of handle_x, y within [sy - scaled_size, sy]
@@ -707,7 +709,7 @@ pub fn page_layout(
     zoom: f32,
     dpi: f32,
 ) -> PageLayout {
-    let scale = zoom * dpi / 72.0;
+    let scale = render_scale(zoom, dpi);
     let mut page_tops = Vec::with_capacity(page_count as usize);
     let mut page_heights = Vec::with_capacity(page_count as usize);
     let mut page_widths = Vec::with_capacity(page_count as usize);
@@ -821,8 +823,9 @@ pub fn page_image_bounds(
     dpi: f32,
     canvas_bounds: iced::Rectangle,
 ) -> iced::Rectangle {
-    let rendered_width = page_dims.0 * zoom * dpi / 72.0;
-    let rendered_height = page_dims.1 * zoom * dpi / 72.0;
+    let scale = render_scale(zoom, dpi);
+    let rendered_width = page_dims.0 * scale;
+    let rendered_height = page_dims.1 * scale;
     let offset_x = (canvas_bounds.width - rendered_width) / 2.0;
     let offset_y = (canvas_bounds.height - rendered_height) / 2.0;
     iced::Rectangle {
@@ -856,7 +859,7 @@ pub fn hit_test(
         }
         let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
         let bbox = overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size);
-        let scale = params.zoom * (params.dpi / 72.0);
+        let scale = params.scale();
         let w = bbox.width * scale;
         let h = bbox.height * scale;
         // In screen space, the overlay baseline is at sy.

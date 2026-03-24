@@ -11,6 +11,17 @@ pub struct ConversionParams {
     pub offset_y: f32,
 }
 
+impl ConversionParams {
+    pub fn scale(&self) -> f32 {
+        render_scale(self.zoom, self.dpi)
+    }
+}
+
+/// Compute the combined zoom+DPI scale factor for rendering.
+pub fn render_scale(zoom: f32, dpi: f32) -> f32 {
+    zoom * (dpi / 72.0)
+}
+
 pub struct BoundingBox {
     pub width: f32,
     pub height: f32,
@@ -18,7 +29,7 @@ pub struct BoundingBox {
 
 /// Convert screen pixel coordinates to PDF point coordinates.
 pub fn screen_to_pdf(screen_x: f32, screen_y: f32, params: &ConversionParams) -> (f32, f32) {
-    let scale = params.zoom * (params.dpi / 72.0);
+    let scale = params.scale();
     let pdf_x = (screen_x - params.offset_x) / scale;
     let pdf_y = params.page_height - ((screen_y - params.offset_y) / scale);
     (pdf_x, pdf_y)
@@ -26,7 +37,7 @@ pub fn screen_to_pdf(screen_x: f32, screen_y: f32, params: &ConversionParams) ->
 
 /// Convert PDF point coordinates to screen pixel coordinates.
 pub fn pdf_to_screen(pdf_x: f32, pdf_y: f32, params: &ConversionParams) -> (f32, f32) {
-    let scale = params.zoom * (params.dpi / 72.0);
+    let scale = params.scale();
     let screen_x = pdf_x * scale + params.offset_x;
     let screen_y = (params.page_height - pdf_y) * scale + params.offset_y;
     (screen_x, screen_y)

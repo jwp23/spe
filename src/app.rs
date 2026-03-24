@@ -8,7 +8,7 @@ use iced::widget::image::Handle;
 
 use crate::command::Command as UndoCommand;
 use crate::config::AppConfig;
-use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen};
+use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen, render_scale};
 use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
 use crate::pdf::renderer::PdftoppmRenderer;
 use crate::ui::canvas::{self, CanvasState, PdfCanvasProgram};
@@ -858,7 +858,7 @@ impl App {
 
         let (screen_x, screen_y) = pdf_to_screen(overlay.position.x, overlay.position.y, &params);
 
-        let scale = self.canvas.zoom * dpi / 72.0;
+        let scale = render_scale(self.canvas.zoom, dpi);
         let scaled_font_size = overlay.font_size * scale;
         let top_offset = (screen_y - self.canvas.scroll_y - scaled_font_size).max(0.0);
         let left_offset = screen_x.max(0.0);
