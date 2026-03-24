@@ -244,9 +244,7 @@ impl App {
                 }
             }
             Message::CommitText => {
-                // Text editing is committed as a single undoable action
-                self.canvas.editing = false;
-                self.canvas.edit_start_text = None;
+                return self.handle_commit_text();
             }
             Message::MoveOverlay(index, new_position) => {
                 if let Some(doc) = &mut self.document
@@ -541,7 +539,7 @@ impl App {
 
             let program = PdfCanvasProgram {
                 page_images: &doc.page_images,
-                page_layout: layout,
+                page_layout: layout.clone(),
                 page_dimensions: &doc.page_dimensions,
                 page_count: doc.page_count,
                 scroll_y: self.canvas.scroll_y,
@@ -575,7 +573,7 @@ impl App {
                 .into();
 
             let canvas_area_element: iced::Element<Message> =
-                self.floating_text_input(doc, dpi, scrollable_canvas);
+                self.floating_text_input(doc, &layout, scrollable_canvas);
 
             if self.sidebar.visible {
                 let sidebar = crate::ui::sidebar::sidebar_view(
@@ -732,7 +730,7 @@ impl App {
     fn floating_text_input<'a>(
         &'a self,
         doc: &'a DocumentState,
-        dpi: f32,
+        layout: &canvas::PageLayout,
         scrollable_canvas: iced::Element<'a, Message>,
     ) -> iced::Element<'a, Message> {
         // Only show floating input when editing a single-line overlay (width == None)
@@ -761,14 +759,13 @@ impl App {
             .map(|s| (s.width - sidebar_w - SCROLLBAR_MARGIN).max(1.0))
             .unwrap_or(800.0);
 
-        let layout =
-            canvas::page_layout(&doc.page_dimensions, doc.page_count, self.canvas.zoom, dpi);
+        let dpi = canvas::effective_dpi(self.canvas.zoom);
 
         if layout.page_tops.is_empty() {
             return scrollable_canvas;
         }
 
-        let page_rect = canvas::page_rect_in_canvas(&layout, overlay.page, canvas_w);
+        let page_rect = canvas::page_rect_in_canvas(layout, overlay.page, canvas_w);
 
         let Some((_, page_h)) = doc.page_dimensions.get(&overlay.page) else {
             return scrollable_canvas;

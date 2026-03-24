@@ -544,6 +544,7 @@ pub const PAGE_GAP: f32 = 16.0;
 const MIN_DRAG_DISTANCE: f32 = 10.0;
 
 /// Layout of all pages stacked vertically for continuous scrolling.
+#[derive(Clone)]
 pub struct PageLayout {
     /// Y-offset of each page's top edge in canvas space. Index 0 = page 1.
     pub page_tops: Vec<f32>,
