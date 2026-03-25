@@ -26,6 +26,298 @@ pub enum WriterError {
     },
 }
 
+/// Maps FontIds to PDF resource names, tracking which font objects need to be added to the page.
+struct FontMapping {
+    resource_names: HashMap<FontId, String>,
+    new_font_objects: Vec<(String, lopdf::ObjectId)>,
+}
+
+/// Collect unique font IDs from a set of overlays, preserving first-seen order.
+fn collect_unique_fonts(overlays: &[&TextOverlay]) -> Vec<FontId> {
+    let mut seen = std::collections::HashSet::new();
+    overlays
+        .iter()
+        .filter_map(|o| {
+            if seen.insert(o.font) {
+                Some(o.font)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Build a mapping from FontId to PDF resource name for a page.
+///
+/// Reuses existing resource names where the BaseFont already matches the needed font.
+/// Creates new font objects (Type1 or TrueType) for fonts not already present on the page.
+fn build_font_mapping(
+    doc: &mut Document,
+    page_id: lopdf::ObjectId,
+    needed_fonts: &[FontId],
+    registry: &FontRegistry,
+) -> FontMapping {
+    // Build a map from resource name -> BaseFont for the page's existing fonts.
+    // Uses lopdf's get_page_fonts which resolves inherited resources from parent nodes.
+    let existing: HashMap<Vec<u8>, Vec<u8>> = doc
+        .get_page_fonts(page_id)
+        .map(|fonts| {
+            fonts
+                .into_iter()
+                .filter_map(|(key, fd)| {
+                    if let Ok(Object::Name(base)) = fd.get(b"BaseFont") {
+                        Some((key, base.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let existing_names: std::collections::HashSet<Vec<u8>> = existing.keys().cloned().collect();
+    let mut resource_names: HashMap<FontId, String> = HashMap::new();
+    let mut new_font_objects: Vec<(String, lopdf::ObjectId)> = Vec::new();
+
+    for font in needed_fonts {
+        let entry = registry.get(*font);
+        let base_font_bytes = entry.pdf_name.as_bytes();
+
+        // Check if any existing resource already maps to this BaseFont.
+        let reuse_name = existing
+            .iter()
+            .find(|(_, base)| base.as_slice() == base_font_bytes)
+            .map(|(key, _)| String::from_utf8_lossy(key).into_owned());
+
+        if let Some(name) = reuse_name {
+            resource_names.insert(*font, name);
+        } else {
+            // Generate a fresh name, skipping any that already exist.
+            let new_name = (0..)
+                .map(|i| format!("F_ovl_{i}"))
+                .find(|candidate| {
+                    !existing_names.contains(candidate.as_bytes())
+                        && !new_font_objects.iter().any(|(n, _)| n == candidate)
+                })
+                .expect("infinite iterator always finds a free name");
+
+            let font_obj_id = match &entry.embedding {
+                PdfEmbedding::BuiltIn => doc.add_object(dictionary! {
+                    "Type" => "Font",
+                    "Subtype" => "Type1",
+                    "BaseFont" => Object::Name(base_font_bytes.to_vec()),
+                }),
+                PdfEmbedding::TrueType { bytes } => {
+                    create_truetype_font_object(doc, entry, base_font_bytes, bytes)
+                }
+            };
+            new_font_objects.push((new_name.clone(), font_obj_id));
+            resource_names.insert(*font, new_name);
+        }
+    }
+
+    FontMapping {
+        resource_names,
+        new_font_objects,
+    }
+}
+
+/// Create a TrueType font object with embedded font program and descriptor.
+fn create_truetype_font_object(
+    doc: &mut Document,
+    entry: &crate::fonts::FontEntry,
+    base_font_bytes: &[u8],
+    ttf_bytes: &[u8],
+) -> lopdf::ObjectId {
+    let font_file_stream = Stream::new(
+        dictionary! {
+            "Length1" => Object::Integer(ttf_bytes.len() as i64),
+        },
+        ttf_bytes.to_vec(),
+    );
+    let font_file_id = doc.add_object(font_file_stream);
+
+    // Use real descriptor values when available; fall back to safe defaults.
+    let default_desc = FontDescriptorInfo {
+        ascent: 800,
+        descent: -200,
+        cap_height: 700,
+        italic_angle: 0.0,
+        flags: 32,
+        bbox: [0, 0, 1000, 1000],
+        stem_v: 80,
+    };
+    let desc = entry.descriptor.as_ref().unwrap_or(&default_desc);
+    let descriptor = dictionary! {
+        "Type" => "FontDescriptor",
+        "FontName" => Object::Name(base_font_bytes.to_vec()),
+        "Flags" => Object::Integer(desc.flags),
+        "FontBBox" => vec![
+            Object::Integer(desc.bbox[0]),
+            Object::Integer(desc.bbox[1]),
+            Object::Integer(desc.bbox[2]),
+            Object::Integer(desc.bbox[3]),
+        ],
+        "ItalicAngle" => Object::Real(desc.italic_angle),
+        "Ascent" => Object::Integer(desc.ascent),
+        "Descent" => Object::Integer(desc.descent),
+        "CapHeight" => Object::Integer(desc.cap_height),
+        "StemV" => Object::Integer(desc.stem_v),
+        "FontFile2" => Object::Reference(font_file_id),
+    };
+    let descriptor_id = doc.add_object(descriptor);
+
+    let first_char = 32_i64;
+    let last_char = 255_i64;
+    let widths: Vec<Object> = (first_char..=last_char)
+        .map(|c| {
+            let w = entry.widths.char_width(c as u8 as char);
+            Object::Integer(w.round() as i64)
+        })
+        .collect();
+
+    doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "TrueType",
+        "BaseFont" => Object::Name(base_font_bytes.to_vec()),
+        "FirstChar" => Object::Integer(first_char),
+        "LastChar" => Object::Integer(last_char),
+        "Widths" => Object::Array(widths),
+        "FontDescriptor" => Object::Reference(descriptor_id),
+        "Encoding" => "WinAnsiEncoding",
+    })
+}
+
+/// Add new font objects to the page's Resources/Font dictionary.
+///
+/// Ensures the page has its own Resources dict with a Font sub-dict, then inserts each
+/// new font object. Setting Resources directly on the Page overrides the inherited parent
+/// dict (PDF spec 7.8.3).
+fn install_page_fonts(
+    doc: &mut Document,
+    page_id: lopdf::ObjectId,
+    new_font_objects: Vec<(String, lopdf::ObjectId)>,
+) {
+    if new_font_objects.is_empty() {
+        return;
+    }
+
+    let page_dict = doc
+        .get_object_mut(page_id)
+        .expect("page object must exist")
+        .as_dict_mut()
+        .expect("page object must be a dictionary");
+
+    if !page_dict.has(b"Resources") {
+        page_dict.set("Resources", dictionary! {});
+    }
+
+    let resources = page_dict
+        .get_mut(b"Resources")
+        .expect("Resources just set")
+        .as_dict_mut()
+        .expect("Resources must be a dictionary");
+
+    if !resources.has(b"Font") {
+        resources.set("Font", dictionary! {});
+    }
+
+    let font_dict = resources
+        .get_mut(b"Font")
+        .expect("Font just set")
+        .as_dict_mut()
+        .expect("Font must be a dictionary");
+
+    for (name, obj_id) in new_font_objects {
+        font_dict.set(name, obj_id);
+    }
+}
+
+/// Build PDF content stream operations (BT/Tf/Td/Tj/ET) for a set of overlays.
+fn build_overlay_operations(
+    page_overlays: &[&TextOverlay],
+    font_resource_names: &HashMap<FontId, String>,
+    registry: &FontRegistry,
+) -> Vec<Operation> {
+    let mut operations: Vec<Operation> = Vec::new();
+    for overlay in page_overlays {
+        let resource_name = font_resource_names
+            .get(&overlay.font)
+            .expect("all fonts mapped above");
+        operations.push(Operation::new("BT", vec![]));
+        operations.push(Operation::new(
+            "Tf",
+            vec![
+                Object::Name(resource_name.as_bytes().to_vec()),
+                Object::Real(overlay.font_size),
+            ],
+        ));
+
+        let lines = if let Some(width) = overlay.width {
+            registry.word_wrap(&overlay.text, overlay.font, overlay.font_size, width)
+        } else {
+            vec![overlay.text.clone()]
+        };
+
+        let leading = overlay.font_size * 1.2;
+        for (i, line) in lines.iter().enumerate() {
+            if i == 0 {
+                operations.push(Operation::new(
+                    "Td",
+                    vec![
+                        Object::Real(overlay.position.x),
+                        Object::Real(overlay.position.y),
+                    ],
+                ));
+            } else {
+                operations.push(Operation::new(
+                    "Td",
+                    vec![Object::Real(0.0), Object::Real(-leading)],
+                ));
+            }
+            operations.push(Operation::new(
+                "Tj",
+                vec![Object::String(
+                    line.as_bytes().to_vec(),
+                    lopdf::StringFormat::Literal,
+                )],
+            ));
+        }
+
+        operations.push(Operation::new("ET", vec![]));
+    }
+    operations
+}
+
+/// Create a content stream from raw bytes and append it to the page's Contents.
+fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_bytes: Vec<u8>) {
+    let stream_id = doc.add_object(Stream::new(dictionary! {}, content_bytes));
+
+    let page_dict = doc
+        .get_object_mut(page_id)
+        .expect("page object must exist")
+        .as_dict_mut()
+        .expect("page object must be a dictionary");
+
+    match page_dict.get(b"Contents") {
+        Ok(Object::Reference(existing_id)) => {
+            let existing_id = *existing_id;
+            page_dict.set(
+                "Contents",
+                vec![Object::Reference(existing_id), Object::Reference(stream_id)],
+            );
+        }
+        Ok(Object::Array(arr)) => {
+            let mut new_arr = arr.clone();
+            new_arr.push(Object::Reference(stream_id));
+            page_dict.set("Contents", Object::Array(new_arr));
+        }
+        _ => {
+            page_dict.set("Contents", stream_id);
+        }
+    }
+}
+
 /// Write `overlays` onto the PDF at `source`, saving the result to `destination`.
 pub fn write_overlays(
     source: &Path,
@@ -63,255 +355,18 @@ pub fn write_overlays(
     for (page_num, page_overlays) in &overlays_by_page {
         let &page_id = pages.get(page_num).expect("validated above");
 
-        // Build a map from resource name → BaseFont for the page's existing fonts.
-        // Uses lopdf's get_page_fonts which resolves inherited resources from parent nodes.
-        let existing: HashMap<Vec<u8>, Vec<u8>> = doc
-            .get_page_fonts(page_id)
-            .map(|fonts| {
-                fonts
-                    .into_iter()
-                    .filter_map(|(key, fd)| {
-                        if let Ok(Object::Name(base)) = fd.get(b"BaseFont") {
-                            Some((key, base.clone()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Collect unique fonts needed for this page's overlays.
-        let needed_fonts: Vec<FontId> = {
-            let mut seen = std::collections::HashSet::new();
-            page_overlays
-                .iter()
-                .filter_map(|o| {
-                    if seen.insert(o.font) {
-                        Some(o.font)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-
-        // Build font mapping: FontId → resource name.
-        // Reuse existing names where the BaseFont already matches; assign new F_ovl_N otherwise.
-        let mut font_resource_name: HashMap<FontId, String> = HashMap::new();
-        let mut new_font_objects: Vec<(String, lopdf::ObjectId)> = Vec::new();
-
-        // Track which names already exist to avoid collisions when generating new ones.
-        let existing_names: std::collections::HashSet<Vec<u8>> = existing.keys().cloned().collect();
-
-        for font in &needed_fonts {
-            let entry = registry.get(*font);
-            let base_font_bytes = entry.pdf_name.as_bytes();
-
-            // Check if any existing resource already maps to this BaseFont.
-            let reuse_name = existing
-                .iter()
-                .find(|(_, base)| base.as_slice() == base_font_bytes)
-                .map(|(key, _)| String::from_utf8_lossy(key).into_owned());
-
-            if let Some(name) = reuse_name {
-                font_resource_name.insert(*font, name);
-            } else {
-                // Generate a fresh name, skipping any that already exist.
-                let new_name = (0..)
-                    .map(|i| format!("F_ovl_{i}"))
-                    .find(|candidate| {
-                        !existing_names.contains(candidate.as_bytes())
-                            && !new_font_objects.iter().any(|(n, _)| n == candidate)
-                    })
-                    .expect("infinite iterator always finds a free name");
-
-                let font_obj_id = match &entry.embedding {
-                    PdfEmbedding::BuiltIn => doc.add_object(dictionary! {
-                        "Type" => "Font",
-                        "Subtype" => "Type1",
-                        "BaseFont" => Object::Name(base_font_bytes.to_vec()),
-                    }),
-                    PdfEmbedding::TrueType { bytes } => {
-                        let font_file_stream = Stream::new(
-                            dictionary! {
-                                "Length1" => Object::Integer(bytes.len() as i64),
-                            },
-                            bytes.to_vec(),
-                        );
-                        let font_file_id = doc.add_object(font_file_stream);
-
-                        // Use real descriptor values when available; fall back to safe defaults.
-                        let default_desc = FontDescriptorInfo {
-                            ascent: 800,
-                            descent: -200,
-                            cap_height: 700,
-                            italic_angle: 0.0,
-                            flags: 32,
-                            bbox: [0, 0, 1000, 1000],
-                            stem_v: 80,
-                        };
-                        let desc = entry.descriptor.as_ref().unwrap_or(&default_desc);
-                        let descriptor = dictionary! {
-                            "Type" => "FontDescriptor",
-                            "FontName" => Object::Name(base_font_bytes.to_vec()),
-                            "Flags" => Object::Integer(desc.flags),
-                            "FontBBox" => vec![
-                                Object::Integer(desc.bbox[0]),
-                                Object::Integer(desc.bbox[1]),
-                                Object::Integer(desc.bbox[2]),
-                                Object::Integer(desc.bbox[3]),
-                            ],
-                            "ItalicAngle" => Object::Real(desc.italic_angle),
-                            "Ascent" => Object::Integer(desc.ascent),
-                            "Descent" => Object::Integer(desc.descent),
-                            "CapHeight" => Object::Integer(desc.cap_height),
-                            "StemV" => Object::Integer(desc.stem_v),
-                            "FontFile2" => Object::Reference(font_file_id),
-                        };
-                        let descriptor_id = doc.add_object(descriptor);
-
-                        let first_char = 32_i64;
-                        let last_char = 255_i64;
-                        let widths: Vec<Object> = (first_char..=last_char)
-                            .map(|c| {
-                                let w = entry.widths.char_width(c as u8 as char);
-                                Object::Integer(w.round() as i64)
-                            })
-                            .collect();
-
-                        doc.add_object(dictionary! {
-                            "Type" => "Font",
-                            "Subtype" => "TrueType",
-                            "BaseFont" => Object::Name(base_font_bytes.to_vec()),
-                            "FirstChar" => Object::Integer(first_char),
-                            "LastChar" => Object::Integer(last_char),
-                            "Widths" => Object::Array(widths),
-                            "FontDescriptor" => Object::Reference(descriptor_id),
-                            "Encoding" => "WinAnsiEncoding",
-                        })
-                    }
-                };
-                new_font_objects.push((new_name.clone(), font_obj_id));
-                font_resource_name.insert(*font, new_name);
-            }
-        }
-
-        // Ensure the page has its own Resources dict with a Font sub-dict.
-        // Setting Resources directly on the Page overrides the inherited parent dict (PDF spec §7.8.3).
-        if !new_font_objects.is_empty() {
-            let page_dict = doc
-                .get_object_mut(page_id)
-                .expect("page object must exist")
-                .as_dict_mut()
-                .expect("page object must be a dictionary");
-
-            if !page_dict.has(b"Resources") {
-                page_dict.set("Resources", dictionary! {});
-            }
-
-            let resources = page_dict
-                .get_mut(b"Resources")
-                .expect("Resources just set")
-                .as_dict_mut()
-                .expect("Resources must be a dictionary");
-
-            if !resources.has(b"Font") {
-                resources.set("Font", dictionary! {});
-            }
-
-            let font_dict = resources
-                .get_mut(b"Font")
-                .expect("Font just set")
-                .as_dict_mut()
-                .expect("Font must be a dictionary");
-
-            for (name, obj_id) in new_font_objects {
-                font_dict.set(name, obj_id);
-            }
-        }
-
-        // Build ONE content stream containing all overlays for this page.
-        let mut operations: Vec<Operation> = Vec::new();
-        for overlay in page_overlays {
-            let resource_name = font_resource_name
-                .get(&overlay.font)
-                .expect("all fonts mapped above");
-            operations.push(Operation::new("BT", vec![]));
-            operations.push(Operation::new(
-                "Tf",
-                vec![
-                    Object::Name(resource_name.as_bytes().to_vec()),
-                    Object::Real(overlay.font_size),
-                ],
-            ));
-
-            let lines = if let Some(width) = overlay.width {
-                registry.word_wrap(&overlay.text, overlay.font, overlay.font_size, width)
-            } else {
-                vec![overlay.text.clone()]
-            };
-
-            let leading = overlay.font_size * 1.2;
-            for (i, line) in lines.iter().enumerate() {
-                if i == 0 {
-                    operations.push(Operation::new(
-                        "Td",
-                        vec![
-                            Object::Real(overlay.position.x),
-                            Object::Real(overlay.position.y),
-                        ],
-                    ));
-                } else {
-                    operations.push(Operation::new(
-                        "Td",
-                        vec![Object::Real(0.0), Object::Real(-leading)],
-                    ));
-                }
-                operations.push(Operation::new(
-                    "Tj",
-                    vec![Object::String(
-                        line.as_bytes().to_vec(),
-                        lopdf::StringFormat::Literal,
-                    )],
-                ));
-            }
-
-            operations.push(Operation::new("ET", vec![]));
-        }
-
-        let content = Content { operations };
-        let content_bytes = content.encode().map_err(|e| WriterError::SaveFailed {
-            path: destination.to_path_buf(),
-            source: e,
-        })?;
-
-        let stream_id = doc.add_object(Stream::new(dictionary! {}, content_bytes));
-
-        // Append the new stream to the page's Contents.
-        let page_dict = doc
-            .get_object_mut(page_id)
-            .expect("page object must exist")
-            .as_dict_mut()
-            .expect("page object must be a dictionary");
-
-        match page_dict.get(b"Contents") {
-            Ok(Object::Reference(existing_id)) => {
-                let existing_id = *existing_id;
-                page_dict.set(
-                    "Contents",
-                    vec![Object::Reference(existing_id), Object::Reference(stream_id)],
-                );
-            }
-            Ok(Object::Array(arr)) => {
-                let mut new_arr = arr.clone();
-                new_arr.push(Object::Reference(stream_id));
-                page_dict.set("Contents", Object::Array(new_arr));
-            }
-            _ => {
-                page_dict.set("Contents", stream_id);
-            }
-        }
+        let needed_fonts = collect_unique_fonts(page_overlays);
+        let mapping = build_font_mapping(&mut doc, page_id, &needed_fonts, registry);
+        install_page_fonts(&mut doc, page_id, mapping.new_font_objects);
+        let operations = build_overlay_operations(page_overlays, &mapping.resource_names, registry);
+        let content_bytes =
+            Content { operations }
+                .encode()
+                .map_err(|e| WriterError::SaveFailed {
+                    path: destination.to_path_buf(),
+                    source: e,
+                })?;
+        embed_content_stream(&mut doc, page_id, content_bytes);
     }
 
     doc.save(destination).map_err(|e| WriterError::SaveFailed {

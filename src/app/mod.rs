@@ -16,7 +16,7 @@ use crate::command::Command as UndoCommand;
 use crate::config::AppConfig;
 use crate::fonts::{FontId, FontRegistry};
 use crate::overlay::{PdfPosition, TextOverlay};
-use crate::ui::canvas::{self, CanvasState};
+use crate::ui::canvas::CanvasState;
 use crate::ui::sidebar::SidebarState;
 use crate::ui::toolbar::{self, ToolbarState};
 
@@ -288,383 +288,84 @@ impl App {
             }
 
             // --- Page navigation (scroll to target page) ---
-            Message::NextPage => {
-                if let Some(doc) = &self.document
-                    && doc.current_page < doc.page_count
-                {
-                    return self.scroll_to_page(doc.current_page + 1);
-                }
-            }
-            Message::PreviousPage => {
-                if let Some(doc) = &self.document
-                    && doc.current_page > 1
-                {
-                    return self.scroll_to_page(doc.current_page - 1);
-                }
-            }
-            Message::GoToPage(page) => {
-                if let Some(doc) = &self.document
-                    && page >= 1
-                    && page <= doc.page_count
-                {
-                    return self.scroll_to_page(page);
-                }
-            }
-            Message::PageBatchRendered(pages) => {
-                if let Some(doc) = &mut self.document {
-                    for (page, handle) in pages {
-                        doc.page_images.insert(page, handle);
-                    }
-                    let render_task = self.render_visible_pages();
-                    let wait_task = self.check_ipc_wait();
-                    return iced::Task::batch([render_task, wait_task]);
-                }
-            }
+            Message::NextPage => return self.handle_next_page(),
+            Message::PreviousPage => return self.handle_previous_page(),
+            Message::GoToPage(page) => return self.handle_go_to_page(page),
+            Message::PageBatchRendered(pages) => return self.handle_page_batch_rendered(pages),
 
             // --- Overlay editing (undoable) ---
             Message::PlaceOverlay {
                 page,
                 position,
                 width,
-            } => {
-                if self.document.is_some() {
-                    let overlay = TextOverlay {
-                        page,
-                        position,
-                        text: String::new(),
-                        font: self.toolbar.font,
-                        font_size: self.toolbar.font_size,
-                        width,
-                    };
-                    let cmd = UndoCommand::PlaceOverlay {
-                        overlay: overlay.clone(),
-                    };
-                    self.execute_command(cmd);
-                    let doc = self.document.as_ref().unwrap();
-                    let idx = doc.overlays.len() - 1;
-                    self.canvas.active_overlay = Some(idx);
-                    self.canvas.editing = true;
-                    self.canvas.edit_start_text = Some(String::new());
-                    if width.is_some() {
-                        self.editor_content =
-                            Some(iced::widget::text_editor::Content::with_text(""));
-                    }
-                    return iced::widget::operation::focus(self.text_input_id.clone());
-                }
-            }
-            Message::UpdateOverlayText(text) => {
-                if let Some(doc) = &mut self.document
-                    && let Some(idx) = self.canvas.active_overlay
-                    && idx < doc.overlays.len()
-                {
-                    doc.overlays[idx].text = text;
-                }
-            }
-            Message::TextEditorAction(action) => {
-                if let Some(content) = &mut self.editor_content {
-                    content.perform(action);
-                    let new_text = content.text();
-                    if let Some(doc) = &mut self.document
-                        && let Some(idx) = self.canvas.active_overlay
-                        && idx < doc.overlays.len()
-                    {
-                        doc.overlays[idx].text = new_text;
-                    }
-                }
-            }
+            } => return self.handle_place_overlay(page, position, width),
+            Message::UpdateOverlayText(text) => self.handle_update_overlay_text(text),
+            Message::TextEditorAction(action) => self.handle_text_editor_action(action),
             Message::CommitText => {
                 return self.handle_commit_text();
             }
             Message::MoveOverlay(index, new_position) => {
-                if let Some(doc) = &self.document
-                    && index < doc.overlays.len()
-                {
-                    let cmd = UndoCommand::MoveOverlay {
-                        index,
-                        from: doc.overlays[index].position,
-                        to: new_position,
-                    };
-                    self.execute_command(cmd);
-                }
+                self.handle_move_overlay(index, new_position);
             }
             Message::ResizeOverlay {
                 index,
                 old_width,
                 new_width,
-            } => {
-                if let Some(doc) = &self.document
-                    && index < doc.overlays.len()
-                {
-                    let cmd = UndoCommand::ResizeOverlay {
-                        index,
-                        old_width,
-                        new_width,
-                    };
-                    self.execute_command(cmd);
-                }
-            }
-            Message::ChangeFont(font) => {
-                if self.document.is_some() {
-                    if let Some(idx) = self.canvas.active_overlay
-                        && let Some(doc) = &self.document
-                        && idx < doc.overlays.len()
-                    {
-                        let cmd = UndoCommand::ChangeOverlayFont {
-                            index: idx,
-                            old_font: doc.overlays[idx].font,
-                            new_font: font,
-                        };
-                        self.execute_command(cmd);
-                    }
-                    self.toolbar.font = font;
-                }
-            }
-            Message::ChangeFontSize(size) => {
-                if self.document.is_some() {
-                    if let Some(idx) = self.canvas.active_overlay
-                        && let Some(doc) = &self.document
-                        && idx < doc.overlays.len()
-                    {
-                        let cmd = UndoCommand::ChangeOverlayFontSize {
-                            index: idx,
-                            old_size: doc.overlays[idx].font_size,
-                            new_size: size,
-                        };
-                        self.execute_command(cmd);
-                    }
-                    self.toolbar.font_size = size;
-                    self.toolbar.font_size_input = format!("{size}");
-                }
-            }
-            Message::DeleteOverlay => {
-                if let Some(doc) = &self.document
-                    && let Some(idx) = self.canvas.active_overlay
-                    && idx < doc.overlays.len()
-                {
-                    let cmd = UndoCommand::DeleteOverlay {
-                        overlay: doc.overlays[idx].clone(),
-                        index: idx,
-                    };
-                    self.execute_command(cmd);
-                    self.canvas.active_overlay = None;
-                    self.canvas.editing = false;
-                }
-            }
-            Message::SelectOverlay(index) => {
-                if let Some(doc) = &self.document
-                    && index < doc.overlays.len()
-                {
-                    self.canvas.active_overlay = Some(index);
-                    self.canvas.editing = false;
-                    self.toolbar.font = doc.overlays[index].font;
-                    self.toolbar.font_size = doc.overlays[index].font_size;
-                    self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
-                }
-            }
-            Message::EditOverlay(index) => {
-                if let Some(doc) = &self.document
-                    && index < doc.overlays.len()
-                {
-                    self.canvas.active_overlay = Some(index);
-                    self.canvas.editing = true;
-                    self.canvas.edit_start_text = Some(doc.overlays[index].text.clone());
-                    self.toolbar.font = doc.overlays[index].font;
-                    self.toolbar.font_size = doc.overlays[index].font_size;
-                    self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
-                    if doc.overlays[index].width.is_some() {
-                        self.editor_content = Some(iced::widget::text_editor::Content::with_text(
-                            &doc.overlays[index].text,
-                        ));
-                    }
-                    return iced::widget::operation::focus(self.text_input_id.clone());
-                }
-            }
-            Message::DeselectOverlay => {
-                if self.canvas.editing {
-                    // Escape during editing commits text rather than deselecting
-                    return self.handle_commit_text();
-                }
-                self.canvas.active_overlay = None;
-                self.canvas.editing = false;
-            }
+            } => self.handle_resize_overlay(index, old_width, new_width),
+            Message::ChangeFont(font) => self.handle_change_font(font),
+            Message::ChangeFontSize(size) => self.handle_change_font_size(size),
+            Message::DeleteOverlay => self.handle_delete_overlay(),
+            Message::SelectOverlay(index) => self.handle_select_overlay(index),
+            Message::EditOverlay(index) => return self.handle_edit_overlay(index),
+            Message::DeselectOverlay => return self.handle_deselect_overlay(),
             Message::Noop => {}
-            Message::DismissToast => {
-                if let Some((_, time)) = &self.status_message
-                    && time.elapsed() >= std::time::Duration::from_secs(5)
-                {
-                    self.status_message = None;
-                }
-            }
+            Message::DismissToast => self.handle_dismiss_toast(),
 
             // --- Canvas (zoom with debounce) ---
-            Message::ZoomIn => {
-                self.canvas.zoom = canvas::zoom_in(self.canvas.zoom);
-                return self.apply_zoom_change();
-            }
-            Message::ZoomOut => {
-                self.canvas.zoom = canvas::zoom_out(self.canvas.zoom);
-                return self.apply_zoom_change();
-            }
-            Message::ZoomReset => {
-                self.canvas.zoom = 1.0;
-                return self.apply_zoom_change();
-            }
-            Message::ZoomFitWidth => {
-                if let (Some(doc), Some(win)) = (&self.document, self.window_size) {
-                    let max_page_w = doc.max_page_width();
-                    if max_page_w > 0.0 {
-                        let available_w =
-                            (win.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN)
-                                .max(1.0);
-                        self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
-                        return self.apply_zoom_change();
-                    }
-                }
-            }
+            Message::ZoomIn => return self.handle_zoom_in(),
+            Message::ZoomOut => return self.handle_zoom_out(),
+            Message::ZoomReset => return self.handle_zoom_reset(),
+            Message::ZoomFitWidth => return self.handle_zoom_fit_width(),
             Message::ZoomDebounceExpired(generation) => {
-                if generation == self.canvas.zoom_generation {
-                    // Clear all cached images so pages get fresh renders at
-                    // the new DPI (including neighbors on navigation).
-                    if let Some(doc) = &mut self.document {
-                        doc.page_images.clear();
-                    }
-                    return self.render_visible_pages();
-                }
+                return self.handle_zoom_debounce_expired(generation);
             }
-            Message::CanvasScrolled(scroll_y, viewport_height) => {
-                self.canvas.scroll_y = scroll_y;
-                self.canvas.viewport_height = viewport_height;
-                if let Some(doc) = &mut self.document {
-                    let dpi = canvas::effective_dpi(self.canvas.zoom);
-                    let layout = canvas::page_layout(
-                        &doc.page_dimensions,
-                        doc.page_count,
-                        self.canvas.zoom,
-                        dpi,
-                    );
-                    let page = canvas::dominant_page(&layout, scroll_y, viewport_height);
-                    if doc.current_page != page {
-                        doc.current_page = page;
-                        self.toolbar.page_input = page.to_string();
-                    }
-                }
-                return self.render_visible_pages();
+            Message::CanvasScrolled(scroll_y, vh) => {
+                return self.handle_canvas_scrolled(scroll_y, vh);
             }
 
             // --- Sidebar ---
-            Message::ToggleSidebar => {
-                self.sidebar.visible = !self.sidebar.visible;
-            }
+            Message::ToggleSidebar => self.sidebar.visible = !self.sidebar.visible,
             Message::ThumbnailBatchRendered(batch, generation) => {
-                self.sidebar.active_batch_tasks = self.sidebar.active_batch_tasks.saturating_sub(1);
-                if generation != self.sidebar.backfill_generation {
-                    let backfill_task = self.schedule_thumbnail_backfill();
-                    let wait_task = self.check_ipc_wait();
-                    return iced::Task::batch([backfill_task, wait_task]);
-                }
-                for (page, handle) in batch {
-                    self.sidebar.thumbnails.insert(page, handle);
-                }
-                let backfill_task = self.schedule_thumbnail_backfill();
-                let wait_task = self.check_ipc_wait();
-                return iced::Task::batch([backfill_task, wait_task]);
+                return self.handle_thumbnail_batch_rendered(batch, generation);
             }
-            Message::SidebarScrolled(scroll_y, viewport_height) => {
-                self.sidebar.scroll_y = scroll_y;
-                self.sidebar.viewport_height = viewport_height;
-                return self.render_visible_thumbnails();
+            Message::SidebarScrolled(scroll_y, vh) => {
+                return self.handle_sidebar_scrolled(scroll_y, vh);
             }
-            Message::SidebarDragStart(_) => {
-                self.sidebar.dragging = true;
-                self.sidebar.drag_start_x = 0.0;
-                self.sidebar.drag_start_width = self.sidebar.width;
-            }
-            Message::SidebarResized(cursor_x) => {
-                if !self.sidebar.dragging {
-                    return iced::Task::none();
-                }
-                if self.sidebar.drag_start_x == 0.0 {
-                    // First move: capture start X position
-                    self.sidebar.drag_start_x = cursor_x;
-                    return iced::Task::none();
-                }
-                let new_width =
-                    self.sidebar.drag_start_width + (cursor_x - self.sidebar.drag_start_x);
-                self.sidebar.width = new_width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
-            }
-            Message::SidebarResizeEnd => {
-                if !self.sidebar.dragging {
-                    return iced::Task::none();
-                }
-                self.sidebar.dragging = false;
-                self.sidebar.backfill_generation += 1;
-                let generation = self.sidebar.backfill_generation;
-                return iced::Task::perform(
-                    async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
-                        generation
-                    },
-                    Message::SidebarResizeDebounceExpired,
-                );
-            }
+            Message::SidebarDragStart(_) => self.handle_sidebar_drag_start(),
+            Message::SidebarResized(cursor_x) => self.handle_sidebar_resized(cursor_x),
+            Message::SidebarResizeEnd => return self.handle_sidebar_resize_end(),
             Message::SidebarResizeDebounceExpired(generation) => {
-                if generation == self.sidebar.backfill_generation {
-                    let max_page_w = self
-                        .document
-                        .as_ref()
-                        .map(|d| d.max_page_width())
-                        .unwrap_or(612.0);
-                    self.sidebar.thumbnail_dpi = crate::ui::sidebar::compute_thumbnail_dpi(
-                        self.sidebar.width,
-                        self.scale_factor,
-                        max_page_w,
-                    );
-                    self.sidebar.thumbnails.clear();
-                    self.sidebar.active_batch_tasks = 0;
-                    return self.render_visible_thumbnails();
-                }
+                return self.handle_sidebar_resize_debounce_expired(generation);
             }
-            Message::SidebarPageClicked(page) => {
-                return self.update(Message::GoToPage(page));
-            }
+            Message::SidebarPageClicked(page) => return self.handle_go_to_page(page),
             Message::ShimmerTick => {
                 self.sidebar.shimmer_phase =
                     (self.sidebar.shimmer_phase + SHIMMER_TICK_DELTA) % 1.0;
             }
 
             // --- Undo/Redo ---
-            Message::Undo => {
-                if let Some(cmd) = self.undo_stack.pop()
-                    && let Some(doc) = &mut self.document
-                {
-                    cmd.reverse(&mut doc.overlays);
-                    self.redo_stack.push(cmd);
-                }
-            }
-            Message::Redo => {
-                if let Some(cmd) = self.redo_stack.pop()
-                    && let Some(doc) = &mut self.document
-                {
-                    cmd.apply(&mut doc.overlays);
-                    self.undo_stack.push(cmd);
-                }
-            }
+            Message::Undo => self.handle_undo(),
+            Message::Redo => self.handle_redo(),
 
             // --- Window ---
-            Message::WindowResized(size) => {
-                self.window_size = Some(size);
-            }
-            Message::ScaleFactorChanged(factor) => {
-                self.scale_factor = factor;
-            }
+            Message::WindowResized(size) => self.window_size = Some(size),
+            Message::ScaleFactorChanged(factor) => self.scale_factor = factor,
 
             // --- Font loaded ---
             Message::FontLoaded(_) => {}
 
             // --- IPC ---
-            Message::Ipc(event) => {
-                return self.handle_ipc_event(event);
-            }
+            Message::Ipc(event) => return self.handle_ipc_event(event),
         }
         iced::Task::none()
     }
@@ -733,43 +434,7 @@ impl App {
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        let event_sub = iced::event::listen_with(|event, status, _window| {
-            // Window events are always handled, regardless of capture status.
-            if let iced::Event::Window(ref win_event) = event {
-                return match win_event {
-                    iced::window::Event::Resized(size) => Some(Message::WindowResized(*size)),
-                    iced::window::Event::Opened { size, .. } => Some(Message::WindowResized(*size)),
-                    iced::window::Event::Rescaled(factor) => {
-                        Some(Message::ScaleFactorChanged(*factor))
-                    }
-                    _ => None,
-                };
-            }
-            // Mouse move/release events are always forwarded (regardless of
-            // capture status) so the drag handler in update() can track them.
-            // The handler guards on self.sidebar.dragging and ignores events
-            // when no drag is active.
-            if let iced::Event::Mouse(ref mouse_event) = event {
-                match mouse_event {
-                    iced::mouse::Event::CursorMoved { position } => {
-                        return Some(Message::SidebarResized(position.x));
-                    }
-                    iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left) => {
-                        return Some(Message::SidebarResizeEnd);
-                    }
-                    _ => {}
-                }
-            }
-            if status == iced::event::Status::Captured {
-                return None;
-            }
-            match event {
-                iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                    key_to_message(key, modifiers)
-                }
-                _ => None,
-            }
-        });
+        let event_sub = iced::event::listen_with(event_to_message);
 
         // Tick shimmer animation only while sidebar is visible and has unrendered pages.
         let shimmer_sub = if self.sidebar.visible
@@ -797,6 +462,55 @@ impl App {
         };
 
         iced::Subscription::batch([event_sub, shimmer_sub, toast_sub, ipc_sub])
+    }
+}
+
+/// Map an iced event to an application message, filtering by event type and capture status.
+fn event_to_message(
+    event: iced::Event,
+    status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    // Window events are always handled, regardless of capture status.
+    if let iced::Event::Window(ref win_event) = event {
+        return window_event_to_message(win_event);
+    }
+    // Mouse move/release events are always forwarded (regardless of capture status)
+    // so the drag handler in update() can track them.
+    if let iced::Event::Mouse(ref mouse_event) = event
+        && let Some(msg) = mouse_event_to_message(mouse_event)
+    {
+        return Some(msg);
+    }
+    if status == iced::event::Status::Captured {
+        return None;
+    }
+    match event {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            key_to_message(key, modifiers)
+        }
+        _ => None,
+    }
+}
+
+/// Map a window event to an application message.
+fn window_event_to_message(event: &iced::window::Event) -> Option<Message> {
+    match event {
+        iced::window::Event::Resized(size) => Some(Message::WindowResized(*size)),
+        iced::window::Event::Opened { size, .. } => Some(Message::WindowResized(*size)),
+        iced::window::Event::Rescaled(factor) => Some(Message::ScaleFactorChanged(*factor)),
+        _ => None,
+    }
+}
+
+/// Map a mouse event to an application message for sidebar drag tracking.
+fn mouse_event_to_message(event: &iced::mouse::Event) -> Option<Message> {
+    match event {
+        iced::mouse::Event::CursorMoved { position } => Some(Message::SidebarResized(position.x)),
+        iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left) => {
+            Some(Message::SidebarResizeEnd)
+        }
+        _ => None,
     }
 }
 

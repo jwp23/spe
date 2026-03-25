@@ -1,6 +1,10 @@
 // Message handlers, file operations, rendering tasks.
 
-use super::*;
+use super::{
+    App, CanvasState, DEBOUNCE_MS, DocumentState, FontId, Handle, HashMap,
+    MAX_CONCURRENT_THUMBNAIL_TASKS, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, Message, PathBuf,
+    PdfPosition, SCROLLBAR_MARGIN, SIDEBAR_PAGE_BUFFER, THUMBNAIL_BATCH_SIZE, TextOverlay,
+};
 
 use crate::command::Command as UndoCommand;
 use crate::pdf::renderer::PdftoppmRenderer;
@@ -8,6 +12,224 @@ use crate::ui::canvas;
 use crate::ui::toolbar;
 
 impl App {
+    // --- Page navigation handlers ---
+
+    pub(super) fn handle_next_page(&mut self) -> iced::Task<Message> {
+        if let Some(doc) = &self.document
+            && doc.current_page < doc.page_count
+        {
+            return self.scroll_to_page(doc.current_page + 1);
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_previous_page(&mut self) -> iced::Task<Message> {
+        if let Some(doc) = &self.document
+            && doc.current_page > 1
+        {
+            return self.scroll_to_page(doc.current_page - 1);
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_go_to_page(&mut self, page: u32) -> iced::Task<Message> {
+        if let Some(doc) = &self.document
+            && page >= 1
+            && page <= doc.page_count
+        {
+            return self.scroll_to_page(page);
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_page_batch_rendered(
+        &mut self,
+        pages: Vec<(u32, Handle)>,
+    ) -> iced::Task<Message> {
+        if let Some(doc) = &mut self.document {
+            for (page, handle) in pages {
+                doc.page_images.insert(page, handle);
+            }
+            let render_task = self.render_visible_pages();
+            let wait_task = self.check_ipc_wait();
+            return iced::Task::batch([render_task, wait_task]);
+        }
+        iced::Task::none()
+    }
+
+    // --- Overlay data handlers ---
+
+    pub(super) fn handle_place_overlay(
+        &mut self,
+        page: u32,
+        position: PdfPosition,
+        width: Option<f32>,
+    ) -> iced::Task<Message> {
+        if self.document.is_some() {
+            let overlay = TextOverlay {
+                page,
+                position,
+                text: String::new(),
+                font: self.toolbar.font,
+                font_size: self.toolbar.font_size,
+                width,
+            };
+            let cmd = UndoCommand::PlaceOverlay {
+                overlay: overlay.clone(),
+            };
+            self.execute_command(cmd);
+            let doc = self.document.as_ref().unwrap();
+            let idx = doc.overlays.len() - 1;
+            self.canvas.active_overlay = Some(idx);
+            self.canvas.editing = true;
+            self.canvas.edit_start_text = Some(String::new());
+            if width.is_some() {
+                self.editor_content = Some(iced::widget::text_editor::Content::with_text(""));
+            }
+            return iced::widget::operation::focus(self.text_input_id.clone());
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_update_overlay_text(&mut self, text: String) {
+        if let Some(doc) = &mut self.document
+            && let Some(idx) = self.canvas.active_overlay
+            && idx < doc.overlays.len()
+        {
+            doc.overlays[idx].text = text;
+        }
+    }
+
+    pub(super) fn handle_text_editor_action(&mut self, action: iced::widget::text_editor::Action) {
+        if let Some(content) = &mut self.editor_content {
+            content.perform(action);
+            let new_text = content.text();
+            if let Some(doc) = &mut self.document
+                && let Some(idx) = self.canvas.active_overlay
+                && idx < doc.overlays.len()
+            {
+                doc.overlays[idx].text = new_text;
+            }
+        }
+    }
+
+    pub(super) fn handle_move_overlay(&mut self, index: usize, new_position: PdfPosition) {
+        if let Some(doc) = &self.document
+            && index < doc.overlays.len()
+        {
+            let cmd = UndoCommand::MoveOverlay {
+                index,
+                from: doc.overlays[index].position,
+                to: new_position,
+            };
+            self.execute_command(cmd);
+        }
+    }
+
+    pub(super) fn handle_resize_overlay(&mut self, index: usize, old_width: f32, new_width: f32) {
+        if let Some(doc) = &self.document
+            && index < doc.overlays.len()
+        {
+            let cmd = UndoCommand::ResizeOverlay {
+                index,
+                old_width,
+                new_width,
+            };
+            self.execute_command(cmd);
+        }
+    }
+
+    pub(super) fn handle_change_font(&mut self, font: FontId) {
+        if self.document.is_some() {
+            if let Some(idx) = self.canvas.active_overlay
+                && let Some(doc) = &self.document
+                && idx < doc.overlays.len()
+            {
+                let cmd = UndoCommand::ChangeOverlayFont {
+                    index: idx,
+                    old_font: doc.overlays[idx].font,
+                    new_font: font,
+                };
+                self.execute_command(cmd);
+            }
+            self.toolbar.font = font;
+        }
+    }
+
+    pub(super) fn handle_change_font_size(&mut self, size: f32) {
+        if self.document.is_some() {
+            if let Some(idx) = self.canvas.active_overlay
+                && let Some(doc) = &self.document
+                && idx < doc.overlays.len()
+            {
+                let cmd = UndoCommand::ChangeOverlayFontSize {
+                    index: idx,
+                    old_size: doc.overlays[idx].font_size,
+                    new_size: size,
+                };
+                self.execute_command(cmd);
+            }
+            self.toolbar.font_size = size;
+            self.toolbar.font_size_input = format!("{size}");
+        }
+    }
+
+    pub(super) fn handle_delete_overlay(&mut self) {
+        if let Some(doc) = &self.document
+            && let Some(idx) = self.canvas.active_overlay
+            && idx < doc.overlays.len()
+        {
+            let cmd = UndoCommand::DeleteOverlay {
+                overlay: doc.overlays[idx].clone(),
+                index: idx,
+            };
+            self.execute_command(cmd);
+            self.canvas.active_overlay = None;
+            self.canvas.editing = false;
+        }
+    }
+
+    pub(super) fn handle_select_overlay(&mut self, index: usize) {
+        if let Some(doc) = &self.document
+            && index < doc.overlays.len()
+        {
+            self.canvas.active_overlay = Some(index);
+            self.canvas.editing = false;
+            self.toolbar.font = doc.overlays[index].font;
+            self.toolbar.font_size = doc.overlays[index].font_size;
+            self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
+        }
+    }
+
+    pub(super) fn handle_edit_overlay(&mut self, index: usize) -> iced::Task<Message> {
+        if let Some(doc) = &self.document
+            && index < doc.overlays.len()
+        {
+            self.canvas.active_overlay = Some(index);
+            self.canvas.editing = true;
+            self.canvas.edit_start_text = Some(doc.overlays[index].text.clone());
+            self.toolbar.font = doc.overlays[index].font;
+            self.toolbar.font_size = doc.overlays[index].font_size;
+            self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
+            if doc.overlays[index].width.is_some() {
+                self.editor_content = Some(iced::widget::text_editor::Content::with_text(
+                    &doc.overlays[index].text,
+                ));
+            }
+            return iced::widget::operation::focus(self.text_input_id.clone());
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_deselect_overlay(&mut self) -> iced::Task<Message> {
+        if self.canvas.editing {
+            return self.handle_commit_text();
+        }
+        self.canvas.active_overlay = None;
+        self.canvas.editing = false;
+        iced::Task::none()
+    }
+
     pub(super) fn handle_commit_text(&mut self) -> iced::Task<Message> {
         if let Some(doc) = &self.document
             && let Some(idx) = self.canvas.active_overlay
@@ -358,6 +580,183 @@ impl App {
                 y: target_y,
             },
         )
+    }
+
+    // --- Toast handler ---
+
+    pub(super) fn handle_dismiss_toast(&mut self) {
+        if let Some((_, time)) = &self.status_message
+            && time.elapsed() >= std::time::Duration::from_secs(5)
+        {
+            self.status_message = None;
+        }
+    }
+
+    // --- Canvas (zoom) handlers ---
+
+    pub(super) fn handle_zoom_in(&mut self) -> iced::Task<Message> {
+        self.canvas.zoom = canvas::zoom_in(self.canvas.zoom);
+        self.apply_zoom_change()
+    }
+
+    pub(super) fn handle_zoom_out(&mut self) -> iced::Task<Message> {
+        self.canvas.zoom = canvas::zoom_out(self.canvas.zoom);
+        self.apply_zoom_change()
+    }
+
+    pub(super) fn handle_zoom_reset(&mut self) -> iced::Task<Message> {
+        self.canvas.zoom = 1.0;
+        self.apply_zoom_change()
+    }
+
+    pub(super) fn handle_zoom_fit_width(&mut self) -> iced::Task<Message> {
+        if let (Some(doc), Some(win)) = (&self.document, self.window_size) {
+            let max_page_w = doc.max_page_width();
+            if max_page_w > 0.0 {
+                let available_w =
+                    (win.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN).max(1.0);
+                self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
+                return self.apply_zoom_change();
+            }
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_zoom_debounce_expired(&mut self, generation: u64) -> iced::Task<Message> {
+        if generation == self.canvas.zoom_generation {
+            // Clear all cached images so pages get fresh renders at
+            // the new DPI (including neighbors on navigation).
+            if let Some(doc) = &mut self.document {
+                doc.page_images.clear();
+            }
+            return self.render_visible_pages();
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_canvas_scrolled(
+        &mut self,
+        scroll_y: f32,
+        viewport_height: f32,
+    ) -> iced::Task<Message> {
+        self.canvas.scroll_y = scroll_y;
+        self.canvas.viewport_height = viewport_height;
+        if let Some(doc) = &mut self.document {
+            let dpi = canvas::effective_dpi(self.canvas.zoom);
+            let layout =
+                canvas::page_layout(&doc.page_dimensions, doc.page_count, self.canvas.zoom, dpi);
+            let page = canvas::dominant_page(&layout, scroll_y, viewport_height);
+            if doc.current_page != page {
+                doc.current_page = page;
+                self.toolbar.page_input = page.to_string();
+            }
+        }
+        self.render_visible_pages()
+    }
+
+    // --- Sidebar handlers ---
+
+    pub(super) fn handle_sidebar_drag_start(&mut self) {
+        self.sidebar.dragging = true;
+        self.sidebar.drag_start_x = 0.0;
+        self.sidebar.drag_start_width = self.sidebar.width;
+    }
+
+    pub(super) fn handle_sidebar_resized(&mut self, cursor_x: f32) {
+        if !self.sidebar.dragging {
+            return;
+        }
+        if self.sidebar.drag_start_x == 0.0 {
+            // First move: capture start X position
+            self.sidebar.drag_start_x = cursor_x;
+            return;
+        }
+        let new_width = self.sidebar.drag_start_width + (cursor_x - self.sidebar.drag_start_x);
+        self.sidebar.width = new_width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+    }
+
+    pub(super) fn handle_sidebar_resize_end(&mut self) -> iced::Task<Message> {
+        if !self.sidebar.dragging {
+            return iced::Task::none();
+        }
+        self.sidebar.dragging = false;
+        self.sidebar.backfill_generation += 1;
+        let generation = self.sidebar.backfill_generation;
+        iced::Task::perform(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
+                generation
+            },
+            Message::SidebarResizeDebounceExpired,
+        )
+    }
+
+    pub(super) fn handle_sidebar_resize_debounce_expired(
+        &mut self,
+        generation: u64,
+    ) -> iced::Task<Message> {
+        if generation == self.sidebar.backfill_generation {
+            let max_page_w = self
+                .document
+                .as_ref()
+                .map(|d| d.max_page_width())
+                .unwrap_or(612.0);
+            self.sidebar.thumbnail_dpi = crate::ui::sidebar::compute_thumbnail_dpi(
+                self.sidebar.width,
+                self.scale_factor,
+                max_page_w,
+            );
+            self.sidebar.thumbnails.clear();
+            self.sidebar.active_batch_tasks = 0;
+            return self.render_visible_thumbnails();
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_sidebar_scrolled(
+        &mut self,
+        scroll_y: f32,
+        viewport_height: f32,
+    ) -> iced::Task<Message> {
+        self.sidebar.scroll_y = scroll_y;
+        self.sidebar.viewport_height = viewport_height;
+        self.render_visible_thumbnails()
+    }
+
+    pub(super) fn handle_thumbnail_batch_rendered(
+        &mut self,
+        batch: Vec<(u32, Handle)>,
+        generation: u64,
+    ) -> iced::Task<Message> {
+        self.sidebar.active_batch_tasks = self.sidebar.active_batch_tasks.saturating_sub(1);
+        if generation == self.sidebar.backfill_generation {
+            for (page, handle) in batch {
+                self.sidebar.thumbnails.insert(page, handle);
+            }
+        }
+        let backfill_task = self.schedule_thumbnail_backfill();
+        let wait_task = self.check_ipc_wait();
+        iced::Task::batch([backfill_task, wait_task])
+    }
+
+    // --- Undo/Redo handlers ---
+
+    pub(super) fn handle_undo(&mut self) {
+        if let Some(cmd) = self.undo_stack.pop()
+            && let Some(doc) = &mut self.document
+        {
+            cmd.reverse(&mut doc.overlays);
+            self.redo_stack.push(cmd);
+        }
+    }
+
+    pub(super) fn handle_redo(&mut self) {
+        if let Some(cmd) = self.redo_stack.pop()
+            && let Some(doc) = &mut self.document
+        {
+            cmd.apply(&mut doc.overlays);
+            self.undo_stack.push(cmd);
+        }
     }
 
     /// Common post-zoom logic: increment generation and schedule a debounced
