@@ -135,6 +135,97 @@ impl App {
         }
     }
 
+    pub(super) fn handle_change_font(&mut self, font: FontId) {
+        if self.document.is_some() {
+            if let Some(idx) = self.canvas.active_overlay
+                && let Some(doc) = &self.document
+                && idx < doc.overlays.len()
+            {
+                let cmd = UndoCommand::ChangeOverlayFont {
+                    index: idx,
+                    old_font: doc.overlays[idx].font,
+                    new_font: font,
+                };
+                self.execute_command(cmd);
+            }
+            self.toolbar.font = font;
+        }
+    }
+
+    pub(super) fn handle_change_font_size(&mut self, size: f32) {
+        if self.document.is_some() {
+            if let Some(idx) = self.canvas.active_overlay
+                && let Some(doc) = &self.document
+                && idx < doc.overlays.len()
+            {
+                let cmd = UndoCommand::ChangeOverlayFontSize {
+                    index: idx,
+                    old_size: doc.overlays[idx].font_size,
+                    new_size: size,
+                };
+                self.execute_command(cmd);
+            }
+            self.toolbar.font_size = size;
+            self.toolbar.font_size_input = format!("{size}");
+        }
+    }
+
+    pub(super) fn handle_delete_overlay(&mut self) {
+        if let Some(doc) = &self.document
+            && let Some(idx) = self.canvas.active_overlay
+            && idx < doc.overlays.len()
+        {
+            let cmd = UndoCommand::DeleteOverlay {
+                overlay: doc.overlays[idx].clone(),
+                index: idx,
+            };
+            self.execute_command(cmd);
+            self.canvas.active_overlay = None;
+            self.canvas.editing = false;
+        }
+    }
+
+    pub(super) fn handle_select_overlay(&mut self, index: usize) {
+        if let Some(doc) = &self.document
+            && index < doc.overlays.len()
+        {
+            self.canvas.active_overlay = Some(index);
+            self.canvas.editing = false;
+            self.toolbar.font = doc.overlays[index].font;
+            self.toolbar.font_size = doc.overlays[index].font_size;
+            self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
+        }
+    }
+
+    pub(super) fn handle_edit_overlay(&mut self, index: usize) -> iced::Task<Message> {
+        if let Some(doc) = &self.document
+            && index < doc.overlays.len()
+        {
+            self.canvas.active_overlay = Some(index);
+            self.canvas.editing = true;
+            self.canvas.edit_start_text = Some(doc.overlays[index].text.clone());
+            self.toolbar.font = doc.overlays[index].font;
+            self.toolbar.font_size = doc.overlays[index].font_size;
+            self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
+            if doc.overlays[index].width.is_some() {
+                self.editor_content = Some(iced::widget::text_editor::Content::with_text(
+                    &doc.overlays[index].text,
+                ));
+            }
+            return iced::widget::operation::focus(self.text_input_id.clone());
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_deselect_overlay(&mut self) -> iced::Task<Message> {
+        if self.canvas.editing {
+            return self.handle_commit_text();
+        }
+        self.canvas.active_overlay = None;
+        self.canvas.editing = false;
+        iced::Task::none()
+    }
+
     pub(super) fn handle_commit_text(&mut self) -> iced::Task<Message> {
         if let Some(doc) = &self.document
             && let Some(idx) = self.canvas.active_overlay

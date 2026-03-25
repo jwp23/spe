@@ -312,90 +312,12 @@ impl App {
                 old_width,
                 new_width,
             } => self.handle_resize_overlay(index, old_width, new_width),
-            Message::ChangeFont(font) => {
-                if self.document.is_some() {
-                    if let Some(idx) = self.canvas.active_overlay
-                        && let Some(doc) = &self.document
-                        && idx < doc.overlays.len()
-                    {
-                        let cmd = UndoCommand::ChangeOverlayFont {
-                            index: idx,
-                            old_font: doc.overlays[idx].font,
-                            new_font: font,
-                        };
-                        self.execute_command(cmd);
-                    }
-                    self.toolbar.font = font;
-                }
-            }
-            Message::ChangeFontSize(size) => {
-                if self.document.is_some() {
-                    if let Some(idx) = self.canvas.active_overlay
-                        && let Some(doc) = &self.document
-                        && idx < doc.overlays.len()
-                    {
-                        let cmd = UndoCommand::ChangeOverlayFontSize {
-                            index: idx,
-                            old_size: doc.overlays[idx].font_size,
-                            new_size: size,
-                        };
-                        self.execute_command(cmd);
-                    }
-                    self.toolbar.font_size = size;
-                    self.toolbar.font_size_input = format!("{size}");
-                }
-            }
-            Message::DeleteOverlay => {
-                if let Some(doc) = &self.document
-                    && let Some(idx) = self.canvas.active_overlay
-                    && idx < doc.overlays.len()
-                {
-                    let cmd = UndoCommand::DeleteOverlay {
-                        overlay: doc.overlays[idx].clone(),
-                        index: idx,
-                    };
-                    self.execute_command(cmd);
-                    self.canvas.active_overlay = None;
-                    self.canvas.editing = false;
-                }
-            }
-            Message::SelectOverlay(index) => {
-                if let Some(doc) = &self.document
-                    && index < doc.overlays.len()
-                {
-                    self.canvas.active_overlay = Some(index);
-                    self.canvas.editing = false;
-                    self.toolbar.font = doc.overlays[index].font;
-                    self.toolbar.font_size = doc.overlays[index].font_size;
-                    self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
-                }
-            }
-            Message::EditOverlay(index) => {
-                if let Some(doc) = &self.document
-                    && index < doc.overlays.len()
-                {
-                    self.canvas.active_overlay = Some(index);
-                    self.canvas.editing = true;
-                    self.canvas.edit_start_text = Some(doc.overlays[index].text.clone());
-                    self.toolbar.font = doc.overlays[index].font;
-                    self.toolbar.font_size = doc.overlays[index].font_size;
-                    self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
-                    if doc.overlays[index].width.is_some() {
-                        self.editor_content = Some(iced::widget::text_editor::Content::with_text(
-                            &doc.overlays[index].text,
-                        ));
-                    }
-                    return iced::widget::operation::focus(self.text_input_id.clone());
-                }
-            }
-            Message::DeselectOverlay => {
-                if self.canvas.editing {
-                    // Escape during editing commits text rather than deselecting
-                    return self.handle_commit_text();
-                }
-                self.canvas.active_overlay = None;
-                self.canvas.editing = false;
-            }
+            Message::ChangeFont(font) => self.handle_change_font(font),
+            Message::ChangeFontSize(size) => self.handle_change_font_size(size),
+            Message::DeleteOverlay => self.handle_delete_overlay(),
+            Message::SelectOverlay(index) => self.handle_select_overlay(index),
+            Message::EditOverlay(index) => return self.handle_edit_overlay(index),
+            Message::DeselectOverlay => return self.handle_deselect_overlay(),
             Message::Noop => {}
             Message::DismissToast => {
                 if let Some((_, time)) = &self.status_message
