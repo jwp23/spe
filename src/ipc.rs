@@ -183,18 +183,93 @@ pub fn ipc_subscription() -> iced::Subscription<IpcEvent> {
     iced::Subscription::run(ipc_stream)
 }
 
+/// Process one JSON line: parse command, yield event, wait for response, write reply.
+/// Returns false if the response channel closed (app shut down).
+async fn process_line(
+    line: &str,
+    output: &mut iced::futures::channel::mpsc::Sender<IpcEvent>,
+    resp_rx: &mut tokio::sync::mpsc::Receiver<IpcResponse>,
+    writer: &mut tokio::io::WriteHalf<tokio::net::UnixStream>,
+) -> bool {
+    use iced::futures::SinkExt;
+    use tokio::io::AsyncWriteExt;
+
+    // Try to parse the command.
+    let cmd: IpcCommand = match serde_json::from_str(line) {
+        Ok(c) => c,
+        Err(e) => {
+            let err_json = serde_json::json!({
+                "ok": false,
+                "error": format!("parse error: {e}")
+            });
+            let mut resp = err_json.to_string();
+            resp.push('\n');
+            let _ = writer.write_all(resp.as_bytes()).await;
+            return true;
+        }
+    };
+
+    // Yield the appropriate event to the app.
+    if matches!(cmd, IpcCommand::WaitReady) {
+        let _ = output.send(IpcEvent::WaitReady).await;
+    } else {
+        let _ = output.send(IpcEvent::Command(cmd)).await;
+    }
+
+    // Wait for the app to process and send a response.
+    let response = match resp_rx.recv().await {
+        Some(r) => r,
+        None => return false,
+    };
+
+    // Write the response back to the client.
+    let resp_json = if response.ok {
+        serde_json::json!({"ok": true})
+    } else {
+        serde_json::json!({
+            "ok": false,
+            "error": response.error.unwrap_or_default()
+        })
+    };
+    let mut resp_str = resp_json.to_string();
+    resp_str.push('\n');
+    let _ = writer.write_all(resp_str.as_bytes()).await;
+    true
+}
+
+/// Process a single IPC connection. Returns false if the app channel closed.
+async fn handle_connection(
+    stream: tokio::net::UnixStream,
+    output: &mut iced::futures::channel::mpsc::Sender<IpcEvent>,
+    resp_rx: &mut tokio::sync::mpsc::Receiver<IpcResponse>,
+) -> bool {
+    use tokio::io::AsyncBufReadExt;
+
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut lines = tokio::io::BufReader::new(reader).lines();
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        let line = line.trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+        if !process_line(&line, output, resp_rx, &mut writer).await {
+            return false;
+        }
+    }
+    true
+}
+
 fn ipc_stream() -> impl iced::futures::Stream<Item = IpcEvent> {
     iced::stream::channel(32, async |mut output| {
         use iced::futures::SinkExt;
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        use tokio::net::UnixListener;
 
         let path = socket_path();
 
         // Remove stale socket file if it exists.
         let _ = std::fs::remove_file(&path);
 
-        let listener = match UnixListener::bind(&path) {
+        let listener = match tokio::net::UnixListener::bind(&path) {
             Ok(l) => l,
             Err(e) => {
                 eprintln!("IPC: failed to bind {}: {e}", path.display());
@@ -210,67 +285,16 @@ fn ipc_stream() -> impl iced::futures::Stream<Item = IpcEvent> {
         let _ = output.send(IpcEvent::Ready(sender)).await;
 
         loop {
-            let (stream, _addr) = match listener.accept().await {
-                Ok(conn) => conn,
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    if !handle_connection(stream, &mut output, &mut resp_rx).await {
+                        return;
+                    }
+                }
                 Err(e) => {
                     eprintln!("IPC: accept error: {e}");
                     continue;
                 }
-            };
-
-            let (reader, mut writer) = tokio::io::split(stream);
-            let mut lines = BufReader::new(reader).lines();
-
-            while let Ok(Some(line)) = lines.next_line().await {
-                let line = line.trim().to_string();
-                if line.is_empty() {
-                    continue;
-                }
-
-                // Try to parse the command.
-                let cmd: IpcCommand = match serde_json::from_str(&line) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let err_json = serde_json::json!({
-                            "ok": false,
-                            "error": format!("parse error: {e}")
-                        });
-                        let mut resp = err_json.to_string();
-                        resp.push('\n');
-                        let _ = writer.write_all(resp.as_bytes()).await;
-                        continue;
-                    }
-                };
-
-                // Yield the appropriate event to the app.
-                let is_wait_ready = matches!(cmd, IpcCommand::WaitReady);
-                if is_wait_ready {
-                    let _ = output.send(IpcEvent::WaitReady).await;
-                } else {
-                    let _ = output.send(IpcEvent::Command(cmd)).await;
-                }
-
-                // Wait for the app to process and send a response.
-                let response = match resp_rx.recv().await {
-                    Some(r) => r,
-                    None => {
-                        // Channel closed — app shut down.
-                        return;
-                    }
-                };
-
-                // Write the response back to the client.
-                let resp_json = if response.ok {
-                    serde_json::json!({"ok": true})
-                } else {
-                    serde_json::json!({
-                        "ok": false,
-                        "error": response.error.unwrap_or_default()
-                    })
-                };
-                let mut resp_str = resp_json.to_string();
-                resp_str.push('\n');
-                let _ = writer.write_all(resp_str.as_bytes()).await;
             }
         }
     })
