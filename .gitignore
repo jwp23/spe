@@ -16,3 +16,6 @@
 
 # Claude brainstorming session artifacts
 .claude/brainstorm/
+
+# Screenshot tool artifacts
+screenshots/
