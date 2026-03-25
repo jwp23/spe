@@ -434,43 +434,7 @@ impl App {
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        let event_sub = iced::event::listen_with(|event, status, _window| {
-            // Window events are always handled, regardless of capture status.
-            if let iced::Event::Window(ref win_event) = event {
-                return match win_event {
-                    iced::window::Event::Resized(size) => Some(Message::WindowResized(*size)),
-                    iced::window::Event::Opened { size, .. } => Some(Message::WindowResized(*size)),
-                    iced::window::Event::Rescaled(factor) => {
-                        Some(Message::ScaleFactorChanged(*factor))
-                    }
-                    _ => None,
-                };
-            }
-            // Mouse move/release events are always forwarded (regardless of
-            // capture status) so the drag handler in update() can track them.
-            // The handler guards on self.sidebar.dragging and ignores events
-            // when no drag is active.
-            if let iced::Event::Mouse(ref mouse_event) = event {
-                match mouse_event {
-                    iced::mouse::Event::CursorMoved { position } => {
-                        return Some(Message::SidebarResized(position.x));
-                    }
-                    iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left) => {
-                        return Some(Message::SidebarResizeEnd);
-                    }
-                    _ => {}
-                }
-            }
-            if status == iced::event::Status::Captured {
-                return None;
-            }
-            match event {
-                iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                    key_to_message(key, modifiers)
-                }
-                _ => None,
-            }
-        });
+        let event_sub = iced::event::listen_with(event_to_message);
 
         // Tick shimmer animation only while sidebar is visible and has unrendered pages.
         let shimmer_sub = if self.sidebar.visible
@@ -498,6 +462,55 @@ impl App {
         };
 
         iced::Subscription::batch([event_sub, shimmer_sub, toast_sub, ipc_sub])
+    }
+}
+
+/// Map an iced event to an application message, filtering by event type and capture status.
+fn event_to_message(
+    event: iced::Event,
+    status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    // Window events are always handled, regardless of capture status.
+    if let iced::Event::Window(ref win_event) = event {
+        return window_event_to_message(win_event);
+    }
+    // Mouse move/release events are always forwarded (regardless of capture status)
+    // so the drag handler in update() can track them.
+    if let iced::Event::Mouse(ref mouse_event) = event
+        && let Some(msg) = mouse_event_to_message(mouse_event)
+    {
+        return Some(msg);
+    }
+    if status == iced::event::Status::Captured {
+        return None;
+    }
+    match event {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            key_to_message(key, modifiers)
+        }
+        _ => None,
+    }
+}
+
+/// Map a window event to an application message.
+fn window_event_to_message(event: &iced::window::Event) -> Option<Message> {
+    match event {
+        iced::window::Event::Resized(size) => Some(Message::WindowResized(*size)),
+        iced::window::Event::Opened { size, .. } => Some(Message::WindowResized(*size)),
+        iced::window::Event::Rescaled(factor) => Some(Message::ScaleFactorChanged(*factor)),
+        _ => None,
+    }
+}
+
+/// Map a mouse event to an application message for sidebar drag tracking.
+fn mouse_event_to_message(event: &iced::mouse::Event) -> Option<Message> {
+    match event {
+        iced::mouse::Event::CursorMoved { position } => Some(Message::SidebarResized(position.x)),
+        iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left) => {
+            Some(Message::SidebarResizeEnd)
+        }
+        _ => None,
     }
 }
 
