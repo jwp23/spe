@@ -48,39 +48,29 @@ git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null
 
 Or ask: "This branch split from main - is that correct?"
 
-### Step 3: Push and Create PR
+### Step 3: Dispatch pr-creator Agent
 
-```bash
-# Push feature branch
-git push -u origin <feature-branch>
+Dispatch the `pr-creator` agent (`.claude/agents/pr-creator.md`, model: haiku) with:
 
-# Create PR with summary body
-gh pr create --title "<conventional-commit-title>" --body "$(cat <<'EOF'
-## Summary
-<2-3 bullets of what changed>
+- **branch**: current feature branch name
+- **base**: target branch (from Step 2, usually `main`)
+- **title**: conventional commit title based on the branch work
 
-## Test Plan
-<verification steps>
-EOF
-)"
-```
+The agent pushes the branch, creates the PR with a brief summary from `git log`, and watches CI checks. It reports back with the PR URL and CI status.
 
-The PR title should follow conventional commit format based on the branch work.
+**Can run in background** if you have other work to do while CI runs.
 
-### Step 4: Wait for CI Checks
+### Step 4: Handle CI Result
 
-```bash
-gh pr checks <number> --watch
-```
+**If pr-creator reports PASSED:** Report PR URL and status to Joe. Done.
 
-**If checks fail:**
-1. Investigate the failure output
-2. Fix the issue locally
-3. Commit and push the fix
-4. Wait again: `gh pr checks <number> --watch`
-5. Repeat until all checks pass
-
-**If checks pass:** Report PR URL and status.
+**If pr-creator reports FAILED:**
+1. Read the failure details from the agent's report
+2. Investigate the root cause (use systematic-debugging if non-obvious)
+3. Fix the issue locally
+4. Commit and push the fix
+5. Watch CI yourself: `gh pr checks <number> --watch`
+6. Repeat until all checks pass
 
 ### Step 5: Cleanup Worktree
 
@@ -98,15 +88,15 @@ Report: "PR ready at <URL>. All CI checks passing."
 
 ## Merging (when Joe requests)
 
-When Joe says to merge or close a PR, squash merge with no body:
+When Joe says to merge or close a PR, dispatch the `pr-merger` agent (`.claude/agents/pr-merger.md`, model: haiku) with:
 
-```bash
-gh pr merge <number> --squash --body "" --delete-branch
-git checkout main && git pull
-git branch -d <feature-branch>
-```
+- **number**: the PR number
 
-Clean up worktree if applicable.
+The agent squash merges with no body, checks out main, pulls, watches CI on the merge commit, and cleans up the local branch and worktree. It reports back with the merge SHA and CI status.
+
+**Can run in background** if you have other work to start.
+
+**If pr-merger reports CI FAILED on main:** Investigate and fix on a new branch.
 
 ## Quick Reference
 
@@ -115,10 +105,10 @@ Clean up worktree if applicable.
 | 1. Verify | Run tests, stop if failing |
 | 1.5 Security | Run security review, fix Critical/Important |
 | 2. Base branch | Confirm target branch |
-| 3. Push + PR | Push branch, create PR with summary |
-| 4. CI | Watch checks, fix failures |
+| 3. pr-creator | Dispatch agent: push, PR, CI watch |
+| 4. CI result | If failed: debug, fix, push, re-watch |
 | 5. Cleanup | Remove worktree if applicable |
-| Merge | Squash merge, no body (on request) |
+| Merge | Dispatch pr-merger agent (on request) |
 
 ## Common Mistakes
 
@@ -161,6 +151,12 @@ Clean up worktree if applicable.
 - **subagent-driven-development** (Step 7) - After all tasks complete
 - **executing-plans** (Step 5) - After all batches complete
 
+**Dispatches:**
+- **pr-creator** agent (haiku) - Push, PR creation, CI watch (Step 3)
+- **pr-merger** agent (haiku) - Squash merge, CI watch, cleanup (Merging)
+
 **Pairs with:**
 - **security-review** - Runs security audit before push (Step 1.5)
 - **using-git-worktrees** - Cleans up worktree created by that skill
+
+**Design rationale:** See `.claude/docs/adr/001-haiku-subagents-for-git-operations.md`

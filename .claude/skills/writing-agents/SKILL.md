@@ -55,7 +55,8 @@ Before anything else, articulate what the agent will do. Ask:
 1. List all existing agents: `ls .claude/agents/` and `ls ~/.claude/agents/`
 2. List all existing skills: `ls .claude/skills/`
 3. Check built-in agents: Explore, Plan, general-purpose, Bash, claude-code-guide
-4. Read any agent/skill that might overlap with the proposed function
+4. Check past agentic workflow decisions: `ls .claude/docs/adr/` — read any ADR relevant to the proposed agent's domain to understand prior rationale
+5. Read any agent/skill that might overlap with the proposed function
 
 If an existing agent or skill covers 70%+ of the need, recommend extending it rather than creating a new one. Present the overlap analysis to the user.
 
@@ -173,6 +174,7 @@ After creating the agent, consider:
 - Does any existing skill need to reference this agent? (e.g., add to subagent-driven-development's model selection table)
 - Should any workflow skill mention this agent as an option?
 - Does the project README or CLAUDE.md need updating?
+- **Record the decision** in `.claude/docs/adr/` if this agent represents an architectural choice (new workflow pattern, model selection rationale, delegation strategy). Use the same ADR format as `docs/adr/` but scoped to agentic workflow decisions.
 
 Report what was created, where it lives, and how it fits into the workflow.
 
