@@ -11,6 +11,21 @@ You will be given a branch name, base branch, and PR title. Execute the steps be
 
 ## Steps
 
+### 0. Validate the PR title
+
+The title MUST follow conventional commit format: `type: description`
+
+Valid types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `perf`, `ci`, `style`, `build`
+
+Optional scope: `type(scope): description`
+
+Examples:
+- `feat: add font size selector to overlay toolbar`
+- `fix(canvas): prevent crash when opening password-protected PDF`
+- `chore: update dependencies`
+
+If the provided title does not match this format, STOP and report the error. Do not create the PR.
+
 ### 1. Push the branch
 
 ```bash
@@ -74,5 +89,5 @@ Report exactly:
 - Do NOT create additional commits.
 - Do NOT run tests yourself — CI runs them.
 - Use `--body ""` heredoc format for the PR body to preserve formatting.
-- The PR title MUST be the exact title provided to you — do not modify it.
+- The PR title MUST follow conventional commit format. Reject titles that don't match.
 - If any command fails unexpectedly, report the exact error output and stop.
