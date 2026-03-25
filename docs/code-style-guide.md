@@ -12,6 +12,7 @@ Names are documentation. A reader should understand what code does without readi
 - Avoid abbreviations unless universally understood in the domain (`pdf`, `gui`, `dpi` are fine; `pg`, `fnt`, `pos` are not).
 - Limit function length to what fits in one screen (~30 lines). If longer, extract a well-named helper.
 - Limit function parameters to 4. If more are needed, group related parameters into a data structure.
+- Limit module size to ~500 lines of production code or ~1000 total lines (including tests). When a file exceeds this, split it into a directory module (`foo.rs` → `foo/mod.rs` + sibling files). Extract by concern — view logic, handlers, pure functions — into sibling files with separate `impl` blocks. Move tests into a `tests.rs` submodule when they exceed ~500 lines. Each file should represent a single coherent concern readable in one pass.
 - Write comments only to explain WHY, never WHAT. The code explains what. If code needs a WHAT comment, the code is unclear — rewrite the code.
 
 ## Loosely Coupled
