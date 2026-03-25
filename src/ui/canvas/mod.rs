@@ -28,6 +28,10 @@ pub(crate) const OVERLAY_TINT_ALPHA: f32 = 0.15;
 pub(crate) const OVERLAY_TINT_HOVER_ALPHA: f32 = 0.25;
 /// Opacity for the border drawn around a hovered overlay.
 pub(crate) const OVERLAY_TINT_HOVER_BORDER_ALPHA: f32 = 0.5;
+/// Padding around the selection box border (screen pixels).
+const SELECTION_BOX_PADDING: f32 = 2.0;
+/// Stroke width for selection-style borders drawn via `draw_image` strips.
+const SELECTION_BORDER_WIDTH: f32 = 1.5;
 /// Background color for the canvas area behind PDF pages.
 const CANVAS_BACKGROUND: iced::Color = iced::Color::from_rgb(0.85, 0.85, 0.85);
 
@@ -575,12 +579,40 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
             let rect_w = (end_canvas.x - start_canvas.x).abs();
             let rect_h = (end_canvas.y - start_canvas.y).abs();
 
-            frame.stroke_rectangle(
-                iced::Point::new(rect_x, rect_y),
-                iced::Size::new(rect_w, rect_h),
-                canvas::Stroke::default()
-                    .with_color(SELECTION_COLOR)
-                    .with_width(1.5),
+            // Four draw_image strips instead of stroke_rectangle (spe-4ha).
+            let bw = SELECTION_BORDER_WIDTH;
+            let handle = color_image(SELECTION_COLOR, 1.0);
+            // Top edge
+            frame.draw_image(
+                iced::Rectangle::new(
+                    iced::Point::new(rect_x, rect_y),
+                    iced::Size::new(rect_w, bw),
+                ),
+                &handle,
+            );
+            // Bottom edge
+            frame.draw_image(
+                iced::Rectangle::new(
+                    iced::Point::new(rect_x, rect_y + rect_h - bw),
+                    iced::Size::new(rect_w, bw),
+                ),
+                &handle,
+            );
+            // Left edge
+            frame.draw_image(
+                iced::Rectangle::new(
+                    iced::Point::new(rect_x, rect_y),
+                    iced::Size::new(bw, rect_h),
+                ),
+                &handle,
+            );
+            // Right edge
+            frame.draw_image(
+                iced::Rectangle::new(
+                    iced::Point::new(rect_x + rect_w - bw, rect_y),
+                    iced::Size::new(bw, rect_h),
+                ),
+                &handle,
             );
         }
 
@@ -773,6 +805,10 @@ fn draw_overlay_hover_border(
 }
 
 /// Draw a selection bounding box around an overlay at a screen position.
+///
+/// Uses four thin `draw_image` strips instead of `stroke_rectangle`
+/// because Iced's wgpu canvas always renders images on top of
+/// tessellated geometry. See spe-4ha.
 fn draw_selection_box(
     frame: &mut canvas::Frame,
     text: &str,
@@ -783,16 +819,32 @@ fn draw_selection_box(
     scale: f32,
 ) {
     let bbox = overlay_bounding_box(text, font, font_size);
-    let w = bbox.width * scale;
-    let h = bbox.height * scale;
-    let padding = 2.0;
+    let w = bbox.width * scale + 2.0 * SELECTION_BOX_PADDING;
+    let h = bbox.height * scale + 2.0 * SELECTION_BOX_PADDING;
+    let x = screen_x - SELECTION_BOX_PADDING;
+    let y = screen_y - bbox.height * scale - SELECTION_BOX_PADDING;
+    let bw = SELECTION_BORDER_WIDTH;
+    let handle = color_image(SELECTION_COLOR, 1.0);
 
-    frame.stroke_rectangle(
-        iced::Point::new(screen_x - padding, screen_y - h - padding),
-        iced::Size::new(w + 2.0 * padding, h + 2.0 * padding),
-        canvas::Stroke::default()
-            .with_color(SELECTION_COLOR)
-            .with_width(1.5),
+    // Top edge
+    frame.draw_image(
+        iced::Rectangle::new(iced::Point::new(x, y), iced::Size::new(w, bw)),
+        &handle,
+    );
+    // Bottom edge
+    frame.draw_image(
+        iced::Rectangle::new(iced::Point::new(x, y + h - bw), iced::Size::new(w, bw)),
+        &handle,
+    );
+    // Left edge
+    frame.draw_image(
+        iced::Rectangle::new(iced::Point::new(x, y), iced::Size::new(bw, h)),
+        &handle,
+    );
+    // Right edge
+    frame.draw_image(
+        iced::Rectangle::new(iced::Point::new(x + w - bw, y), iced::Size::new(bw, h)),
+        &handle,
     );
 }
 
@@ -800,6 +852,9 @@ fn draw_selection_box(
 const RESIZE_HANDLE_HIT_RADIUS: f32 = 4.0;
 
 /// Draw a vertical bar resize handle on the right edge of a multi-line overlay.
+///
+/// Uses `draw_image` instead of `fill_rectangle` because Iced's wgpu
+/// canvas always renders images on top of tessellated geometry. See spe-4ha.
 fn draw_resize_handle(
     frame: &mut canvas::Frame,
     overlay_sx: f32,
@@ -810,10 +865,13 @@ fn draw_resize_handle(
 ) {
     let handle_x = overlay_sx + width_pts * scale;
     let scaled_size = font_size * scale;
-    frame.fill_rectangle(
-        iced::Point::new(handle_x - 2.0, overlay_sy - scaled_size),
-        iced::Size::new(4.0, scaled_size),
-        SELECTION_COLOR,
+    let handle = color_image(SELECTION_COLOR, 1.0);
+    frame.draw_image(
+        iced::Rectangle::new(
+            iced::Point::new(handle_x - 2.0, overlay_sy - scaled_size),
+            iced::Size::new(4.0, scaled_size),
+        ),
+        &handle,
     );
 }
 
