@@ -8,6 +8,133 @@ use crate::ui::canvas;
 use crate::ui::toolbar;
 
 impl App {
+    // --- Page navigation handlers ---
+
+    pub(super) fn handle_next_page(&mut self) -> iced::Task<Message> {
+        if let Some(doc) = &self.document
+            && doc.current_page < doc.page_count
+        {
+            return self.scroll_to_page(doc.current_page + 1);
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_previous_page(&mut self) -> iced::Task<Message> {
+        if let Some(doc) = &self.document
+            && doc.current_page > 1
+        {
+            return self.scroll_to_page(doc.current_page - 1);
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_go_to_page(&mut self, page: u32) -> iced::Task<Message> {
+        if let Some(doc) = &self.document
+            && page >= 1
+            && page <= doc.page_count
+        {
+            return self.scroll_to_page(page);
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_page_batch_rendered(
+        &mut self,
+        pages: Vec<(u32, Handle)>,
+    ) -> iced::Task<Message> {
+        if let Some(doc) = &mut self.document {
+            for (page, handle) in pages {
+                doc.page_images.insert(page, handle);
+            }
+            let render_task = self.render_visible_pages();
+            let wait_task = self.check_ipc_wait();
+            return iced::Task::batch([render_task, wait_task]);
+        }
+        iced::Task::none()
+    }
+
+    // --- Overlay data handlers ---
+
+    pub(super) fn handle_place_overlay(
+        &mut self,
+        page: u32,
+        position: PdfPosition,
+        width: Option<f32>,
+    ) -> iced::Task<Message> {
+        if self.document.is_some() {
+            let overlay = TextOverlay {
+                page,
+                position,
+                text: String::new(),
+                font: self.toolbar.font,
+                font_size: self.toolbar.font_size,
+                width,
+            };
+            let cmd = UndoCommand::PlaceOverlay {
+                overlay: overlay.clone(),
+            };
+            self.execute_command(cmd);
+            let doc = self.document.as_ref().unwrap();
+            let idx = doc.overlays.len() - 1;
+            self.canvas.active_overlay = Some(idx);
+            self.canvas.editing = true;
+            self.canvas.edit_start_text = Some(String::new());
+            if width.is_some() {
+                self.editor_content = Some(iced::widget::text_editor::Content::with_text(""));
+            }
+            return iced::widget::operation::focus(self.text_input_id.clone());
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_update_overlay_text(&mut self, text: String) {
+        if let Some(doc) = &mut self.document
+            && let Some(idx) = self.canvas.active_overlay
+            && idx < doc.overlays.len()
+        {
+            doc.overlays[idx].text = text;
+        }
+    }
+
+    pub(super) fn handle_text_editor_action(&mut self, action: iced::widget::text_editor::Action) {
+        if let Some(content) = &mut self.editor_content {
+            content.perform(action);
+            let new_text = content.text();
+            if let Some(doc) = &mut self.document
+                && let Some(idx) = self.canvas.active_overlay
+                && idx < doc.overlays.len()
+            {
+                doc.overlays[idx].text = new_text;
+            }
+        }
+    }
+
+    pub(super) fn handle_move_overlay(&mut self, index: usize, new_position: PdfPosition) {
+        if let Some(doc) = &self.document
+            && index < doc.overlays.len()
+        {
+            let cmd = UndoCommand::MoveOverlay {
+                index,
+                from: doc.overlays[index].position,
+                to: new_position,
+            };
+            self.execute_command(cmd);
+        }
+    }
+
+    pub(super) fn handle_resize_overlay(&mut self, index: usize, old_width: f32, new_width: f32) {
+        if let Some(doc) = &self.document
+            && index < doc.overlays.len()
+        {
+            let cmd = UndoCommand::ResizeOverlay {
+                index,
+                old_width,
+                new_width,
+            };
+            self.execute_command(cmd);
+        }
+    }
+
     pub(super) fn handle_commit_text(&mut self) -> iced::Task<Message> {
         if let Some(doc) = &self.document
             && let Some(idx) = self.canvas.active_overlay

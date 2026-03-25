@@ -288,121 +288,30 @@ impl App {
             }
 
             // --- Page navigation (scroll to target page) ---
-            Message::NextPage => {
-                if let Some(doc) = &self.document
-                    && doc.current_page < doc.page_count
-                {
-                    return self.scroll_to_page(doc.current_page + 1);
-                }
-            }
-            Message::PreviousPage => {
-                if let Some(doc) = &self.document
-                    && doc.current_page > 1
-                {
-                    return self.scroll_to_page(doc.current_page - 1);
-                }
-            }
-            Message::GoToPage(page) => {
-                if let Some(doc) = &self.document
-                    && page >= 1
-                    && page <= doc.page_count
-                {
-                    return self.scroll_to_page(page);
-                }
-            }
-            Message::PageBatchRendered(pages) => {
-                if let Some(doc) = &mut self.document {
-                    for (page, handle) in pages {
-                        doc.page_images.insert(page, handle);
-                    }
-                    let render_task = self.render_visible_pages();
-                    let wait_task = self.check_ipc_wait();
-                    return iced::Task::batch([render_task, wait_task]);
-                }
-            }
+            Message::NextPage => return self.handle_next_page(),
+            Message::PreviousPage => return self.handle_previous_page(),
+            Message::GoToPage(page) => return self.handle_go_to_page(page),
+            Message::PageBatchRendered(pages) => return self.handle_page_batch_rendered(pages),
 
             // --- Overlay editing (undoable) ---
             Message::PlaceOverlay {
                 page,
                 position,
                 width,
-            } => {
-                if self.document.is_some() {
-                    let overlay = TextOverlay {
-                        page,
-                        position,
-                        text: String::new(),
-                        font: self.toolbar.font,
-                        font_size: self.toolbar.font_size,
-                        width,
-                    };
-                    let cmd = UndoCommand::PlaceOverlay {
-                        overlay: overlay.clone(),
-                    };
-                    self.execute_command(cmd);
-                    let doc = self.document.as_ref().unwrap();
-                    let idx = doc.overlays.len() - 1;
-                    self.canvas.active_overlay = Some(idx);
-                    self.canvas.editing = true;
-                    self.canvas.edit_start_text = Some(String::new());
-                    if width.is_some() {
-                        self.editor_content =
-                            Some(iced::widget::text_editor::Content::with_text(""));
-                    }
-                    return iced::widget::operation::focus(self.text_input_id.clone());
-                }
-            }
-            Message::UpdateOverlayText(text) => {
-                if let Some(doc) = &mut self.document
-                    && let Some(idx) = self.canvas.active_overlay
-                    && idx < doc.overlays.len()
-                {
-                    doc.overlays[idx].text = text;
-                }
-            }
-            Message::TextEditorAction(action) => {
-                if let Some(content) = &mut self.editor_content {
-                    content.perform(action);
-                    let new_text = content.text();
-                    if let Some(doc) = &mut self.document
-                        && let Some(idx) = self.canvas.active_overlay
-                        && idx < doc.overlays.len()
-                    {
-                        doc.overlays[idx].text = new_text;
-                    }
-                }
-            }
+            } => return self.handle_place_overlay(page, position, width),
+            Message::UpdateOverlayText(text) => self.handle_update_overlay_text(text),
+            Message::TextEditorAction(action) => self.handle_text_editor_action(action),
             Message::CommitText => {
                 return self.handle_commit_text();
             }
             Message::MoveOverlay(index, new_position) => {
-                if let Some(doc) = &self.document
-                    && index < doc.overlays.len()
-                {
-                    let cmd = UndoCommand::MoveOverlay {
-                        index,
-                        from: doc.overlays[index].position,
-                        to: new_position,
-                    };
-                    self.execute_command(cmd);
-                }
+                self.handle_move_overlay(index, new_position);
             }
             Message::ResizeOverlay {
                 index,
                 old_width,
                 new_width,
-            } => {
-                if let Some(doc) = &self.document
-                    && index < doc.overlays.len()
-                {
-                    let cmd = UndoCommand::ResizeOverlay {
-                        index,
-                        old_width,
-                        new_width,
-                    };
-                    self.execute_command(cmd);
-                }
-            }
+            } => self.handle_resize_overlay(index, old_width, new_width),
             Message::ChangeFont(font) => {
                 if self.document.is_some() {
                     if let Some(idx) = self.canvas.active_overlay
