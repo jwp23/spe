@@ -43,18 +43,30 @@ Newline-delimited JSON over Unix socket. Each command maps to existing `Message`
 
 | Command | JSON | Maps to |
 |---------|------|---------|
-| Open PDF | `{"cmd": "open", "path": "/path/to.pdf"}` | File open flow |
+| Open PDF | `{"cmd": "open", "path": "/path/to.pdf"}` | `FileOpened(PathBuf)` (bypasses file dialog) |
 | Click canvas | `{"cmd": "click", "page": 1, "x": 100.0, "y": 700.0}` | `PlaceOverlay` |
-| Type text | `{"cmd": "type", "text": "Hello"}` | `OverlayTextChanged` |
-| Select overlay | `{"cmd": "select", "index": 0}` | `EditOverlay` |
+| Type text | `{"cmd": "type", "text": "Hello"}` | `UpdateOverlayText(String)` |
+| Select overlay | `{"cmd": "select", "index": 0}` | `SelectOverlay(usize)` (selected, not editing) |
+| Edit overlay | `{"cmd": "edit", "index": 0}` | `EditOverlay` (selected + editing) |
 | Deselect | `{"cmd": "deselect"}` | `DeselectOverlay` |
-| Set zoom | `{"cmd": "zoom", "level": 1.5}` | Zoom messages |
-| Change font | `{"cmd": "font", "family": "Courier"}` | `FontFamilyChanged` |
-| Change font size | `{"cmd": "font_size", "size": 14.0}` | `FontSizeChanged` |
+| Zoom in | `{"cmd": "zoom_in"}` | `ZoomIn` |
+| Zoom out | `{"cmd": "zoom_out"}` | `ZoomOut` |
+| Zoom reset | `{"cmd": "zoom_reset"}` | `ZoomReset` |
+| Zoom fit width | `{"cmd": "zoom_fit_width"}` | `ZoomFitWidth` |
+| Change font | `{"cmd": "font", "family": "Courier"}` | `ChangeFont(Standard14Font)` |
+| Change font size | `{"cmd": "font_size", "size": 14.0}` | `ChangeFontSize(f32)` |
 | Drag (multiline) | `{"cmd": "drag", "page": 1, "x1": 100.0, "y1": 700.0, "x2": 300.0, "y2": 700.0}` | `PlaceOverlay` with width |
-| Resize overlay | `{"cmd": "resize", "index": 0, "width": 200.0}` | `ResizeOverlay` |
+| Resize overlay | `{"cmd": "resize", "index": 0, "width": 200.0}` | `ResizeOverlay` (IPC layer reads `old_width` from state) |
 | Move overlay | `{"cmd": "move", "index": 0, "x": 150.0, "y": 650.0}` | `MoveOverlay` |
 | Wait for idle | `{"cmd": "wait_ready"}` | Blocks until no render tasks in flight |
+
+### Font Family Values
+
+The `font` command's `family` field accepts `Standard14Font` variant names as strings. Valid values:
+
+`Courier`, `CourierBold`, `CourierOblique`, `CourierBoldOblique`, `Helvetica`, `HelveticaBold`, `HelveticaOblique`, `HelveticaBoldOblique`, `TimesRoman`, `TimesBold`, `TimesItalic`, `TimesBoldItalic`, `Symbol`, `ZapfDingbats`
+
+The IPC layer deserializes these via serde into the `Standard14Font` enum.
 
 ### Responses
 
@@ -66,7 +78,7 @@ Every command receives a JSON response:
 ### Design Principles
 
 - **PDF coordinates, not screen coordinates.** Commands are resolution/zoom-independent. The app translates to screen space internally.
-- **Existing Message variants only.** The IPC layer is a thin translation shim. The state machine under test is identical to production.
+- **Existing Message variants where possible.** The IPC layer is a thin translation shim. Most commands map directly to a single Message variant. The sole exception is `resize`, which reads `old_width` from current overlay state before constructing `ResizeOverlay`. The state machine under test is identical to production.
 - **Runtime activation only.** The `--ipc` flag enables the subscription. No flag means no socket, no overhead, no attack surface. No compile-time feature gate — a single binary serves both uses.
 
 ## Harness Script
@@ -114,8 +126,12 @@ IpcCommand::Open { path }
 IpcCommand::Click { page, x, y }
 IpcCommand::Type { text }
 IpcCommand::Select { index }
+IpcCommand::Edit { index }
 IpcCommand::Deselect
-IpcCommand::Zoom { level }
+IpcCommand::ZoomIn
+IpcCommand::ZoomOut
+IpcCommand::ZoomReset
+IpcCommand::ZoomFitWidth
 IpcCommand::Font { family }
 IpcCommand::FontSize { size }
 IpcCommand::Drag { page, x1, y1, x2, y2 }
