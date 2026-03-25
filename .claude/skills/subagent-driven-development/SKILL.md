@@ -254,6 +254,7 @@ Done!
 - Proceed with unfixed issues
 - Dispatch multiple implementation subagents in parallel (conflicts)
 - Make subagent read bd issues directly (provide full text instead)
+- Let subagents create bd issues, push to remote, or create PRs (controller manages all of these)
 - Skip scene-setting context (subagent needs to understand where task fits)
 - Ignore subagent questions (answer before letting them proceed)
 - Accept "close enough" on spec compliance (spec reviewer found issues = not done)
@@ -261,6 +262,7 @@ Done!
 - Let implementer self-review replace actual review (both are needed)
 - **Start code quality review before spec compliance is ✅** (wrong order)
 - Move to next task while either review has open issues
+- Close a parent task without checking for stale subtasks created by subagents
 
 **If subagent asks questions:**
 - Answer clearly and completely
