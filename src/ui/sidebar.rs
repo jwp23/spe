@@ -140,7 +140,6 @@ pub struct ThumbnailProgram<'a> {
     pub page_width: f32,
     pub page_height: f32,
     pub thumbnail_dpi: f32,
-    pub overlay_color: iced::Color,
     /// Shimmer animation phase in [0, 1) for unrendered placeholder.
     pub shimmer_phase: f32,
 }
@@ -229,16 +228,8 @@ pub fn sidebar_view<'a>(
     current_page: u32,
     page_dimensions: &'a HashMap<u32, (f32, f32)>,
     overlays: &'a [TextOverlay],
-    overlay_color: [f32; 4],
 ) -> Element<'a, Message> {
     use iced::widget::{button, canvas as canvas_widget, column, container, scrollable, text};
-
-    let overlay_color = Color::from_rgba(
-        overlay_color[0],
-        overlay_color[1],
-        overlay_color[2],
-        overlay_color[3],
-    );
 
     if page_count == 0 {
         return container(text("No document"))
@@ -264,7 +255,6 @@ pub fn sidebar_view<'a>(
             page_width: pw,
             page_height: ph,
             thumbnail_dpi: state.thumbnail_dpi,
-            overlay_color,
             shimmer_phase: state.shimmer_phase,
         };
 
@@ -338,7 +328,7 @@ mod tests {
             page_width: 612.0,
             page_height: 792.0,
             thumbnail_dpi: 12.0,
-            overlay_color: iced::Color::from_rgb(0.0, 0.0, 1.0),
+
             shimmer_phase: 0.0,
         };
         assert_eq!(program.page, 1);
@@ -353,7 +343,7 @@ mod tests {
             page_width: 612.0,
             page_height: 792.0,
             thumbnail_dpi: 12.0,
-            overlay_color: iced::Color::from_rgb(0.0, 0.0, 1.0),
+
             shimmer_phase: 0.5,
         };
         assert!((program.shimmer_phase - 0.5).abs() < f32::EPSILON);
@@ -501,13 +491,6 @@ mod tests {
         let state = SidebarState::default();
         let page_dimensions = HashMap::new();
         let overlays: Vec<TextOverlay> = vec![];
-        let _: iced::Element<Message> = sidebar_view(
-            &state,
-            0,
-            1,
-            &page_dimensions,
-            &overlays,
-            [0.0, 0.0, 0.0, 1.0],
-        );
+        let _: iced::Element<Message> = sidebar_view(&state, 0, 1, &page_dimensions, &overlays);
     }
 }

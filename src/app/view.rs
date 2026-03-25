@@ -70,7 +70,6 @@ impl App {
                     doc.current_page,
                     &doc.page_dimensions,
                     &doc.overlays,
-                    self.config.overlay_color,
                 );
 
                 let handle_strip = iced::widget::container(
