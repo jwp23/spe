@@ -7,7 +7,7 @@ use lopdf::content::{Content, Operation};
 use lopdf::{Document, Object, Stream, dictionary};
 use thiserror::Error;
 
-use crate::fonts::{FontId, FontRegistry, PdfEmbedding};
+use crate::fonts::{FontDescriptorInfo, FontId, FontRegistry, PdfEmbedding};
 use crate::overlay::TextOverlay;
 
 #[derive(Debug, Error)]
@@ -141,19 +141,32 @@ pub fn write_overlays(
                         );
                         let font_file_id = doc.add_object(font_file_stream);
 
+                        // Use real descriptor values when available; fall back to safe defaults.
+                        let default_desc = FontDescriptorInfo {
+                            ascent: 800,
+                            descent: -200,
+                            cap_height: 700,
+                            italic_angle: 0.0,
+                            flags: 32,
+                            bbox: [0, 0, 1000, 1000],
+                            stem_v: 80,
+                        };
+                        let desc = entry.descriptor.as_ref().unwrap_or(&default_desc);
                         let descriptor = dictionary! {
                             "Type" => "FontDescriptor",
                             "FontName" => Object::Name(base_font_bytes.to_vec()),
-                            "Flags" => Object::Integer(32),
+                            "Flags" => Object::Integer(desc.flags),
                             "FontBBox" => vec![
-                                Object::Integer(0), Object::Integer(0),
-                                Object::Integer(1000), Object::Integer(1000),
+                                Object::Integer(desc.bbox[0]),
+                                Object::Integer(desc.bbox[1]),
+                                Object::Integer(desc.bbox[2]),
+                                Object::Integer(desc.bbox[3]),
                             ],
-                            "ItalicAngle" => Object::Integer(0),
-                            "Ascent" => Object::Integer(800),
-                            "Descent" => Object::Integer(-200),
-                            "CapHeight" => Object::Integer(700),
-                            "StemV" => Object::Integer(80),
+                            "ItalicAngle" => Object::Real(desc.italic_angle),
+                            "Ascent" => Object::Integer(desc.ascent),
+                            "Descent" => Object::Integer(desc.descent),
+                            "CapHeight" => Object::Integer(desc.cap_height),
+                            "StemV" => Object::Integer(desc.stem_v),
                             "FontFile2" => Object::Reference(font_file_id),
                         };
                         let descriptor_id = doc.add_object(descriptor);
@@ -956,6 +969,7 @@ mod tests {
             iced_font: iced::Font::DEFAULT,
             embedding: PdfEmbedding::TrueType { bytes: TEST_TTF },
             widths: WidthTable::Monospaced(600.0),
+            descriptor: None,
         });
 
         let src = NamedTempFile::new().expect("temp file");

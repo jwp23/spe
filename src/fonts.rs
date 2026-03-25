@@ -2,6 +2,11 @@
 
 use crate::coordinate::BoundingBox;
 
+const GREAT_VIBES_BYTES: &[u8] = include_bytes!("../assets/fonts/great-vibes.ttf");
+const DANCING_SCRIPT_BYTES: &[u8] = include_bytes!("../assets/fonts/dancing-script.ttf");
+const PINYON_SCRIPT_BYTES: &[u8] = include_bytes!("../assets/fonts/pinyon-script.ttf");
+const PACIFICO_BYTES: &[u8] = include_bytes!("../assets/fonts/pacifico.ttf");
+
 /// Lightweight font identifier. Stored in overlays, messages, undo commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct FontId(pub(crate) u16);
@@ -47,6 +52,22 @@ impl WidthTable {
     }
 }
 
+/// Font descriptor values extracted from a TrueType font for PDF embedding.
+/// Units are in 1000em (PDF convention), except italic_angle (degrees).
+#[derive(Debug)]
+pub struct FontDescriptorInfo {
+    pub ascent: i64,
+    pub descent: i64,
+    pub cap_height: i64,
+    pub italic_angle: f32,
+    /// PDF font flags (32 = Nonsymbolic, 64 = Italic).
+    pub flags: i64,
+    /// [xMin, yMin, xMax, yMax] in 1000em units.
+    pub bbox: [i64; 4],
+    /// Approximate dominant vertical stem width.
+    pub stem_v: i64,
+}
+
 /// All data needed to use a font for display, measurement, and PDF output.
 #[derive(Debug)]
 pub struct FontEntry {
@@ -61,6 +82,9 @@ pub struct FontEntry {
     pub embedding: PdfEmbedding,
     /// Per-character widths for text measurement.
     pub widths: WidthTable,
+    /// Font descriptor extracted from TTF, used by the PDF writer.
+    /// None for Standard 14 fonts (built-in, no embedding).
+    pub descriptor: Option<FontDescriptorInfo>,
 }
 
 /// Holds all known fonts. The Standard 14 are always present.
@@ -70,11 +94,41 @@ pub struct FontRegistry {
 }
 
 impl FontRegistry {
-    /// Build a registry pre-populated with the 14 Standard PDF fonts.
+    /// Build a registry pre-populated with the 14 Standard PDF fonts and 4 bundled cursive fonts.
     pub fn new() -> Self {
-        Self {
+        let mut registry = Self {
             fonts: standard_14_fonts(),
+        };
+
+        let bundled: &[(&'static str, &'static str, &'static [u8])] = &[
+            ("Great Vibes", "GreatVibes-Regular", GREAT_VIBES_BYTES),
+            (
+                "Dancing Script",
+                "DancingScript-Regular",
+                DANCING_SCRIPT_BYTES,
+            ),
+            ("Pinyon Script", "PinyonScript-Regular", PINYON_SCRIPT_BYTES),
+            ("Pacifico", "Pacifico-Regular", PACIFICO_BYTES),
+        ];
+
+        for &(display, pdf, bytes) in bundled {
+            registry.add_entry(FontEntry {
+                id: FontId::default(),
+                display_name: display,
+                pdf_name: pdf,
+                iced_font: iced::Font {
+                    family: iced::font::Family::Name(display),
+                    weight: iced::font::Weight::Normal,
+                    stretch: iced::font::Stretch::Normal,
+                    style: iced::font::Style::Normal,
+                },
+                embedding: PdfEmbedding::TrueType { bytes },
+                widths: build_ttf_width_table(bytes),
+                descriptor: Some(extract_font_descriptor(bytes)),
+            });
         }
+
+        registry
     }
 
     /// All registered fonts in order.
@@ -192,6 +246,51 @@ impl Default for FontRegistry {
     }
 }
 
+/// Extract per-character width data from a TrueType font's glyph metrics.
+///
+/// Widths are normalised to 1000em units (standard PDF/AFM convention).
+/// Characters outside the Latin-1 range (0-255) use the default width.
+fn build_ttf_width_table(font_bytes: &[u8]) -> WidthTable {
+    let face = ttf_parser::Face::parse(font_bytes, 0).expect("valid TTF");
+    let units_per_em = face.units_per_em() as f32;
+    let mut widths = [0.0_f32; 256];
+    for code in 0u16..=255 {
+        if let Some(c) = char::from_u32(u32::from(code))
+            && let Some(glyph_id) = face.glyph_index(c)
+        {
+            let advance = face.glyph_hor_advance(glyph_id).unwrap_or(0);
+            widths[usize::from(code)] = advance as f32 / units_per_em * 1000.0;
+        }
+    }
+    let default = widths[b' ' as usize].max(500.0);
+    WidthTable::Proportional { widths, default }
+}
+
+/// Extract font descriptor values from a TrueType font for PDF embedding.
+///
+/// All metric values are normalised to 1000em units (PDF convention).
+fn extract_font_descriptor(font_bytes: &[u8]) -> FontDescriptorInfo {
+    let face = ttf_parser::Face::parse(font_bytes, 0).expect("valid TTF");
+    let units_per_em = face.units_per_em() as f32;
+    let scale = |v: i16| -> i64 { (v as f32 / units_per_em * 1000.0).round() as i64 };
+    let bbox = face.global_bounding_box();
+    FontDescriptorInfo {
+        ascent: scale(face.ascender()),
+        descent: scale(face.descender()),
+        cap_height: scale(face.capital_height().unwrap_or(face.ascender())),
+        italic_angle: face.italic_angle(),
+        // PDF flags: bit 7 (64) = Italic, bit 6 (32) = Nonsymbolic.
+        flags: if face.is_italic() { 64 } else { 32 },
+        bbox: [
+            (bbox.x_min as f32 / units_per_em * 1000.0).round() as i64,
+            (bbox.y_min as f32 / units_per_em * 1000.0).round() as i64,
+            (bbox.x_max as f32 / units_per_em * 1000.0).round() as i64,
+            (bbox.y_max as f32 / units_per_em * 1000.0).round() as i64,
+        ],
+        stem_v: 80,
+    }
+}
+
 fn standard_14_fonts() -> Vec<FontEntry> {
     use iced::font::{Family, Style, Weight};
 
@@ -208,6 +307,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: helvetica_widths(),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(1),
@@ -221,6 +321,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: helvetica_bold_widths(),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(2),
@@ -234,6 +335,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: helvetica_widths(),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(3),
@@ -247,6 +349,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: helvetica_bold_widths(),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(4),
@@ -260,6 +363,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: times_roman_widths(),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(5),
@@ -273,6 +377,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: times_bold_widths(),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(6),
@@ -286,6 +391,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: times_roman_widths(),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(7),
@@ -299,6 +405,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: times_bold_widths(),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(8),
@@ -312,6 +419,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(600.0),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(9),
@@ -325,6 +433,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(600.0),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(10),
@@ -338,6 +447,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(600.0),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(11),
@@ -351,6 +461,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(600.0),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(12),
@@ -364,6 +475,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(600.0),
+            descriptor: None,
         },
         FontEntry {
             id: FontId(13),
@@ -377,6 +489,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             },
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(600.0),
+            descriptor: None,
         },
     ]
 }
@@ -826,9 +939,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_has_14_standard_fonts() {
+    fn registry_has_standard_fonts() {
         let registry = FontRegistry::new();
-        assert_eq!(registry.all().len(), 14);
+        // 14 Standard 14 + 4 bundled cursive fonts.
+        assert_eq!(registry.all().len(), 18);
     }
 
     #[test]
@@ -840,10 +954,44 @@ mod tests {
     }
 
     #[test]
-    fn registry_all_have_builtin_embedding() {
+    fn registry_standard14_have_builtin_embedding() {
         let registry = FontRegistry::new();
-        for entry in registry.all() {
-            assert!(matches!(entry.embedding, PdfEmbedding::BuiltIn));
+        let standard_names = [
+            "Helvetica",
+            "Helvetica Bold",
+            "Helvetica Oblique",
+            "Helvetica Bold Oblique",
+            "Times Roman",
+            "Times Bold",
+            "Times Italic",
+            "Times Bold Italic",
+            "Courier",
+            "Courier Bold",
+            "Courier Oblique",
+            "Courier Bold Oblique",
+            "Symbol",
+            "Zapf Dingbats",
+        ];
+        for name in standard_names {
+            let id = registry.find_by_name(name).unwrap();
+            let entry = registry.get(id);
+            assert!(
+                matches!(entry.embedding, PdfEmbedding::BuiltIn),
+                "{name} should have BuiltIn embedding"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_bundled_fonts_have_truetype_embedding() {
+        let registry = FontRegistry::new();
+        for name in ["Great Vibes", "Dancing Script", "Pinyon Script", "Pacifico"] {
+            let id = registry.find_by_name(name).unwrap();
+            let entry = registry.get(id);
+            assert!(
+                matches!(entry.embedding, PdfEmbedding::TrueType { .. }),
+                "{name} should have TrueType embedding"
+            );
         }
     }
 
@@ -892,7 +1040,7 @@ mod tests {
     #[test]
     fn add_entry_assigns_next_id_and_is_retrievable() {
         let mut registry = FontRegistry::new();
-        assert_eq!(registry.all().len(), 14);
+        assert_eq!(registry.all().len(), 18);
         let entry = FontEntry {
             id: FontId::default(),
             display_name: "TestFont",
@@ -900,9 +1048,10 @@ mod tests {
             iced_font: iced::Font::default(),
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(500.0),
+            descriptor: None,
         };
         let id = registry.add_entry(entry);
-        assert_eq!(registry.all().len(), 15);
+        assert_eq!(registry.all().len(), 19);
         let retrieved = registry.get(id);
         assert_eq!(retrieved.display_name, "TestFont");
         assert_eq!(retrieved.id, id);
@@ -1106,5 +1255,49 @@ mod tests {
                 "Failed to find: {name}"
             );
         }
+    }
+
+    #[test]
+    fn registry_has_18_fonts_with_bundled() {
+        let registry = FontRegistry::new();
+        assert_eq!(registry.all().len(), 18);
+    }
+
+    #[test]
+    fn registry_has_all_four_bundled() {
+        let registry = FontRegistry::new();
+        for name in ["Great Vibes", "Dancing Script", "Pinyon Script", "Pacifico"] {
+            assert!(registry.find_by_name(name).is_some(), "Missing: {name}");
+        }
+    }
+
+    #[test]
+    fn registry_has_great_vibes_as_truetype() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Great Vibes").unwrap();
+        let entry = registry.get(id);
+        assert!(matches!(entry.embedding, PdfEmbedding::TrueType { .. }));
+    }
+
+    #[test]
+    fn bundled_font_has_proportional_widths() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Great Vibes").unwrap();
+        let entry = registry.get(id);
+        let a_width = entry.widths.char_width('A');
+        let i_width = entry.widths.char_width('i');
+        assert!(a_width > 0.0);
+        assert!(i_width > 0.0);
+    }
+
+    #[test]
+    fn bundled_font_has_descriptor() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Great Vibes").unwrap();
+        let entry = registry.get(id);
+        assert!(entry.descriptor.is_some());
+        let desc = entry.descriptor.as_ref().unwrap();
+        assert!(desc.ascent > 0);
+        assert!(desc.descent < 0);
     }
 }

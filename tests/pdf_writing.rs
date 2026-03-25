@@ -457,6 +457,7 @@ fn registry_with_truetype_font() -> (FontRegistry, spe::fonts::FontId) {
             bytes: TEST_TTF_BYTES,
         },
         widths: WidthTable::Monospaced(600.0),
+        descriptor: None,
     });
     (registry, id)
 }

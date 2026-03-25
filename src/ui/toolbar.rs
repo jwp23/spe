@@ -229,10 +229,11 @@ mod tests {
     }
 
     #[test]
-    fn font_options_has_14_entries() {
+    fn font_options_has_18_entries() {
         let registry = FontRegistry::new();
         let options = font_options(&registry);
-        assert_eq!(options.len(), 14);
+        // 14 Standard 14 + 4 bundled cursive fonts.
+        assert_eq!(options.len(), 18);
         assert_eq!(options[0].name, "Helvetica");
     }
 

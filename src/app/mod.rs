@@ -185,7 +185,14 @@ impl App {
             ipc_response_sender: None,
             pending_ipc_wait: false,
         };
-        let font_task = iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded);
+        let mut font_tasks =
+            vec![iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded)];
+        for entry in app.font_registry.all() {
+            if let crate::fonts::PdfEmbedding::TrueType { bytes } = &entry.embedding {
+                font_tasks.push(iced::font::load(*bytes).map(Message::FontLoaded));
+            }
+        }
+        let font_task = iced::Task::batch(font_tasks);
         (app, font_task)
     }
 
