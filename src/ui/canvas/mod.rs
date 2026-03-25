@@ -12,7 +12,8 @@ pub use zoom::*;
 
 use iced::widget::canvas;
 
-use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen};
+use crate::coordinate::{ConversionParams, pdf_to_screen};
+use crate::fonts::FontRegistry;
 use crate::overlay::{PdfPosition, TextOverlay};
 
 /// Time window for double-click detection (milliseconds).
@@ -155,14 +156,18 @@ pub(crate) fn draw_overlay_text(
 /// Compute the screen-space (width, height) of the tint rectangle for an overlay.
 /// For multi-line overlays (width=Some), uses the specified width and line count.
 /// For single-line overlays, uses the bounding box of the text.
-pub(crate) fn tint_size_for_overlay(overlay: &TextOverlay, scale: f32) -> (f32, f32) {
+pub(crate) fn tint_size_for_overlay(
+    overlay: &TextOverlay,
+    scale: f32,
+    registry: &FontRegistry,
+) -> (f32, f32) {
     if let Some(width_pts) = overlay.width {
         let scaled_width = width_pts * scale;
         let line_count = overlay.text.lines().count().max(1) as f32;
         let scaled_height = overlay.font_size * scale * line_count;
         (scaled_width, scaled_height)
     } else {
-        let bbox = overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size);
+        let bbox = registry.overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size);
         (bbox.width * scale, bbox.height * scale)
     }
 }

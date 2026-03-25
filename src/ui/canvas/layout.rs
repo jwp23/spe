@@ -2,7 +2,8 @@
 
 use iced::widget::image::Handle;
 
-use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen, render_scale};
+use crate::coordinate::{ConversionParams, pdf_to_screen, render_scale};
+use crate::fonts::FontRegistry;
 use crate::overlay::TextOverlay;
 
 /// Gap between pages in continuous scrolling mode (pixels).
@@ -172,6 +173,7 @@ pub fn hit_test(
     overlays: &[TextOverlay],
     current_page: u32,
     params: &ConversionParams,
+    registry: &FontRegistry,
 ) -> Option<usize> {
     // Test in reverse order so topmost (last-placed) overlay wins
     for (i, overlay) in overlays.iter().enumerate().rev() {
@@ -179,7 +181,7 @@ pub fn hit_test(
             continue;
         }
         let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
-        let bbox = overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size);
+        let bbox = registry.overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size);
         let scale = params.scale();
         let w = bbox.width * scale;
         let h = bbox.height * scale;

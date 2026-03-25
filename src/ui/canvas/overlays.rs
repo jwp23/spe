@@ -4,10 +4,9 @@ use iced::mouse;
 use iced::widget::canvas;
 
 use crate::app::Message;
-use crate::coordinate::{
-    ConversionParams, overlay_bounding_box, pdf_to_screen, render_scale, screen_to_pdf,
-};
-use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+use crate::coordinate::{ConversionParams, pdf_to_screen, render_scale, screen_to_pdf};
+use crate::fonts::{FontId, FontRegistry};
+use crate::overlay::{PdfPosition, TextOverlay};
 
 use super::{
     DOUBLE_CLICK_DISTANCE_PX, DOUBLE_CLICK_TIMEOUT_MS, LocalDragState, MIN_DRAG_DISTANCE,
@@ -34,6 +33,7 @@ pub struct OverlayCanvasProgram<'a> {
     pub active_overlay: Option<usize>,
     pub editing: bool,
     pub overlay_color: [f32; 4],
+    pub font_registry: &'a FontRegistry,
 }
 
 impl OverlayCanvasProgram<'_> {
@@ -114,9 +114,14 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                     }
 
                     // Check if we hit an existing overlay on this page
-                    if let Some(idx) =
-                        hit_test(cursor_pos.x, cursor_pos.y, self.overlays, page, &params)
-                    {
+                    if let Some(idx) = hit_test(
+                        cursor_pos.x,
+                        cursor_pos.y,
+                        self.overlays,
+                        page,
+                        &params,
+                        self.font_registry,
+                    ) {
                         let is_double_click =
                             state.last_click.as_ref().is_some_and(|(time, pos)| {
                                 time.elapsed().as_millis() < DOUBLE_CLICK_TIMEOUT_MS
@@ -184,7 +189,14 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                     let (page, page_rect) = self.page_at_canvas_y(canvas_y, bounds.width)?;
                     let page_screen_rect = to_screen_rect(page_rect, &bounds);
                     let params = self.conversion_params_for_page(page, &page_screen_rect)?;
-                    hit_test(cursor_pos.x, cursor_pos.y, self.overlays, page, &params)
+                    hit_test(
+                        cursor_pos.x,
+                        cursor_pos.y,
+                        self.overlays,
+                        page,
+                        &params,
+                        self.font_registry,
+                    )
                 });
 
                 if new_hover != state.hovered_overlay {
@@ -396,6 +408,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                         scale,
                         overlay_color,
                         tint_alpha,
+                        self.font_registry,
                     );
                     if is_hovered {
                         draw_overlay_hover_border(
@@ -405,6 +418,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                             sy,
                             scale,
                             overlay_color,
+                            self.font_registry,
                         );
                     }
                     draw_overlay_text(
@@ -426,6 +440,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                         sx,
                         sy,
                         scale,
+                        self.font_registry,
                     );
                     if let Some(width_pts) = overlay.width {
                         draw_resize_handle(&mut frame, sx, sy, width_pts, scale, overlay.font_size);
@@ -526,7 +541,16 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
             return mouse::Interaction::ResizingHorizontally;
         }
 
-        if hit_test(cursor_pos.x, cursor_pos.y, self.overlays, page, &params).is_some() {
+        if hit_test(
+            cursor_pos.x,
+            cursor_pos.y,
+            self.overlays,
+            page,
+            &params,
+            self.font_registry,
+        )
+        .is_some()
+        {
             return mouse::Interaction::Pointer;
         }
 
@@ -540,6 +564,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
 }
 
 /// Draw a semi-transparent tint rectangle behind overlay text using native fill_rectangle.
+#[allow(clippy::too_many_arguments)]
 fn draw_overlay_tint(
     frame: &mut canvas::Frame,
     overlay: &TextOverlay,
@@ -548,8 +573,9 @@ fn draw_overlay_tint(
     scale: f32,
     tint_color: iced::Color,
     alpha: f32,
+    registry: &FontRegistry,
 ) {
-    let (w, h) = tint_size_for_overlay(overlay, scale);
+    let (w, h) = tint_size_for_overlay(overlay, scale, registry);
     let fill_color = iced::Color {
         a: alpha,
         ..tint_color
@@ -562,6 +588,7 @@ fn draw_overlay_tint(
 }
 
 /// Draw a thin border around a hovered overlay using native stroke_rectangle.
+#[allow(clippy::too_many_arguments)]
 fn draw_overlay_hover_border(
     frame: &mut canvas::Frame,
     overlay: &TextOverlay,
@@ -569,8 +596,9 @@ fn draw_overlay_hover_border(
     screen_y: f32,
     scale: f32,
     border_color: iced::Color,
+    registry: &FontRegistry,
 ) {
-    let (w, h) = tint_size_for_overlay(overlay, scale);
+    let (w, h) = tint_size_for_overlay(overlay, scale, registry);
     let stroke_color = iced::Color {
         a: OVERLAY_TINT_HOVER_BORDER_ALPHA,
         ..border_color
@@ -585,16 +613,18 @@ fn draw_overlay_hover_border(
 }
 
 /// Draw a selection bounding box around an overlay using native stroke_rectangle.
+#[allow(clippy::too_many_arguments)]
 fn draw_selection_box(
     frame: &mut canvas::Frame,
     text: &str,
-    font: Standard14Font,
+    font: FontId,
     font_size: f32,
     screen_x: f32,
     screen_y: f32,
     scale: f32,
+    registry: &FontRegistry,
 ) {
-    let bbox = overlay_bounding_box(text, font, font_size);
+    let bbox = registry.overlay_bounding_box(text, font, font_size);
     let w = bbox.width * scale + 2.0 * SELECTION_BOX_PADDING;
     let h = bbox.height * scale + 2.0 * SELECTION_BOX_PADDING;
     frame.stroke_rectangle(
@@ -636,6 +666,7 @@ mod tests {
     fn overlay_program_can_be_constructed() {
         let dims = HashMap::from([(1, (612.0, 792.0))]);
         let layout = super::super::page_layout(&dims, 1, 1.0, 72.0);
+        let registry = crate::fonts::FontRegistry::new();
         let _program = OverlayCanvasProgram {
             page_layout: layout,
             page_dimensions: &dims,
@@ -647,6 +678,7 @@ mod tests {
             active_overlay: None,
             editing: false,
             overlay_color: [0.0, 0.0, 1.0, 1.0],
+            font_registry: &registry,
         };
     }
 }

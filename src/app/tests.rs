@@ -158,12 +158,10 @@ fn change_font_updates_overlay_and_toolbar() {
         position: PdfPosition { x: 100.0, y: 700.0 },
         width: None,
     });
-    app.update(Message::ChangeFont(Standard14Font::Courier));
-    assert_eq!(
-        app.document.as_ref().unwrap().overlays[0].font,
-        Standard14Font::Courier
-    );
-    assert_eq!(app.toolbar.font, Standard14Font::Courier);
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::ChangeFont(courier));
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].font, courier);
+    assert_eq!(app.toolbar.font, courier);
 }
 
 #[test]
@@ -265,11 +263,12 @@ fn select_overlay_updates_toolbar() {
         position: PdfPosition { x: 100.0, y: 700.0 },
         width: None,
     });
-    app.update(Message::ChangeFont(Standard14Font::CourierBold));
+    let courier_bold = app.font_registry.find_by_name("Courier Bold").unwrap();
+    app.update(Message::ChangeFont(courier_bold));
     app.update(Message::DeselectOverlay);
     // Now select it again
     app.update(Message::SelectOverlay(0));
-    assert_eq!(app.toolbar.font, Standard14Font::CourierBold);
+    assert_eq!(app.toolbar.font, courier_bold);
 }
 
 #[test]
@@ -1260,17 +1259,19 @@ fn edit_overlay_syncs_toolbar_font_and_size() {
         position: PdfPosition { x: 100.0, y: 700.0 },
         width: None,
     });
-    app.update(Message::ChangeFont(Standard14Font::Courier));
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    let helvetica = app.font_registry.default_font();
+    app.update(Message::ChangeFont(courier));
     app.update(Message::ChangeFontSize(18.0));
     app.update(Message::CommitText);
 
     // Change toolbar to something different
-    app.toolbar.font = Standard14Font::Helvetica;
+    app.toolbar.font = helvetica;
     app.toolbar.font_size = 12.0;
     app.toolbar.font_size_input = "12".to_string();
 
     app.update(Message::EditOverlay(0));
-    assert_eq!(app.toolbar.font, Standard14Font::Courier);
+    assert_eq!(app.toolbar.font, courier);
     assert!((app.toolbar.font_size - 18.0).abs() < f32::EPSILON);
     assert_eq!(app.toolbar.font_size_input, "18");
 }

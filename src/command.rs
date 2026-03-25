@@ -1,6 +1,7 @@
 // Undo/redo command model: each variant captures enough state to apply and reverse the operation.
 
-use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+use crate::fonts::FontId;
+use crate::overlay::{PdfPosition, TextOverlay};
 
 /// A reversible editing operation on the overlay list.
 #[derive(Debug, Clone)]
@@ -24,8 +25,8 @@ pub enum Command {
     },
     ChangeOverlayFont {
         index: usize,
-        old_font: Standard14Font,
-        new_font: Standard14Font,
+        old_font: FontId,
+        new_font: FontId,
     },
     ChangeOverlayFontSize {
         index: usize,
@@ -98,13 +99,15 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fonts::FontRegistry;
 
     fn sample_overlay() -> TextOverlay {
+        let registry = FontRegistry::new();
         TextOverlay {
             page: 1,
             position: PdfPosition { x: 72.0, y: 720.0 },
             text: "Hello".to_string(),
-            font: Standard14Font::Helvetica,
+            font: registry.default_font(),
             font_size: 12.0,
             width: None,
         }
@@ -176,16 +179,19 @@ mod tests {
 
     #[test]
     fn change_font_round_trip() {
+        let registry = FontRegistry::new();
+        let helvetica = registry.default_font();
+        let courier = registry.find_by_name("Courier").unwrap();
         let mut overlays = vec![sample_overlay()];
         let cmd = Command::ChangeOverlayFont {
             index: 0,
-            old_font: Standard14Font::Helvetica,
-            new_font: Standard14Font::Courier,
+            old_font: helvetica,
+            new_font: courier,
         };
         cmd.apply(&mut overlays);
-        assert_eq!(overlays[0].font, Standard14Font::Courier);
+        assert_eq!(overlays[0].font, courier);
         cmd.reverse(&mut overlays);
-        assert_eq!(overlays[0].font, Standard14Font::Helvetica);
+        assert_eq!(overlays[0].font, helvetica);
     }
 
     #[test]
@@ -232,13 +238,16 @@ mod tests {
 
     #[test]
     fn delete_at_middle_index_restores_correctly() {
+        let registry = FontRegistry::new();
+        let courier = registry.find_by_name("Courier").unwrap();
+        let times = registry.find_by_name("Times Roman").unwrap();
         let mut overlays = vec![
             sample_overlay(),
             TextOverlay {
                 page: 1,
                 position: PdfPosition { x: 100.0, y: 600.0 },
                 text: "Second".to_string(),
-                font: Standard14Font::Courier,
+                font: courier,
                 font_size: 14.0,
                 width: None,
             },
@@ -246,7 +255,7 @@ mod tests {
                 page: 1,
                 position: PdfPosition { x: 200.0, y: 500.0 },
                 text: "Third".to_string(),
-                font: Standard14Font::TimesRoman,
+                font: times,
                 font_size: 16.0,
                 width: None,
             },

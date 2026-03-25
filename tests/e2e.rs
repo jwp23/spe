@@ -332,7 +332,7 @@ fn canvas_renders_with_loaded_page_image() {
 #[test]
 #[ignore]
 fn canvas_renders_with_overlays_on_page() {
-    use spe::overlay::{PdfPosition, Standard14Font, TextOverlay};
+    use spe::overlay::{PdfPosition, TextOverlay};
 
     let (mut app, _) = App::new(false);
     let mut doc = test_document_with_image();
@@ -340,7 +340,7 @@ fn canvas_renders_with_overlays_on_page() {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
         text: "Hello, world!".to_string(),
-        font: Standard14Font::Helvetica,
+        font: app.font_registry.default_font(),
         font_size: 12.0,
         width: None,
     });
@@ -351,7 +351,7 @@ fn canvas_renders_with_overlays_on_page() {
 #[test]
 #[ignore]
 fn canvas_renders_with_selected_overlay() {
-    use spe::overlay::{PdfPosition, Standard14Font, TextOverlay};
+    use spe::overlay::{PdfPosition, TextOverlay};
 
     let (mut app, _) = App::new(false);
     let mut doc = test_document_with_image();
@@ -359,7 +359,7 @@ fn canvas_renders_with_selected_overlay() {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
         text: "Selected text".to_string(),
-        font: Standard14Font::Courier,
+        font: app.font_registry.find_by_name("Courier").unwrap(),
         font_size: 14.0,
         width: None,
     });

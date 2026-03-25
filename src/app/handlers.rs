@@ -38,8 +38,8 @@ impl App {
             toolbar::Message::SaveAs => return self.update(Message::SaveAs),
             toolbar::Message::Undo => return self.update(Message::Undo),
             toolbar::Message::Redo => return self.update(Message::Redo),
-            toolbar::Message::FontSelected(font) => {
-                return self.update(Message::ChangeFont(font));
+            toolbar::Message::FontSelected(option) => {
+                return self.update(Message::ChangeFont(option.id));
             }
             toolbar::Message::FontSizeInput(input) => {
                 self.toolbar.font_size_input = input;
@@ -153,7 +153,8 @@ impl App {
             let source = doc.source_path.clone();
             let dest = save_path.clone();
             let overlays = doc.overlays.clone();
-            let result = crate::pdf::writer::write_overlays(&source, &dest, &overlays);
+            let result =
+                crate::pdf::writer::write_overlays(&source, &dest, &overlays, &self.font_registry);
             self.set_save_result(result, &dest);
             return iced::Task::none();
         }
@@ -207,7 +208,8 @@ impl App {
             }
             let source = doc.source_path.clone();
             let overlays = doc.overlays.clone();
-            let result = crate::pdf::writer::write_overlays(&source, &path, &overlays);
+            let result =
+                crate::pdf::writer::write_overlays(&source, &path, &overlays, &self.font_registry);
             let succeeded = result.is_ok();
             self.set_save_result(result, &path);
             if succeeded {

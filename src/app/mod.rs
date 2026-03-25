@@ -14,7 +14,8 @@ use iced::widget::image::Handle;
 
 use crate::command::Command as UndoCommand;
 use crate::config::AppConfig;
-use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+use crate::fonts::{FontId, FontRegistry};
+use crate::overlay::{PdfPosition, TextOverlay};
 use crate::ui::canvas::{self, CanvasState};
 use crate::ui::sidebar::SidebarState;
 use crate::ui::toolbar::{self, ToolbarState};
@@ -58,6 +59,7 @@ impl DocumentState {
 
 /// Top-level application state.
 pub struct App {
+    pub font_registry: FontRegistry,
     pub document: Option<DocumentState>,
     pub toolbar: ToolbarState,
     pub canvas: CanvasState,
@@ -107,7 +109,7 @@ pub enum Message {
     TextEditorAction(iced::widget::text_editor::Action),
     CommitText,
     MoveOverlay(usize, PdfPosition),
-    ChangeFont(Standard14Font),
+    ChangeFont(FontId),
     ChangeFontSize(f32),
     DeleteOverlay,
     SelectOverlay(usize),
@@ -163,9 +165,11 @@ pub enum Message {
 
 impl App {
     pub fn new(ipc_enabled: bool) -> (Self, iced::Task<Message>) {
+        let font_registry = FontRegistry::new();
         let app = Self {
+            toolbar: ToolbarState::new(font_registry.default_font()),
+            font_registry,
             document: None,
-            toolbar: ToolbarState::default(),
             canvas: CanvasState::default(),
             sidebar: SidebarState::default(),
             undo_stack: Vec::new(),
@@ -665,22 +669,23 @@ impl App {
                 iced::Task::none()
             }
             crate::ipc::IpcEvent::Command(cmd) => {
-                let (response, msg_result) = match cmd.to_message(self.document.as_ref()) {
-                    Ok(msg) => (
-                        crate::ipc::IpcResponse {
-                            ok: true,
-                            error: None,
-                        },
-                        Some(msg),
-                    ),
-                    Err(e) => (
-                        crate::ipc::IpcResponse {
-                            ok: false,
-                            error: Some(e.to_string()),
-                        },
-                        None,
-                    ),
-                };
+                let (response, msg_result) =
+                    match cmd.to_message(self.document.as_ref(), &self.font_registry) {
+                        Ok(msg) => (
+                            crate::ipc::IpcResponse {
+                                ok: true,
+                                error: None,
+                            },
+                            Some(msg),
+                        ),
+                        Err(e) => (
+                            crate::ipc::IpcResponse {
+                                ok: false,
+                                error: Some(e.to_string()),
+                            },
+                            None,
+                        ),
+                    };
                 if let Some(msg) = msg_result {
                     let _ = self.update(msg);
                 }

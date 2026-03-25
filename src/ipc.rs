@@ -7,7 +7,8 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::app::{DocumentState, Message};
-use crate::overlay::{PdfPosition, Standard14Font};
+use crate::fonts::FontRegistry;
+use crate::overlay::PdfPosition;
 
 /// Errors that can occur when translating an IpcCommand to a Message.
 #[derive(Debug, PartialEq)]
@@ -18,6 +19,8 @@ pub enum IpcError {
     IndexOutOfRange,
     /// The targeted overlay has no width and cannot be resized.
     NotResizable,
+    /// The font name could not be resolved in the registry.
+    UnknownFont(String),
 }
 
 impl fmt::Display for IpcError {
@@ -26,6 +29,7 @@ impl fmt::Display for IpcError {
             IpcError::NoDocument => write!(f, "no document is loaded"),
             IpcError::IndexOutOfRange => write!(f, "overlay index is out of range"),
             IpcError::NotResizable => write!(f, "overlay is not resizable (no width set)"),
+            IpcError::UnknownFont(name) => write!(f, "unknown font: {name}"),
         }
     }
 }
@@ -57,7 +61,7 @@ pub enum IpcCommand {
     ZoomReset,
     ZoomFitWidth,
     Font {
-        family: Standard14Font,
+        family: String,
     },
     FontSize {
         size: f32,
@@ -95,7 +99,11 @@ impl IpcCommand {
     ///
     /// `doc` must be `Some` for commands that need to read current overlay state
     /// (e.g. `Resize`, which reads the old width from the document).
-    pub fn to_message(self, doc: Option<&DocumentState>) -> Result<Message, IpcError> {
+    pub fn to_message(
+        self,
+        doc: Option<&DocumentState>,
+        registry: &FontRegistry,
+    ) -> Result<Message, IpcError> {
         match self {
             IpcCommand::Open { path } => Ok(Message::FileOpened(path)),
             IpcCommand::Click { page, x, y } => Ok(Message::PlaceOverlay {
@@ -111,7 +119,12 @@ impl IpcCommand {
             IpcCommand::ZoomOut => Ok(Message::ZoomOut),
             IpcCommand::ZoomReset => Ok(Message::ZoomReset),
             IpcCommand::ZoomFitWidth => Ok(Message::ZoomFitWidth),
-            IpcCommand::Font { family } => Ok(Message::ChangeFont(family)),
+            IpcCommand::Font { family } => {
+                let id = registry
+                    .find_by_name(&family)
+                    .ok_or(IpcError::UnknownFont(family))?;
+                Ok(Message::ChangeFont(id))
+            }
             IpcCommand::FontSize { size } => Ok(Message::ChangeFontSize(size)),
             IpcCommand::Drag {
                 page,
@@ -268,11 +281,17 @@ mod tests {
     use super::*;
 
     use crate::app::{DocumentState, Message};
-    use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+    use crate::fonts::FontRegistry;
+    use crate::overlay::{PdfPosition, TextOverlay};
     use std::collections::HashMap;
     use std::path::PathBuf;
 
+    fn test_registry() -> FontRegistry {
+        FontRegistry::new()
+    }
+
     fn test_document_with_overlay() -> DocumentState {
+        let registry = test_registry();
         DocumentState {
             source_path: PathBuf::from("/tmp/test.pdf"),
             save_path: None,
@@ -284,7 +303,7 @@ mod tests {
                 page: 1,
                 position: PdfPosition { x: 100.0, y: 700.0 },
                 text: "test".to_string(),
-                font: Standard14Font::Helvetica,
+                font: registry.default_font(),
                 font_size: 12.0,
                 width: Some(200.0),
             }],
@@ -298,7 +317,7 @@ mod tests {
         let cmd = IpcCommand::Open {
             path: PathBuf::from("/tmp/test.pdf"),
         };
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(msg, Message::FileOpened(p) if p == PathBuf::from("/tmp/test.pdf")));
     }
 
@@ -309,7 +328,7 @@ mod tests {
             x: 100.0,
             y: 700.0,
         };
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(
             msg,
             Message::PlaceOverlay { page: 1, position: PdfPosition { x, y }, width: None }
@@ -322,72 +341,84 @@ mod tests {
         let cmd = IpcCommand::Type {
             text: "Hello".to_string(),
         };
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(msg, Message::UpdateOverlayText(ref t) if t == "Hello"));
     }
 
     #[test]
     fn select_produces_select_overlay() {
         let cmd = IpcCommand::Select { index: 2 };
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(msg, Message::SelectOverlay(2)));
     }
 
     #[test]
     fn edit_produces_edit_overlay() {
         let cmd = IpcCommand::Edit { index: 3 };
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(msg, Message::EditOverlay(3)));
     }
 
     #[test]
     fn deselect_produces_deselect_overlay() {
         let cmd = IpcCommand::Deselect;
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(msg, Message::DeselectOverlay));
     }
 
     #[test]
     fn zoom_in_produces_zoom_in() {
         let cmd = IpcCommand::ZoomIn;
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(msg, Message::ZoomIn));
     }
 
     #[test]
     fn zoom_out_produces_zoom_out() {
         let cmd = IpcCommand::ZoomOut;
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(msg, Message::ZoomOut));
     }
 
     #[test]
     fn zoom_reset_produces_zoom_reset() {
         let cmd = IpcCommand::ZoomReset;
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(msg, Message::ZoomReset));
     }
 
     #[test]
     fn zoom_fit_width_produces_zoom_fit_width() {
         let cmd = IpcCommand::ZoomFitWidth;
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(msg, Message::ZoomFitWidth));
     }
 
     #[test]
     fn font_produces_change_font() {
+        let registry = test_registry();
+        let courier = registry.find_by_name("Courier").unwrap();
         let cmd = IpcCommand::Font {
-            family: Standard14Font::Courier,
+            family: "Courier".to_string(),
         };
-        let msg = cmd.to_message(None).unwrap();
-        assert!(matches!(msg, Message::ChangeFont(Standard14Font::Courier)));
+        let msg = cmd.to_message(None, &registry).unwrap();
+        assert!(matches!(msg, Message::ChangeFont(id) if id == courier));
+    }
+
+    #[test]
+    fn font_unknown_name_returns_error() {
+        let registry = test_registry();
+        let cmd = IpcCommand::Font {
+            family: "Comic Sans".to_string(),
+        };
+        let result = cmd.to_message(None, &registry);
+        assert!(matches!(result, Err(IpcError::UnknownFont(ref name)) if name == "Comic Sans"));
     }
 
     #[test]
     fn font_size_produces_change_font_size() {
         let cmd = IpcCommand::FontSize { size: 18.0 };
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(msg, Message::ChangeFontSize(s) if (s - 18.0).abs() < f32::EPSILON));
     }
 
@@ -400,7 +431,7 @@ mod tests {
             x2: 300.0,
             y2: 700.0,
         };
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(
             msg,
             Message::PlaceOverlay { page: 1, position: PdfPosition { x, y }, width: Some(w) }
@@ -417,7 +448,7 @@ mod tests {
             index: 0,
             width: 300.0,
         };
-        let msg = cmd.to_message(Some(&doc)).unwrap();
+        let msg = cmd.to_message(Some(&doc), &test_registry()).unwrap();
         assert!(matches!(
             msg,
             Message::ResizeOverlay { index: 0, old_width, new_width }
@@ -432,7 +463,7 @@ mod tests {
             index: 0,
             width: 300.0,
         };
-        let result = cmd.to_message(None);
+        let result = cmd.to_message(None, &test_registry());
         assert!(matches!(result, Err(IpcError::NoDocument)));
     }
 
@@ -443,7 +474,7 @@ mod tests {
             index: 99,
             width: 300.0,
         };
-        let result = cmd.to_message(Some(&doc));
+        let result = cmd.to_message(Some(&doc), &test_registry());
         assert!(matches!(result, Err(IpcError::IndexOutOfRange)));
     }
 
@@ -455,7 +486,7 @@ mod tests {
             index: 0,
             width: 300.0,
         };
-        let result = cmd.to_message(Some(&doc));
+        let result = cmd.to_message(Some(&doc), &test_registry());
         assert!(matches!(result, Err(IpcError::NotResizable)));
     }
 
@@ -466,7 +497,7 @@ mod tests {
             x: 150.0,
             y: 650.0,
         };
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(
             msg,
             Message::MoveOverlay(1, PdfPosition { x, y })
@@ -477,7 +508,7 @@ mod tests {
     #[test]
     fn wait_ready_produces_noop() {
         let cmd = IpcCommand::WaitReady;
-        let msg = cmd.to_message(None).unwrap();
+        let msg = cmd.to_message(None, &test_registry()).unwrap();
         assert!(matches!(msg, Message::Noop));
     }
 
@@ -557,12 +588,7 @@ mod tests {
     fn parse_font_command() {
         let json = r#"{"cmd": "font", "family": "Courier"}"#;
         let cmd: IpcCommand = serde_json::from_str(json).unwrap();
-        assert!(matches!(
-            cmd,
-            IpcCommand::Font {
-                family: crate::overlay::Standard14Font::Courier
-            }
-        ));
+        assert!(matches!(cmd, IpcCommand::Font { ref family } if family == "Courier"));
     }
 
     #[test]

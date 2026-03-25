@@ -7,7 +7,8 @@ use lopdf::content::{Content, Operation};
 use lopdf::{Document, Object, Stream, dictionary};
 use thiserror::Error;
 
-use crate::overlay::{Standard14Font, TextOverlay};
+use crate::fonts::{FontId, FontRegistry};
+use crate::overlay::TextOverlay;
 
 #[derive(Debug, Error)]
 pub enum WriterError {
@@ -30,6 +31,7 @@ pub fn write_overlays(
     source: &Path,
     destination: &Path,
     overlays: &[TextOverlay],
+    registry: &FontRegistry,
 ) -> Result<(), WriterError> {
     if overlays.is_empty() {
         return Ok(());
@@ -80,7 +82,7 @@ pub fn write_overlays(
             .unwrap_or_default();
 
         // Collect unique fonts needed for this page's overlays.
-        let needed_fonts: Vec<Standard14Font> = {
+        let needed_fonts: Vec<FontId> = {
             let mut seen = std::collections::HashSet::new();
             page_overlays
                 .iter()
@@ -94,16 +96,17 @@ pub fn write_overlays(
                 .collect()
         };
 
-        // Build font mapping: Standard14Font → resource name.
+        // Build font mapping: FontId → resource name.
         // Reuse existing names where the BaseFont already matches; assign new F_ovl_N otherwise.
-        let mut font_resource_name: HashMap<Standard14Font, String> = HashMap::new();
+        let mut font_resource_name: HashMap<FontId, String> = HashMap::new();
         let mut new_font_objects: Vec<(String, lopdf::ObjectId)> = Vec::new();
 
         // Track which names already exist to avoid collisions when generating new ones.
         let existing_names: std::collections::HashSet<Vec<u8>> = existing.keys().cloned().collect();
 
         for font in &needed_fonts {
-            let base_font_bytes = font.pdf_name().as_bytes();
+            let entry = registry.get(*font);
+            let base_font_bytes = entry.pdf_name.as_bytes();
 
             // Check if any existing resource already maps to this BaseFont.
             let reuse_name = existing
@@ -183,7 +186,7 @@ pub fn write_overlays(
             ));
 
             let lines = if let Some(width) = overlay.width {
-                crate::coordinate::word_wrap(&overlay.text, overlay.font, overlay.font_size, width)
+                registry.word_wrap(&overlay.text, overlay.font, overlay.font_size, width)
             } else {
                 vec![overlay.text.clone()]
             };
@@ -383,7 +386,9 @@ mod tests {
 
     #[test]
     fn write_single_overlay_adds_font_resource() {
-        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
 
         let src = NamedTempFile::new().expect("failed to create temp file");
         create_test_pdf(src.path());
@@ -394,12 +399,13 @@ mod tests {
             page: 1,
             position: PdfPosition { x: 72.0, y: 720.0 },
             text: "Hello".to_string(),
-            font: Standard14Font::Helvetica,
+            font: registry.default_font(),
             font_size: 12.0,
             width: None,
         };
 
-        write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
+        write_overlays(src.path(), dst.path(), &[overlay], &registry)
+            .expect("write_overlays failed");
 
         let doc = Document::load(dst.path()).expect("failed to re-open output PDF");
         let pages = doc.get_pages();
@@ -414,7 +420,9 @@ mod tests {
 
     #[test]
     fn write_single_overlay_adds_content_stream() {
-        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
 
         let src = NamedTempFile::new().expect("failed to create temp file");
         create_test_pdf(src.path());
@@ -425,12 +433,13 @@ mod tests {
             page: 1,
             position: PdfPosition { x: 72.0, y: 720.0 },
             text: "Hello".to_string(),
-            font: Standard14Font::Helvetica,
+            font: registry.default_font(),
             font_size: 12.0,
             width: None,
         };
 
-        write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
+        write_overlays(src.path(), dst.path(), &[overlay], &registry)
+            .expect("write_overlays failed");
 
         let doc = Document::load(dst.path()).expect("failed to re-open output PDF");
         let pages = doc.get_pages();
@@ -482,7 +491,9 @@ mod tests {
 
     #[test]
     fn write_overlays_reuses_existing_font() {
-        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
 
         // The test PDF already has Helvetica registered as "F1".
         let src = NamedTempFile::new().expect("failed to create temp file");
@@ -494,12 +505,13 @@ mod tests {
             page: 1,
             position: PdfPosition { x: 72.0, y: 720.0 },
             text: "Reuse".to_string(),
-            font: Standard14Font::Helvetica,
+            font: registry.default_font(),
             font_size: 12.0,
             width: None,
         };
 
-        write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
+        write_overlays(src.path(), dst.path(), &[overlay], &registry)
+            .expect("write_overlays failed");
 
         let doc = Document::load(dst.path()).expect("failed to re-open output PDF");
         let pages = doc.get_pages();
@@ -530,7 +542,9 @@ mod tests {
 
     #[test]
     fn write_overlays_multiple_fonts_get_unique_names() {
-        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
 
         let src = NamedTempFile::new().expect("failed to create temp file");
         create_test_pdf(src.path());
@@ -542,7 +556,7 @@ mod tests {
                 page: 1,
                 position: PdfPosition { x: 72.0, y: 720.0 },
                 text: "Helvetica text".to_string(),
-                font: Standard14Font::Helvetica,
+                font: registry.default_font(),
                 font_size: 12.0,
                 width: None,
             },
@@ -550,13 +564,14 @@ mod tests {
                 page: 1,
                 position: PdfPosition { x: 72.0, y: 700.0 },
                 text: "Courier text".to_string(),
-                font: Standard14Font::Courier,
+                font: registry.find_by_name("Courier").unwrap(),
                 font_size: 12.0,
                 width: None,
             },
         ];
 
-        write_overlays(src.path(), dst.path(), &overlays).expect("write_overlays failed");
+        write_overlays(src.path(), dst.path(), &overlays, &registry)
+            .expect("write_overlays failed");
 
         let doc = Document::load(dst.path()).expect("failed to re-open output PDF");
         let pages = doc.get_pages();
@@ -654,7 +669,9 @@ mod tests {
 
     #[test]
     fn write_overlays_multiple_overlays_same_page_single_stream() {
-        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
 
         let src = NamedTempFile::new().expect("failed to create temp file");
         create_test_pdf(src.path());
@@ -666,7 +683,7 @@ mod tests {
                 page: 1,
                 position: PdfPosition { x: 72.0, y: 720.0 },
                 text: "First".to_string(),
-                font: Standard14Font::Helvetica,
+                font: registry.default_font(),
                 font_size: 12.0,
                 width: None,
             },
@@ -674,7 +691,7 @@ mod tests {
                 page: 1,
                 position: PdfPosition { x: 72.0, y: 700.0 },
                 text: "Second".to_string(),
-                font: Standard14Font::Helvetica,
+                font: registry.default_font(),
                 font_size: 12.0,
                 width: None,
             },
@@ -686,7 +703,8 @@ mod tests {
         let &page_id_before = pages_before.get(&1).expect("page 1 not found");
         let streams_before = doc_before.get_page_contents(page_id_before).len();
 
-        write_overlays(src.path(), dst.path(), &overlays).expect("write_overlays failed");
+        write_overlays(src.path(), dst.path(), &overlays, &registry)
+            .expect("write_overlays failed");
 
         let doc = Document::load(dst.path()).expect("failed to re-open output PDF");
         let pages = doc.get_pages();
@@ -721,12 +739,14 @@ mod tests {
 
     #[test]
     fn write_overlays_empty_slice_returns_ok_without_creating_destination() {
+        use crate::fonts::FontRegistry;
+        let registry = FontRegistry::new();
         let src = NamedTempFile::new().expect("failed to create temp file");
         create_test_pdf(src.path());
 
         let dst_path = src.path().with_extension("output.pdf");
 
-        write_overlays(src.path(), &dst_path, &[]).expect("write_overlays failed");
+        write_overlays(src.path(), &dst_path, &[], &registry).expect("write_overlays failed");
 
         assert!(
             !dst_path.exists(),
@@ -736,7 +756,9 @@ mod tests {
 
     #[test]
     fn write_overlays_invalid_page_returns_page_not_found() {
-        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
 
         let src = NamedTempFile::new().expect("failed to create temp file");
         create_test_pdf(src.path());
@@ -747,12 +769,12 @@ mod tests {
             page: 99,
             position: PdfPosition { x: 72.0, y: 720.0 },
             text: "Ghost".to_string(),
-            font: Standard14Font::Helvetica,
+            font: registry.default_font(),
             font_size: 12.0,
             width: None,
         };
 
-        let result = write_overlays(src.path(), dst.path(), &[overlay]);
+        let result = write_overlays(src.path(), dst.path(), &[overlay], &registry);
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -770,7 +792,9 @@ mod tests {
 
     #[test]
     fn write_multiline_overlay_produces_multiple_tj_operators() {
-        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
 
         let src = NamedTempFile::new().expect("temp file");
         create_test_pdf(src.path());
@@ -780,12 +804,12 @@ mod tests {
             page: 1,
             position: PdfPosition { x: 72.0, y: 720.0 },
             text: "Line 1\nLine 2\nLine 3".to_string(),
-            font: Standard14Font::Helvetica,
+            font: registry.default_font(),
             font_size: 12.0,
             width: Some(200.0),
         };
 
-        write_overlays(src.path(), dst.path(), &[overlay]).expect("write failed");
+        write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
 
         let doc = Document::load(dst.path()).expect("load failed");
         let pages = doc.get_pages();
@@ -829,7 +853,9 @@ mod tests {
 
     #[test]
     fn write_single_line_overlay_width_none_unchanged() {
-        use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
 
         // Confirm the single-line (width: None) path still emits exactly 1 Tj.
         let src = NamedTempFile::new().expect("temp file");
@@ -840,12 +866,12 @@ mod tests {
             page: 1,
             position: PdfPosition { x: 72.0, y: 720.0 },
             text: "Single line".to_string(),
-            font: Standard14Font::Helvetica,
+            font: registry.default_font(),
             font_size: 12.0,
             width: None,
         };
 
-        write_overlays(src.path(), dst.path(), &[overlay]).expect("write failed");
+        write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
 
         let doc = Document::load(dst.path()).expect("load failed");
         let pages = doc.get_pages();

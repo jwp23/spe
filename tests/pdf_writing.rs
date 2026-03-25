@@ -7,7 +7,8 @@ use std::path::Path;
 
 use lopdf::content::{Content, Operation};
 use lopdf::{Document, Object, Stream, dictionary};
-use spe::overlay::{PdfPosition, Standard14Font, TextOverlay};
+use spe::fonts::FontRegistry;
+use spe::overlay::{PdfPosition, TextOverlay};
 use spe::pdf::writer::write_overlays;
 use tempfile::NamedTempFile;
 
@@ -77,6 +78,7 @@ pub fn create_test_pdf(path: &Path) {
 
 #[test]
 fn write_and_read_back_overlay() {
+    let registry = FontRegistry::new();
     let src = NamedTempFile::new().expect("temp file");
     create_test_pdf(src.path());
 
@@ -86,12 +88,12 @@ fn write_and_read_back_overlay() {
         page: 1,
         position: PdfPosition { x: 100.0, y: 500.0 },
         text: "Integration test overlay".to_string(),
-        font: Standard14Font::CourierBold,
+        font: registry.find_by_name("Courier Bold").unwrap(),
         font_size: 16.0,
         width: None,
     };
 
-    write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
+    write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write_overlays failed");
 
     // Read back and verify.
     let doc = Document::load(dst.path()).expect("failed to load output PDF");
@@ -188,12 +190,13 @@ fn write_multiple_overlays_across_pages() {
 
     let dst = NamedTempFile::new().expect("temp file");
 
+    let registry = FontRegistry::new();
     let overlays = vec![
         TextOverlay {
             page: 1,
             position: PdfPosition { x: 72.0, y: 700.0 },
             text: "Page one text".to_string(),
-            font: Standard14Font::Helvetica,
+            font: registry.default_font(),
             font_size: 12.0,
             width: None,
         },
@@ -201,13 +204,13 @@ fn write_multiple_overlays_across_pages() {
             page: 2,
             position: PdfPosition { x: 72.0, y: 700.0 },
             text: "Page two text".to_string(),
-            font: Standard14Font::TimesRoman,
+            font: registry.find_by_name("Times Roman").unwrap(),
             font_size: 14.0,
             width: None,
         },
     ];
 
-    write_overlays(src.path(), dst.path(), &overlays).expect("write_overlays failed");
+    write_overlays(src.path(), dst.path(), &overlays, &registry).expect("write_overlays failed");
 
     let doc = Document::load(dst.path()).expect("load output");
     let pages = doc.get_pages();
@@ -246,6 +249,7 @@ fn write_multiple_overlays_across_pages() {
 
 #[test]
 fn write_and_read_back_multiline_overlay() {
+    let registry = FontRegistry::new();
     let src = NamedTempFile::new().expect("temp file");
     create_test_pdf(src.path());
 
@@ -255,12 +259,12 @@ fn write_and_read_back_multiline_overlay() {
         page: 1,
         position: PdfPosition { x: 72.0, y: 720.0 },
         text: "First line\nSecond line\nThird line".to_string(),
-        font: Standard14Font::Helvetica,
+        font: registry.default_font(),
         font_size: 12.0,
         width: Some(300.0),
     };
 
-    write_overlays(src.path(), dst.path(), &[overlay]).expect("write_overlays failed");
+    write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write_overlays failed");
 
     let doc = Document::load(dst.path()).expect("load output");
     let pages = doc.get_pages();
@@ -330,6 +334,7 @@ fn write_and_read_back_multiline_overlay() {
 
 #[test]
 fn write_multiline_word_wrap_breaks_at_width_boundary() {
+    let registry = FontRegistry::new();
     // Use Courier (monospaced, 600 units/char) at 12pt so each char = 7.2pt.
     // "AAAA BBBB" = needs ~72pt. At width=40pt "AAAA" fits (28.8pt), "BBBB" wraps.
     let src = NamedTempFile::new().expect("temp file");
@@ -341,12 +346,12 @@ fn write_multiline_word_wrap_breaks_at_width_boundary() {
         page: 1,
         position: PdfPosition { x: 72.0, y: 720.0 },
         text: "AAAA BBBB".to_string(),
-        font: Standard14Font::Courier,
+        font: registry.find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: Some(40.0),
     };
 
-    write_overlays(src.path(), dst.path(), &[overlay]).expect("write failed");
+    write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
 
     let doc = Document::load(dst.path()).expect("load output");
     let pages = doc.get_pages();

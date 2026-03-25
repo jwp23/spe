@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen, render_scale};
+use crate::coordinate::{ConversionParams, pdf_to_screen, render_scale};
 use crate::ui::canvas::{self, OverlayCanvasProgram, PdfPagesProgram};
 use crate::ui::toolbar::{self, ToolbarContext};
 
@@ -18,7 +18,9 @@ impl App {
             zoom_percent: canvas::zoom_percent(self.canvas.zoom),
             sidebar_visible: self.sidebar.visible,
         };
-        let toolbar = toolbar::toolbar_view(&self.toolbar, &toolbar_ctx).map(Message::Toolbar);
+        let font_opts = toolbar::font_options(&self.font_registry);
+        let toolbar =
+            toolbar::toolbar_view(&self.toolbar, &toolbar_ctx, &font_opts).map(Message::Toolbar);
 
         let content: iced::Element<Message> = if let Some(doc) = &self.document {
             let dpi = canvas::effective_dpi(self.canvas.zoom);
@@ -46,6 +48,7 @@ impl App {
                 active_overlay: self.canvas.active_overlay,
                 editing: self.canvas.editing,
                 overlay_color: self.config.overlay_color,
+                font_registry: &self.font_registry,
             };
 
             let (canvas_width, canvas_height) = self.canvas_dimensions(doc);
@@ -239,8 +242,11 @@ impl App {
                 .style(overlay_text_editor_style)
                 .into()
         } else {
-            let text_width =
-                overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size).width * scale;
+            let text_width = self
+                .font_registry
+                .overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size)
+                .width
+                * scale;
             let buffer = scaled_font_size * 2.0;
             let input_width = (scaled_font_size * 6.0).max(text_width + buffer);
             iced::widget::text_input("", &overlay.text)
