@@ -1,6 +1,6 @@
 // View rendering: layout, floating text widgets, overlay styling.
 
-use super::*;
+use super::{App, DocumentState, Message, SCROLLBAR_MARGIN};
 
 use crate::coordinate::{ConversionParams, pdf_to_screen, render_scale};
 use crate::ui::canvas::{self, OverlayCanvasProgram, PdfPagesProgram};

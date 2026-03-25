@@ -1,6 +1,10 @@
 // Message handlers, file operations, rendering tasks.
 
-use super::*;
+use super::{
+    App, CanvasState, DEBOUNCE_MS, DocumentState, FontId, Handle, HashMap,
+    MAX_CONCURRENT_THUMBNAIL_TASKS, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, Message, PathBuf,
+    PdfPosition, SCROLLBAR_MARGIN, SIDEBAR_PAGE_BUFFER, THUMBNAIL_BATCH_SIZE, TextOverlay,
+};
 
 use crate::command::Command as UndoCommand;
 use crate::pdf::renderer::PdftoppmRenderer;
