@@ -8,7 +8,7 @@ use iced::widget::image::Handle;
 
 use crate::command::Command as UndoCommand;
 use crate::config::AppConfig;
-use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen};
+use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen, render_scale};
 use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
 use crate::pdf::renderer::PdftoppmRenderer;
 use crate::ui::canvas::{self, CanvasState, PdfCanvasProgram};
@@ -23,6 +23,14 @@ const MAX_SIDEBAR_WIDTH: f32 = 400.0;
 const SHIMMER_TICK_DELTA: f32 = 0.05;
 /// Maximum number of thumbnail batch tasks that may run concurrently.
 const MAX_CONCURRENT_THUMBNAIL_TASKS: u32 = 2;
+/// Margin reserved for scrollbar width in viewport calculations.
+const SCROLLBAR_MARGIN: f32 = 16.0;
+/// Debounce timeout for zoom and sidebar resize operations (milliseconds).
+const DEBOUNCE_MS: u64 = 300;
+/// Number of pages to render in a single thumbnail batch.
+const THUMBNAIL_BATCH_SIZE: usize = 20;
+/// Extra pages to render above/below the visible sidebar range.
+const SIDEBAR_PAGE_BUFFER: u32 = 5;
 
 /// State for the currently loaded PDF document.
 pub struct DocumentState {
@@ -33,6 +41,15 @@ pub struct DocumentState {
     pub page_images: HashMap<u32, Handle>,
     pub page_dimensions: HashMap<u32, (f32, f32)>,
     pub overlays: Vec<TextOverlay>,
+}
+
+impl DocumentState {
+    pub fn max_page_width(&self) -> f32 {
+        self.page_dimensions
+            .values()
+            .map(|(w, _)| *w)
+            .fold(0.0f32, f32::max)
+    }
 }
 
 /// Top-level application state.
@@ -166,6 +183,22 @@ impl App {
         }
     }
 
+    fn execute_command(&mut self, cmd: UndoCommand) {
+        if let Some(doc) = &mut self.document {
+            cmd.apply(&mut doc.overlays);
+            self.undo_stack.push(cmd);
+            self.redo_stack.clear();
+        }
+    }
+
+    fn effective_sidebar_width(&self) -> f32 {
+        if self.sidebar.visible {
+            self.sidebar.width
+        } else {
+            0.0
+        }
+    }
+
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
             // --- Toolbar message forwarding ---
@@ -228,7 +261,7 @@ impl App {
                 position,
                 width,
             } => {
-                if let Some(doc) = &mut self.document {
+                if self.document.is_some() {
                     let overlay = TextOverlay {
                         page,
                         position,
@@ -240,9 +273,8 @@ impl App {
                     let cmd = UndoCommand::PlaceOverlay {
                         overlay: overlay.clone(),
                     };
-                    cmd.apply(&mut doc.overlays);
-                    self.undo_stack.push(cmd);
-                    self.redo_stack.clear();
+                    self.execute_command(cmd);
+                    let doc = self.document.as_ref().unwrap();
                     let idx = doc.overlays.len() - 1;
                     self.canvas.active_overlay = Some(idx);
                     self.canvas.editing = true;
@@ -278,18 +310,15 @@ impl App {
                 return self.handle_commit_text();
             }
             Message::MoveOverlay(index, new_position) => {
-                if let Some(doc) = &mut self.document
+                if let Some(doc) = &self.document
                     && index < doc.overlays.len()
                 {
-                    let old_position = doc.overlays[index].position;
                     let cmd = UndoCommand::MoveOverlay {
                         index,
-                        from: old_position,
+                        from: doc.overlays[index].position,
                         to: new_position,
                     };
-                    cmd.apply(&mut doc.overlays);
-                    self.undo_stack.push(cmd);
-                    self.redo_stack.clear();
+                    self.execute_command(cmd);
                 }
             }
             Message::ResizeOverlay {
@@ -297,7 +326,7 @@ impl App {
                 old_width,
                 new_width,
             } => {
-                if let Some(doc) = &mut self.document
+                if let Some(doc) = &self.document
                     && index < doc.overlays.len()
                 {
                     let cmd = UndoCommand::ResizeOverlay {
@@ -305,61 +334,52 @@ impl App {
                         old_width,
                         new_width,
                     };
-                    cmd.apply(&mut doc.overlays);
-                    self.undo_stack.push(cmd);
-                    self.redo_stack.clear();
+                    self.execute_command(cmd);
                 }
             }
             Message::ChangeFont(font) => {
-                if let Some(doc) = &mut self.document {
+                if self.document.is_some() {
                     if let Some(idx) = self.canvas.active_overlay
+                        && let Some(doc) = &self.document
                         && idx < doc.overlays.len()
                     {
-                        let old_font = doc.overlays[idx].font;
                         let cmd = UndoCommand::ChangeOverlayFont {
                             index: idx,
-                            old_font,
+                            old_font: doc.overlays[idx].font,
                             new_font: font,
                         };
-                        cmd.apply(&mut doc.overlays);
-                        self.undo_stack.push(cmd);
-                        self.redo_stack.clear();
+                        self.execute_command(cmd);
                     }
                     self.toolbar.font = font;
                 }
             }
             Message::ChangeFontSize(size) => {
-                if let Some(doc) = &mut self.document {
+                if self.document.is_some() {
                     if let Some(idx) = self.canvas.active_overlay
+                        && let Some(doc) = &self.document
                         && idx < doc.overlays.len()
                     {
-                        let old_size = doc.overlays[idx].font_size;
                         let cmd = UndoCommand::ChangeOverlayFontSize {
                             index: idx,
-                            old_size,
+                            old_size: doc.overlays[idx].font_size,
                             new_size: size,
                         };
-                        cmd.apply(&mut doc.overlays);
-                        self.undo_stack.push(cmd);
-                        self.redo_stack.clear();
+                        self.execute_command(cmd);
                     }
                     self.toolbar.font_size = size;
                     self.toolbar.font_size_input = format!("{size}");
                 }
             }
             Message::DeleteOverlay => {
-                if let Some(doc) = &mut self.document
+                if let Some(doc) = &self.document
                     && let Some(idx) = self.canvas.active_overlay
                     && idx < doc.overlays.len()
                 {
-                    let overlay = doc.overlays[idx].clone();
                     let cmd = UndoCommand::DeleteOverlay {
-                        overlay,
+                        overlay: doc.overlays[idx].clone(),
                         index: idx,
                     };
-                    cmd.apply(&mut doc.overlays);
-                    self.undo_stack.push(cmd);
-                    self.redo_stack.clear();
+                    self.execute_command(cmd);
                     self.canvas.active_overlay = None;
                     self.canvas.editing = false;
                 }
@@ -425,18 +445,11 @@ impl App {
             }
             Message::ZoomFitWidth => {
                 if let (Some(doc), Some(win)) = (&self.document, self.window_size) {
-                    let max_page_w = doc
-                        .page_dimensions
-                        .values()
-                        .map(|(w, _)| *w)
-                        .fold(0.0f32, f32::max);
+                    let max_page_w = doc.max_page_width();
                     if max_page_w > 0.0 {
-                        let sidebar_w = if self.sidebar.visible {
-                            self.sidebar.width
-                        } else {
-                            0.0
-                        };
-                        let available_w = (win.width - sidebar_w - 16.0).max(1.0);
+                        let available_w =
+                            (win.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN)
+                                .max(1.0);
                         self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
                         return self.apply_zoom_change();
                     }
@@ -518,7 +531,7 @@ impl App {
                 let generation = self.sidebar.backfill_generation;
                 return iced::Task::perform(
                     async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
                         generation
                     },
                     Message::SidebarResizeDebounceExpired,
@@ -529,12 +542,7 @@ impl App {
                     let max_page_w = self
                         .document
                         .as_ref()
-                        .map(|d| {
-                            d.page_dimensions
-                                .values()
-                                .map(|(w, _)| *w)
-                                .fold(0.0f32, f32::max)
-                        })
+                        .map(|d| d.max_page_width())
                         .unwrap_or(612.0);
                     self.sidebar.thumbnail_dpi = crate::ui::sidebar::compute_thumbnail_dpi(
                         self.sidebar.width,
@@ -704,7 +712,6 @@ impl App {
     /// Height: total layout height (all pages + gaps) or viewport, whichever is larger.
     fn canvas_dimensions(&self, doc: &DocumentState) -> (iced::Length, iced::Length) {
         const TOOLBAR_HEIGHT_ESTIMATE: f32 = 40.0;
-        const SCROLLBAR_MARGIN: f32 = 16.0;
 
         let dpi = canvas::effective_dpi(self.canvas.zoom);
         let layout =
@@ -716,12 +723,8 @@ impl App {
 
         match self.window_size {
             Some(win) => {
-                let sidebar_w = if self.sidebar.visible {
-                    self.sidebar.width
-                } else {
-                    0.0
-                };
-                let available_w = (win.width - sidebar_w - SCROLLBAR_MARGIN).max(1.0);
+                let available_w =
+                    (win.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN).max(1.0);
                 let available_h =
                     (win.height - TOOLBAR_HEIGHT_ESTIMATE - SCROLLBAR_MARGIN).max(1.0);
                 (
@@ -805,24 +808,20 @@ impl App {
         layout: &canvas::PageLayout,
         scrollable_canvas: iced::Element<'a, Message>,
     ) -> iced::Element<'a, Message> {
-        // stack_overlay_element always returns Some, keeping the Stack child count
-        // at exactly 2 regardless of editing state.
-        let overlay_child = self.stack_overlay_element(doc, layout).unwrap();
+        let overlay_child = self.stack_overlay_element(doc, layout);
         iced::widget::stack![scrollable_canvas, overlay_child].into()
     }
 
     /// Returns the second child for the floating text Stack.
-    /// Always returns Some to keep the Stack child count consistent across editing
-    /// state changes, preventing Iced from resetting the canvas ProgramState.
+    /// Always returns an element to keep the Stack child count consistent across
+    /// editing state changes, preventing Iced from resetting the canvas ProgramState.
     fn stack_overlay_element<'a>(
         &'a self,
         doc: &'a DocumentState,
         layout: &canvas::PageLayout,
-    ) -> Option<iced::Element<'a, Message>> {
-        if let Some(widget) = self.build_editing_widget(doc, layout) {
-            return Some(widget);
-        }
-        Some(iced::widget::Space::new().into())
+    ) -> iced::Element<'a, Message> {
+        self.build_editing_widget(doc, layout)
+            .unwrap_or_else(|| iced::widget::Space::new().into())
     }
 
     /// Build the positioned floating text widget if currently editing an overlay.
@@ -838,15 +837,9 @@ impl App {
         }
         let overlay = doc.overlays.get(idx)?;
 
-        const SCROLLBAR_MARGIN: f32 = 16.0;
-        let sidebar_w = if self.sidebar.visible {
-            self.sidebar.width
-        } else {
-            0.0
-        };
         let canvas_w = self
             .window_size
-            .map(|s| (s.width - sidebar_w - SCROLLBAR_MARGIN).max(1.0))
+            .map(|s| (s.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN).max(1.0))
             .unwrap_or(800.0);
 
         let dpi = canvas::effective_dpi(self.canvas.zoom);
@@ -868,7 +861,7 @@ impl App {
 
         let (screen_x, screen_y) = pdf_to_screen(overlay.position.x, overlay.position.y, &params);
 
-        let scale = self.canvas.zoom * dpi / 72.0;
+        let scale = render_scale(self.canvas.zoom, dpi);
         let scaled_font_size = overlay.font_size * scale;
         let top_offset = (screen_y - self.canvas.scroll_y - scaled_font_size).max(0.0);
         let left_offset = screen_x.max(0.0);
@@ -1014,24 +1007,15 @@ impl App {
                 let max_page_w = self
                     .document
                     .as_ref()
-                    .map(|d| {
-                        d.page_dimensions
-                            .values()
-                            .map(|(w, _)| *w)
-                            .fold(0.0f32, f32::max)
-                    })
+                    .map(|d| d.max_page_width())
                     .unwrap_or(612.0);
 
                 // Set initial zoom to fit widest page in viewport
                 if let Some(win) = self.window_size
                     && max_page_w > 0.0
                 {
-                    let sidebar_w = if self.sidebar.visible {
-                        self.sidebar.width
-                    } else {
-                        0.0
-                    };
-                    let available_w = (win.width - sidebar_w - 16.0).max(1.0);
+                    let available_w =
+                        (win.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN).max(1.0);
                     self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
                 }
 
@@ -1180,7 +1164,7 @@ impl App {
         }
         // Sort nearest-first so the most relevant pages render sooner.
         unrendered.sort_by_key(|p| (*p as i64 - center_page as i64).unsigned_abs());
-        let batch: Vec<u32> = unrendered.into_iter().take(20).collect();
+        let batch: Vec<u32> = unrendered.into_iter().take(THUMBNAIL_BATCH_SIZE).collect();
         // pdftoppm requires a contiguous page range (-f/-l), so we use
         // min/max of the nearest-first batch. This may re-render some
         // already-cached pages in the middle — harmless at thumbnail DPI.
@@ -1219,7 +1203,7 @@ impl App {
             self.sidebar.viewport_height.max(600.0),
             doc.page_count,
             avg_thumb_h + 8.0,
-            5,
+            SIDEBAR_PAGE_BUFFER,
         );
         let pages_to_render: Vec<u32> = visible
             .filter(|p| !self.sidebar.thumbnails.contains_key(p))
@@ -1230,7 +1214,7 @@ impl App {
         let pdf_path = doc.source_path.clone();
         let generation = self.sidebar.backfill_generation;
         let mut tasks = Vec::new();
-        for chunk in pages_to_render.chunks(20) {
+        for chunk in pages_to_render.chunks(THUMBNAIL_BATCH_SIZE) {
             let first = *chunk.first().unwrap();
             let last = *chunk.last().unwrap();
             if self.sidebar.active_batch_tasks >= MAX_CONCURRENT_THUMBNAIL_TASKS {
@@ -1285,7 +1269,7 @@ impl App {
         let generation = self.canvas.zoom_generation;
         iced::Task::perform(
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
                 generation
             },
             Message::ZoomDebounceExpired,
@@ -1294,6 +1278,27 @@ impl App {
 }
 
 /// Launch an async task to render a batch of PDF pages via pdftoppm.
+fn render_batch(
+    pdf_path: PathBuf,
+    first_page: u32,
+    last_page: u32,
+    dpi: u32,
+) -> Option<Vec<(u32, Handle)>> {
+    let renderer = PdftoppmRenderer;
+    match renderer.render_page_batch(&pdf_path, first_page, last_page, dpi) {
+        Ok(images) => Some(
+            images
+                .into_iter()
+                .map(|(page, img)| (page, canvas::image_to_handle(img)))
+                .collect(),
+        ),
+        Err(e) => {
+            eprintln!("Failed to render batch {first_page}-{last_page}: {e}");
+            None
+        }
+    }
+}
+
 fn render_page_batch_task(
     pdf_path: PathBuf,
     first_page: u32,
@@ -1301,22 +1306,7 @@ fn render_page_batch_task(
     dpi: u32,
 ) -> iced::Task<Message> {
     iced::Task::perform(
-        async move {
-            let renderer = PdftoppmRenderer;
-            match renderer.render_page_batch(&pdf_path, first_page, last_page, dpi) {
-                Ok(images) => {
-                    let handles: Vec<(u32, Handle)> = images
-                        .into_iter()
-                        .map(|(page, img)| (page, canvas::image_to_handle(img)))
-                        .collect();
-                    Some(handles)
-                }
-                Err(e) => {
-                    eprintln!("Failed to render page batch {first_page}-{last_page}: {e}");
-                    None
-                }
-            }
-        },
+        async move { render_batch(pdf_path, first_page, last_page, dpi) },
         |result| match result {
             Some(handles) => Message::PageBatchRendered(handles),
             None => Message::Noop,
@@ -1324,7 +1314,6 @@ fn render_page_batch_task(
     )
 }
 
-/// Launch an async task to render a batch of PDF page thumbnails via pdftoppm.
 fn render_thumbnail_batch_task(
     pdf_path: PathBuf,
     first_page: u32,
@@ -1333,22 +1322,7 @@ fn render_thumbnail_batch_task(
     generation: u64,
 ) -> iced::Task<Message> {
     iced::Task::perform(
-        async move {
-            let renderer = PdftoppmRenderer;
-            match renderer.render_page_batch(&pdf_path, first_page, last_page, dpi) {
-                Ok(images) => {
-                    let handles: Vec<(u32, Handle)> = images
-                        .into_iter()
-                        .map(|(page, img)| (page, canvas::image_to_handle(img)))
-                        .collect();
-                    Some((handles, generation))
-                }
-                Err(e) => {
-                    eprintln!("Failed to render thumbnail batch {first_page}-{last_page}: {e}");
-                    None
-                }
-            }
-        },
+        async move { render_batch(pdf_path, first_page, last_page, dpi).map(|h| (h, generation)) },
         |result| match result {
             Some((handles, batch_gen)) => Message::ThumbnailBatchRendered(handles, batch_gen),
             None => Message::Noop,
@@ -1357,39 +1331,43 @@ fn render_thumbnail_batch_task(
 }
 
 /// Transparent background with blue outline for the floating text input overlay.
+const OVERLAY_BORDER: iced::Border = iced::Border {
+    color: canvas::SELECTION_COLOR,
+    width: 1.5,
+    radius: iced::border::Radius {
+        top_left: 2.0,
+        top_right: 2.0,
+        bottom_right: 2.0,
+        bottom_left: 2.0,
+    },
+};
+const OVERLAY_PLACEHOLDER: iced::Color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4);
+const OVERLAY_SELECTION: iced::Color = iced::Color::from_rgba(0.2, 0.5, 1.0, 0.3);
+
 fn overlay_text_input_style(
     _theme: &iced::Theme,
     _status: iced::widget::text_input::Status,
 ) -> iced::widget::text_input::Style {
     iced::widget::text_input::Style {
         background: iced::Background::Color(iced::Color::TRANSPARENT),
-        border: iced::Border {
-            color: iced::Color::from_rgb(0.2, 0.5, 1.0),
-            width: 1.5,
-            radius: 2.0.into(),
-        },
+        border: OVERLAY_BORDER,
         icon: iced::Color::BLACK,
-        placeholder: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+        placeholder: OVERLAY_PLACEHOLDER,
         value: iced::Color::BLACK,
-        selection: iced::Color::from_rgba(0.2, 0.5, 1.0, 0.3),
+        selection: OVERLAY_SELECTION,
     }
 }
 
-/// Transparent background with blue outline for the floating text editor overlay.
 fn overlay_text_editor_style(
     _theme: &iced::Theme,
     _status: iced::widget::text_editor::Status,
 ) -> iced::widget::text_editor::Style {
     iced::widget::text_editor::Style {
         background: iced::Background::Color(iced::Color::TRANSPARENT),
-        border: iced::Border {
-            color: iced::Color::from_rgb(0.2, 0.5, 1.0),
-            width: 1.5,
-            radius: 2.0.into(),
-        },
-        placeholder: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+        border: OVERLAY_BORDER,
+        placeholder: OVERLAY_PLACEHOLDER,
         value: iced::Color::BLACK,
-        selection: iced::Color::from_rgba(0.2, 0.5, 1.0, 0.3),
+        selection: OVERLAY_SELECTION,
     }
 }
 
@@ -2891,13 +2869,11 @@ mod tests {
         let layout =
             canvas::page_layout(&doc.page_dimensions, doc.page_count, app.canvas.zoom, dpi);
 
-        // stack_overlay_element must return Some even when not editing,
+        // stack_overlay_element must return an element even when not editing,
         // so that floating_text_input always builds a 2-child Stack.
-        let element = app.stack_overlay_element(doc, &layout);
-        assert!(
-            element.is_some(),
-            "stack must always have a second child for widget tree consistency"
-        );
+        // Calling it without panic verifies correctness; the non-Option return
+        // type guarantees a value at compile time.
+        let _element = app.stack_overlay_element(doc, &layout);
     }
 
     #[test]
@@ -2918,11 +2894,8 @@ mod tests {
         let layout =
             canvas::page_layout(&doc.page_dimensions, doc.page_count, app.canvas.zoom, dpi);
 
-        let element = app.stack_overlay_element(doc, &layout);
-        assert!(
-            element.is_some(),
-            "stack must have a second child when editing"
-        );
+        // Calling stack_overlay_element while editing must not panic.
+        let _element = app.stack_overlay_element(doc, &layout);
     }
 
     // =====================================================================

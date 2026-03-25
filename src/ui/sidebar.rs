@@ -298,9 +298,8 @@ pub fn sidebar_view<'a>(
 
         let thumb_col = column![thumb_container, label].align_x(iced::Alignment::Center);
 
-        let page_num = page;
         let thumb_button = button(thumb_col)
-            .on_press(Message::SidebarPageClicked(page_num))
+            .on_press(Message::SidebarPageClicked(page))
             .style(|_theme, _status| button::Style::default())
             .padding(0);
 
