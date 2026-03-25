@@ -26,7 +26,6 @@ use super::{
 pub struct OverlayCanvasProgram<'a> {
     pub page_layout: PageLayout,
     pub page_dimensions: &'a std::collections::HashMap<u32, (f32, f32)>,
-    pub page_count: u32,
     pub scroll_y: f32,
     pub viewport_height: f32,
     pub overlays: &'a [TextOverlay],
@@ -640,7 +639,6 @@ mod tests {
         let _program = OverlayCanvasProgram {
             page_layout: layout,
             page_dimensions: &dims,
-            page_count: 1,
             scroll_y: 0.0,
             viewport_height: 800.0,
             overlays: &[],

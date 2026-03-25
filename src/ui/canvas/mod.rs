@@ -34,7 +34,7 @@ pub(crate) const OVERLAY_TINT_HOVER_ALPHA: f32 = 0.25;
 pub(crate) const OVERLAY_TINT_HOVER_BORDER_ALPHA: f32 = 0.5;
 /// Padding around the selection box border (screen pixels).
 pub(crate) const SELECTION_BOX_PADDING: f32 = 2.0;
-/// Stroke width for selection-style borders drawn via `draw_image` strips.
+/// Stroke width for selection-style borders (selection box, placement preview).
 pub(crate) const SELECTION_BORDER_WIDTH: f32 = 1.5;
 /// Background color for the canvas area behind PDF pages.
 const CANVAS_BACKGROUND: iced::Color = iced::Color::from_rgb(0.85, 0.85, 0.85);
