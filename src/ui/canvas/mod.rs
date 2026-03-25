@@ -24,6 +24,10 @@ const DOUBLE_CLICK_DISTANCE_PX: f32 = 5.0;
 pub const SELECTION_COLOR: iced::Color = iced::Color::from_rgb(0.2, 0.5, 1.0);
 /// Opacity for the background tint behind committed overlay text.
 pub(crate) const OVERLAY_TINT_ALPHA: f32 = 0.08;
+/// Opacity for the background tint when hovering over an overlay.
+pub(crate) const OVERLAY_TINT_HOVER_ALPHA: f32 = 0.15;
+/// Opacity for the border drawn around a hovered overlay.
+pub(crate) const OVERLAY_TINT_HOVER_BORDER_ALPHA: f32 = 0.5;
 
 /// State for the PDF canvas view (persistent, lives in App).
 pub struct CanvasState {
@@ -79,6 +83,8 @@ pub struct ProgramState {
     pub keyboard_modifiers: iced::keyboard::Modifiers,
     /// Tracks the time and position of the last left-click for double-click detection.
     pub last_click: Option<(std::time::Instant, iced::Point)>,
+    /// Tracks which overlay the cursor is currently over, if any.
+    pub hovered_overlay: Option<usize>,
 }
 
 impl Default for ProgramState {
@@ -90,6 +96,7 @@ impl Default for ProgramState {
             resize_drag: None,
             keyboard_modifiers: iced::keyboard::Modifiers::empty(),
             last_click: None,
+            hovered_overlay: None,
         }
     }
 }
@@ -246,10 +253,28 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 // position, so state.cursor_position matches the coordinate space
                 // used by cursor.position() in press/release handlers.
                 state.cursor_position = cursor.position();
+
                 if state.drag.is_some()
                     || state.placement_drag.is_some()
                     || state.resize_drag.is_some()
                 {
+                    return Some(canvas::Action::request_redraw());
+                }
+
+                // Hover tracking: hit-test the cursor position against overlays.
+                let new_hover = cursor.position().and_then(|cursor_pos| {
+                    if !bounds.contains(cursor_pos) {
+                        return None;
+                    }
+                    let canvas_y = cursor_pos.y - bounds.y;
+                    let (page, page_rect) = self.page_at_canvas_y(canvas_y, bounds.width)?;
+                    let page_screen_rect = to_screen_rect(page_rect, &bounds);
+                    let params = self.conversion_params_for_page(page, &page_screen_rect)?;
+                    hit_test(cursor_pos.x, cursor_pos.y, self.overlays, page, &params)
+                });
+
+                if new_hover != state.hovered_overlay {
+                    state.hovered_overlay = new_hover;
                     Some(canvas::Action::request_redraw())
                 } else {
                     None
@@ -462,6 +487,12 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 let scaled_size = overlay.font_size * scale;
 
                 if should_draw_overlay_text(self.editing, self.active_overlay, i) {
+                    let is_hovered = state.hovered_overlay == Some(i);
+                    let tint_alpha = if is_hovered {
+                        OVERLAY_TINT_HOVER_ALPHA
+                    } else {
+                        OVERLAY_TINT_ALPHA
+                    };
                     draw_overlay_tint(
                         &mut frame,
                         overlay,
@@ -469,8 +500,18 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                         sy,
                         scale,
                         overlay_color,
-                        OVERLAY_TINT_ALPHA,
+                        tint_alpha,
                     );
+                    if is_hovered {
+                        draw_overlay_hover_border(
+                            &mut frame,
+                            overlay,
+                            sx,
+                            sy,
+                            scale,
+                            overlay_color,
+                        );
+                    }
                     draw_overlay_text(
                         &mut frame,
                         &overlay.text,
@@ -668,6 +709,29 @@ fn draw_overlay_tint(
         iced::Point::new(screen_x, screen_y - h),
         iced::Size::new(w, h),
         color,
+    );
+}
+
+/// Draw a thin border around a hovered overlay.
+fn draw_overlay_hover_border(
+    frame: &mut canvas::Frame,
+    overlay: &TextOverlay,
+    screen_x: f32,
+    screen_y: f32,
+    scale: f32,
+    border_color: iced::Color,
+) {
+    let (w, h) = tint_size_for_overlay(overlay, scale);
+    let color = iced::Color::from_rgba(
+        border_color.r,
+        border_color.g,
+        border_color.b,
+        OVERLAY_TINT_HOVER_BORDER_ALPHA,
+    );
+    frame.stroke_rectangle(
+        iced::Point::new(screen_x, screen_y - h),
+        iced::Size::new(w, h),
+        canvas::Stroke::default().with_color(color).with_width(1.0),
     );
 }
 

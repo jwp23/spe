@@ -1835,3 +1835,135 @@ fn tint_alpha_constant_is_correct() {
         "OVERLAY_TINT_ALPHA should be 0.08"
     );
 }
+
+// =====================================================================
+// spe-ceg.3: hover tracking and tint intensification
+// =====================================================================
+
+#[test]
+fn overlay_tint_hover_alpha_constant_is_correct() {
+    assert!(
+        (super::OVERLAY_TINT_HOVER_ALPHA - 0.15).abs() < f32::EPSILON,
+        "OVERLAY_TINT_HOVER_ALPHA should be 0.15"
+    );
+}
+
+#[test]
+fn overlay_tint_hover_border_alpha_constant_is_correct() {
+    assert!(
+        (super::OVERLAY_TINT_HOVER_BORDER_ALPHA - 0.5).abs() < f32::EPSILON,
+        "OVERLAY_TINT_HOVER_BORDER_ALPHA should be 0.5"
+    );
+}
+
+#[test]
+fn program_state_default_has_no_hovered_overlay() {
+    let state = ProgramState::default();
+    assert!(state.hovered_overlay.is_none());
+}
+
+#[test]
+fn cursor_move_over_overlay_sets_hovered_overlay() {
+    // Overlay at PDF (72, 720) → screen (266, 80) in multi-page canvas.
+    // Hit box includes screen (270, 75). Moving cursor there should set hovered_overlay = Some(0).
+    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    let imgs = test_page_images();
+    let dims = test_page_dimensions();
+    let program = test_program(&overlays, &imgs, &dims);
+    let mut state = ProgramState::default();
+    let bounds = test_canvas_bounds();
+    let cursor = cursor_at(270.0, 75.0);
+
+    let action = program.update(&mut state, &cursor_moved_event(270.0, 75.0), bounds, cursor);
+    // Should request a redraw because hovered_overlay changed (None → Some(0))
+    assert!(
+        action.is_some(),
+        "cursor move over overlay should request redraw"
+    );
+    assert_eq!(
+        state.hovered_overlay,
+        Some(0),
+        "hovered_overlay should be Some(0) when cursor is over overlay"
+    );
+}
+
+#[test]
+fn cursor_move_off_overlay_clears_hovered_overlay() {
+    // Start with cursor over overlay, then move away. hovered_overlay should clear.
+    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    let imgs = test_page_images();
+    let dims = test_page_dimensions();
+    let program = test_program(&overlays, &imgs, &dims);
+    let mut state = ProgramState::default();
+    state.hovered_overlay = Some(0);
+    let bounds = test_canvas_bounds();
+
+    // Move to blank page area (500, 500)
+    let cursor = cursor_at(500.0, 500.0);
+    let action = program.update(
+        &mut state,
+        &cursor_moved_event(500.0, 500.0),
+        bounds,
+        cursor,
+    );
+    // Should request redraw because hovered_overlay changed (Some(0) → None)
+    assert!(
+        action.is_some(),
+        "cursor move off overlay should request redraw"
+    );
+    assert!(
+        state.hovered_overlay.is_none(),
+        "hovered_overlay should be None when cursor is not over any overlay"
+    );
+}
+
+#[test]
+fn cursor_move_with_no_hover_change_does_not_request_redraw() {
+    // Cursor moves over blank page area — hovered_overlay stays None — no redraw needed.
+    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    let imgs = test_page_images();
+    let dims = test_page_dimensions();
+    let program = test_program(&overlays, &imgs, &dims);
+    let mut state = ProgramState::default();
+    // hovered_overlay already None
+    let bounds = test_canvas_bounds();
+
+    // Move over blank page area (500, 500) — no overlay there
+    let cursor = cursor_at(500.0, 500.0);
+    let action = program.update(
+        &mut state,
+        &cursor_moved_event(500.0, 500.0),
+        bounds,
+        cursor,
+    );
+    assert!(
+        action.is_none(),
+        "no hover change should produce no action (no redraw)"
+    );
+}
+
+#[test]
+fn cursor_move_during_drag_skips_hover_tracking() {
+    // During an overlay drag, CursorMoved returns redraw immediately without updating hovered_overlay.
+    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    let imgs = test_page_images();
+    let dims = test_page_dimensions();
+    let program = test_program(&overlays, &imgs, &dims);
+    let mut state = ProgramState::default();
+    state.drag = Some(LocalDragState {
+        overlay_index: 0,
+        initial_pdf_position: PdfPosition { x: 72.0, y: 720.0 },
+        grab_offset_x: 4.0,
+        grab_offset_y: 6.0,
+    });
+    let bounds = test_canvas_bounds();
+    let cursor = cursor_at(270.0, 75.0);
+
+    let action = program.update(&mut state, &cursor_moved_event(270.0, 75.0), bounds, cursor);
+    // Should request redraw (drag in progress) but NOT update hovered_overlay
+    assert!(action.is_some(), "drag cursor move should request redraw");
+    assert!(
+        state.hovered_overlay.is_none(),
+        "hover tracking skipped during drag"
+    );
+}
