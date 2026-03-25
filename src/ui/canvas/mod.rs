@@ -1,9 +1,11 @@
 // PDF page canvas with click-to-place text handling.
 
 mod layout;
+mod pages;
 mod zoom;
 
 pub use layout::*;
+pub use pages::*;
 pub use zoom::*;
 
 use iced::mouse;
