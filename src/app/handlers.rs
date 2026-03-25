@@ -578,6 +578,183 @@ impl App {
         )
     }
 
+    // --- Toast handler ---
+
+    pub(super) fn handle_dismiss_toast(&mut self) {
+        if let Some((_, time)) = &self.status_message
+            && time.elapsed() >= std::time::Duration::from_secs(5)
+        {
+            self.status_message = None;
+        }
+    }
+
+    // --- Canvas (zoom) handlers ---
+
+    pub(super) fn handle_zoom_in(&mut self) -> iced::Task<Message> {
+        self.canvas.zoom = canvas::zoom_in(self.canvas.zoom);
+        self.apply_zoom_change()
+    }
+
+    pub(super) fn handle_zoom_out(&mut self) -> iced::Task<Message> {
+        self.canvas.zoom = canvas::zoom_out(self.canvas.zoom);
+        self.apply_zoom_change()
+    }
+
+    pub(super) fn handle_zoom_reset(&mut self) -> iced::Task<Message> {
+        self.canvas.zoom = 1.0;
+        self.apply_zoom_change()
+    }
+
+    pub(super) fn handle_zoom_fit_width(&mut self) -> iced::Task<Message> {
+        if let (Some(doc), Some(win)) = (&self.document, self.window_size) {
+            let max_page_w = doc.max_page_width();
+            if max_page_w > 0.0 {
+                let available_w =
+                    (win.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN).max(1.0);
+                self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
+                return self.apply_zoom_change();
+            }
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_zoom_debounce_expired(&mut self, generation: u64) -> iced::Task<Message> {
+        if generation == self.canvas.zoom_generation {
+            // Clear all cached images so pages get fresh renders at
+            // the new DPI (including neighbors on navigation).
+            if let Some(doc) = &mut self.document {
+                doc.page_images.clear();
+            }
+            return self.render_visible_pages();
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_canvas_scrolled(
+        &mut self,
+        scroll_y: f32,
+        viewport_height: f32,
+    ) -> iced::Task<Message> {
+        self.canvas.scroll_y = scroll_y;
+        self.canvas.viewport_height = viewport_height;
+        if let Some(doc) = &mut self.document {
+            let dpi = canvas::effective_dpi(self.canvas.zoom);
+            let layout =
+                canvas::page_layout(&doc.page_dimensions, doc.page_count, self.canvas.zoom, dpi);
+            let page = canvas::dominant_page(&layout, scroll_y, viewport_height);
+            if doc.current_page != page {
+                doc.current_page = page;
+                self.toolbar.page_input = page.to_string();
+            }
+        }
+        self.render_visible_pages()
+    }
+
+    // --- Sidebar handlers ---
+
+    pub(super) fn handle_sidebar_drag_start(&mut self) {
+        self.sidebar.dragging = true;
+        self.sidebar.drag_start_x = 0.0;
+        self.sidebar.drag_start_width = self.sidebar.width;
+    }
+
+    pub(super) fn handle_sidebar_resized(&mut self, cursor_x: f32) {
+        if !self.sidebar.dragging {
+            return;
+        }
+        if self.sidebar.drag_start_x == 0.0 {
+            // First move: capture start X position
+            self.sidebar.drag_start_x = cursor_x;
+            return;
+        }
+        let new_width = self.sidebar.drag_start_width + (cursor_x - self.sidebar.drag_start_x);
+        self.sidebar.width = new_width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+    }
+
+    pub(super) fn handle_sidebar_resize_end(&mut self) -> iced::Task<Message> {
+        if !self.sidebar.dragging {
+            return iced::Task::none();
+        }
+        self.sidebar.dragging = false;
+        self.sidebar.backfill_generation += 1;
+        let generation = self.sidebar.backfill_generation;
+        iced::Task::perform(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
+                generation
+            },
+            Message::SidebarResizeDebounceExpired,
+        )
+    }
+
+    pub(super) fn handle_sidebar_resize_debounce_expired(
+        &mut self,
+        generation: u64,
+    ) -> iced::Task<Message> {
+        if generation == self.sidebar.backfill_generation {
+            let max_page_w = self
+                .document
+                .as_ref()
+                .map(|d| d.max_page_width())
+                .unwrap_or(612.0);
+            self.sidebar.thumbnail_dpi = crate::ui::sidebar::compute_thumbnail_dpi(
+                self.sidebar.width,
+                self.scale_factor,
+                max_page_w,
+            );
+            self.sidebar.thumbnails.clear();
+            self.sidebar.active_batch_tasks = 0;
+            return self.render_visible_thumbnails();
+        }
+        iced::Task::none()
+    }
+
+    pub(super) fn handle_sidebar_scrolled(
+        &mut self,
+        scroll_y: f32,
+        viewport_height: f32,
+    ) -> iced::Task<Message> {
+        self.sidebar.scroll_y = scroll_y;
+        self.sidebar.viewport_height = viewport_height;
+        self.render_visible_thumbnails()
+    }
+
+    pub(super) fn handle_thumbnail_batch_rendered(
+        &mut self,
+        batch: Vec<(u32, Handle)>,
+        generation: u64,
+    ) -> iced::Task<Message> {
+        self.sidebar.active_batch_tasks = self.sidebar.active_batch_tasks.saturating_sub(1);
+        if generation == self.sidebar.backfill_generation {
+            for (page, handle) in batch {
+                self.sidebar.thumbnails.insert(page, handle);
+            }
+        }
+        let backfill_task = self.schedule_thumbnail_backfill();
+        let wait_task = self.check_ipc_wait();
+        iced::Task::batch([backfill_task, wait_task])
+    }
+
+    // --- Undo/Redo handlers ---
+
+    pub(super) fn handle_undo(&mut self) {
+        if let Some(cmd) = self.undo_stack.pop()
+            && let Some(doc) = &mut self.document
+        {
+            cmd.reverse(&mut doc.overlays);
+            self.redo_stack.push(cmd);
+        }
+    }
+
+    pub(super) fn handle_redo(&mut self) {
+        if let Some(cmd) = self.redo_stack.pop()
+            && let Some(doc) = &mut self.document
+        {
+            cmd.apply(&mut doc.overlays);
+            self.undo_stack.push(cmd);
+        }
+    }
+
     /// Common post-zoom logic: increment generation and schedule a debounced
     /// re-render. The stale cached image stays visible for instant visual
     /// feedback (scaled by draw_image) until the debounce fires.

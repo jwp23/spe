@@ -16,7 +16,7 @@ use crate::command::Command as UndoCommand;
 use crate::config::AppConfig;
 use crate::fonts::{FontId, FontRegistry};
 use crate::overlay::{PdfPosition, TextOverlay};
-use crate::ui::canvas::{self, CanvasState};
+use crate::ui::canvas::CanvasState;
 use crate::ui::sidebar::SidebarState;
 use crate::ui::toolbar::{self, ToolbarState};
 
@@ -319,183 +319,53 @@ impl App {
             Message::EditOverlay(index) => return self.handle_edit_overlay(index),
             Message::DeselectOverlay => return self.handle_deselect_overlay(),
             Message::Noop => {}
-            Message::DismissToast => {
-                if let Some((_, time)) = &self.status_message
-                    && time.elapsed() >= std::time::Duration::from_secs(5)
-                {
-                    self.status_message = None;
-                }
-            }
+            Message::DismissToast => self.handle_dismiss_toast(),
 
             // --- Canvas (zoom with debounce) ---
-            Message::ZoomIn => {
-                self.canvas.zoom = canvas::zoom_in(self.canvas.zoom);
-                return self.apply_zoom_change();
-            }
-            Message::ZoomOut => {
-                self.canvas.zoom = canvas::zoom_out(self.canvas.zoom);
-                return self.apply_zoom_change();
-            }
-            Message::ZoomReset => {
-                self.canvas.zoom = 1.0;
-                return self.apply_zoom_change();
-            }
-            Message::ZoomFitWidth => {
-                if let (Some(doc), Some(win)) = (&self.document, self.window_size) {
-                    let max_page_w = doc.max_page_width();
-                    if max_page_w > 0.0 {
-                        let available_w =
-                            (win.width - self.effective_sidebar_width() - SCROLLBAR_MARGIN)
-                                .max(1.0);
-                        self.canvas.zoom = canvas::fit_to_width_zoom(max_page_w, available_w);
-                        return self.apply_zoom_change();
-                    }
-                }
-            }
+            Message::ZoomIn => return self.handle_zoom_in(),
+            Message::ZoomOut => return self.handle_zoom_out(),
+            Message::ZoomReset => return self.handle_zoom_reset(),
+            Message::ZoomFitWidth => return self.handle_zoom_fit_width(),
             Message::ZoomDebounceExpired(generation) => {
-                if generation == self.canvas.zoom_generation {
-                    // Clear all cached images so pages get fresh renders at
-                    // the new DPI (including neighbors on navigation).
-                    if let Some(doc) = &mut self.document {
-                        doc.page_images.clear();
-                    }
-                    return self.render_visible_pages();
-                }
+                return self.handle_zoom_debounce_expired(generation);
             }
-            Message::CanvasScrolled(scroll_y, viewport_height) => {
-                self.canvas.scroll_y = scroll_y;
-                self.canvas.viewport_height = viewport_height;
-                if let Some(doc) = &mut self.document {
-                    let dpi = canvas::effective_dpi(self.canvas.zoom);
-                    let layout = canvas::page_layout(
-                        &doc.page_dimensions,
-                        doc.page_count,
-                        self.canvas.zoom,
-                        dpi,
-                    );
-                    let page = canvas::dominant_page(&layout, scroll_y, viewport_height);
-                    if doc.current_page != page {
-                        doc.current_page = page;
-                        self.toolbar.page_input = page.to_string();
-                    }
-                }
-                return self.render_visible_pages();
+            Message::CanvasScrolled(scroll_y, vh) => {
+                return self.handle_canvas_scrolled(scroll_y, vh);
             }
 
             // --- Sidebar ---
-            Message::ToggleSidebar => {
-                self.sidebar.visible = !self.sidebar.visible;
-            }
+            Message::ToggleSidebar => self.sidebar.visible = !self.sidebar.visible,
             Message::ThumbnailBatchRendered(batch, generation) => {
-                self.sidebar.active_batch_tasks = self.sidebar.active_batch_tasks.saturating_sub(1);
-                if generation != self.sidebar.backfill_generation {
-                    let backfill_task = self.schedule_thumbnail_backfill();
-                    let wait_task = self.check_ipc_wait();
-                    return iced::Task::batch([backfill_task, wait_task]);
-                }
-                for (page, handle) in batch {
-                    self.sidebar.thumbnails.insert(page, handle);
-                }
-                let backfill_task = self.schedule_thumbnail_backfill();
-                let wait_task = self.check_ipc_wait();
-                return iced::Task::batch([backfill_task, wait_task]);
+                return self.handle_thumbnail_batch_rendered(batch, generation);
             }
-            Message::SidebarScrolled(scroll_y, viewport_height) => {
-                self.sidebar.scroll_y = scroll_y;
-                self.sidebar.viewport_height = viewport_height;
-                return self.render_visible_thumbnails();
+            Message::SidebarScrolled(scroll_y, vh) => {
+                return self.handle_sidebar_scrolled(scroll_y, vh);
             }
-            Message::SidebarDragStart(_) => {
-                self.sidebar.dragging = true;
-                self.sidebar.drag_start_x = 0.0;
-                self.sidebar.drag_start_width = self.sidebar.width;
-            }
-            Message::SidebarResized(cursor_x) => {
-                if !self.sidebar.dragging {
-                    return iced::Task::none();
-                }
-                if self.sidebar.drag_start_x == 0.0 {
-                    // First move: capture start X position
-                    self.sidebar.drag_start_x = cursor_x;
-                    return iced::Task::none();
-                }
-                let new_width =
-                    self.sidebar.drag_start_width + (cursor_x - self.sidebar.drag_start_x);
-                self.sidebar.width = new_width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
-            }
-            Message::SidebarResizeEnd => {
-                if !self.sidebar.dragging {
-                    return iced::Task::none();
-                }
-                self.sidebar.dragging = false;
-                self.sidebar.backfill_generation += 1;
-                let generation = self.sidebar.backfill_generation;
-                return iced::Task::perform(
-                    async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
-                        generation
-                    },
-                    Message::SidebarResizeDebounceExpired,
-                );
-            }
+            Message::SidebarDragStart(_) => self.handle_sidebar_drag_start(),
+            Message::SidebarResized(cursor_x) => self.handle_sidebar_resized(cursor_x),
+            Message::SidebarResizeEnd => return self.handle_sidebar_resize_end(),
             Message::SidebarResizeDebounceExpired(generation) => {
-                if generation == self.sidebar.backfill_generation {
-                    let max_page_w = self
-                        .document
-                        .as_ref()
-                        .map(|d| d.max_page_width())
-                        .unwrap_or(612.0);
-                    self.sidebar.thumbnail_dpi = crate::ui::sidebar::compute_thumbnail_dpi(
-                        self.sidebar.width,
-                        self.scale_factor,
-                        max_page_w,
-                    );
-                    self.sidebar.thumbnails.clear();
-                    self.sidebar.active_batch_tasks = 0;
-                    return self.render_visible_thumbnails();
-                }
+                return self.handle_sidebar_resize_debounce_expired(generation);
             }
-            Message::SidebarPageClicked(page) => {
-                return self.update(Message::GoToPage(page));
-            }
+            Message::SidebarPageClicked(page) => return self.handle_go_to_page(page),
             Message::ShimmerTick => {
                 self.sidebar.shimmer_phase =
                     (self.sidebar.shimmer_phase + SHIMMER_TICK_DELTA) % 1.0;
             }
 
             // --- Undo/Redo ---
-            Message::Undo => {
-                if let Some(cmd) = self.undo_stack.pop()
-                    && let Some(doc) = &mut self.document
-                {
-                    cmd.reverse(&mut doc.overlays);
-                    self.redo_stack.push(cmd);
-                }
-            }
-            Message::Redo => {
-                if let Some(cmd) = self.redo_stack.pop()
-                    && let Some(doc) = &mut self.document
-                {
-                    cmd.apply(&mut doc.overlays);
-                    self.undo_stack.push(cmd);
-                }
-            }
+            Message::Undo => self.handle_undo(),
+            Message::Redo => self.handle_redo(),
 
             // --- Window ---
-            Message::WindowResized(size) => {
-                self.window_size = Some(size);
-            }
-            Message::ScaleFactorChanged(factor) => {
-                self.scale_factor = factor;
-            }
+            Message::WindowResized(size) => self.window_size = Some(size),
+            Message::ScaleFactorChanged(factor) => self.scale_factor = factor,
 
             // --- Font loaded ---
             Message::FontLoaded(_) => {}
 
             // --- IPC ---
-            Message::Ipc(event) => {
-                return self.handle_ipc_event(event);
-            }
+            Message::Ipc(event) => return self.handle_ipc_event(event),
         }
         iced::Task::none()
     }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::canvas;
 
 #[test]
 fn app_default_has_no_document() {
