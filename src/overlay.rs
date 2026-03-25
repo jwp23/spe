@@ -1,7 +1,7 @@
 // Text overlay data model: position, text content, font family, font size.
 
 /// PDF Standard 14 built-in fonts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
 pub enum Standard14Font {
     Helvetica,
     HelveticaBold,
@@ -231,5 +231,43 @@ mod tests {
             width: Some(200.0),
         };
         assert!((overlay.width.unwrap() - 200.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn standard14font_deserializes_from_json() {
+        let font: Standard14Font = serde_json::from_str("\"Courier\"").unwrap();
+        assert_eq!(font, Standard14Font::Courier);
+    }
+
+    #[test]
+    fn standard14font_deserialize_all_variants() {
+        for (json, expected) in [
+            ("\"Helvetica\"", Standard14Font::Helvetica),
+            ("\"HelveticaBold\"", Standard14Font::HelveticaBold),
+            ("\"HelveticaOblique\"", Standard14Font::HelveticaOblique),
+            (
+                "\"HelveticaBoldOblique\"",
+                Standard14Font::HelveticaBoldOblique,
+            ),
+            ("\"TimesRoman\"", Standard14Font::TimesRoman),
+            ("\"TimesBold\"", Standard14Font::TimesBold),
+            ("\"TimesItalic\"", Standard14Font::TimesItalic),
+            ("\"TimesBoldItalic\"", Standard14Font::TimesBoldItalic),
+            ("\"Courier\"", Standard14Font::Courier),
+            ("\"CourierBold\"", Standard14Font::CourierBold),
+            ("\"CourierOblique\"", Standard14Font::CourierOblique),
+            ("\"CourierBoldOblique\"", Standard14Font::CourierBoldOblique),
+            ("\"Symbol\"", Standard14Font::Symbol),
+            ("\"ZapfDingbats\"", Standard14Font::ZapfDingbats),
+        ] {
+            let font: Standard14Font = serde_json::from_str(json).unwrap();
+            assert_eq!(font, expected, "Failed to deserialize {json}");
+        }
+    }
+
+    #[test]
+    fn standard14font_rejects_invalid_variant() {
+        let result = serde_json::from_str::<Standard14Font>("\"Comic Sans\"");
+        assert!(result.is_err());
     }
 }
