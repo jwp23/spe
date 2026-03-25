@@ -691,7 +691,26 @@ pub(crate) fn tint_size_for_overlay(overlay: &TextOverlay, scale: f32) -> (f32, 
     }
 }
 
+/// Create a 1x1 pixel image handle with the given color.
+///
+/// Iced's wgpu canvas renders fill/stroke primitives before images,
+/// so `fill_rectangle` is always hidden behind page images regardless
+/// of draw order. Using `draw_image` with a stretched 1x1 pixel image
+/// ensures the tint renders on top of page content.
+fn color_image(color: iced::Color, alpha: f32) -> Handle {
+    let pixels = vec![
+        (color.r * 255.0) as u8,
+        (color.g * 255.0) as u8,
+        (color.b * 255.0) as u8,
+        (alpha * 255.0) as u8,
+    ];
+    Handle::from_rgba(1, 1, pixels)
+}
+
 /// Draw a semi-transparent tint rectangle behind overlay text.
+///
+/// Uses `draw_image` instead of `fill_rectangle` because Iced's wgpu
+/// canvas always renders images on top of tessellated geometry.
 fn draw_overlay_tint(
     frame: &mut canvas::Frame,
     overlay: &TextOverlay,
@@ -702,15 +721,21 @@ fn draw_overlay_tint(
     alpha: f32,
 ) {
     let (w, h) = tint_size_for_overlay(overlay, scale);
-    let color = iced::Color::from_rgba(tint_color.r, tint_color.g, tint_color.b, alpha);
-    frame.fill_rectangle(
-        iced::Point::new(screen_x, screen_y - h),
-        iced::Size::new(w, h),
-        color,
+    let handle = color_image(tint_color, alpha);
+    frame.draw_image(
+        iced::Rectangle::new(
+            iced::Point::new(screen_x, screen_y - h),
+            iced::Size::new(w, h),
+        ),
+        &handle,
     );
 }
 
 /// Draw a thin border around a hovered overlay.
+///
+/// Uses four thin `draw_image` strips instead of `stroke_rectangle`
+/// because Iced's wgpu canvas always renders images on top of
+/// tessellated geometry.
 fn draw_overlay_hover_border(
     frame: &mut canvas::Frame,
     overlay: &TextOverlay,
@@ -720,16 +745,30 @@ fn draw_overlay_hover_border(
     border_color: iced::Color,
 ) {
     let (w, h) = tint_size_for_overlay(overlay, scale);
-    let color = iced::Color::from_rgba(
-        border_color.r,
-        border_color.g,
-        border_color.b,
-        OVERLAY_TINT_HOVER_BORDER_ALPHA,
+    let handle = color_image(border_color, OVERLAY_TINT_HOVER_BORDER_ALPHA);
+    let x = screen_x;
+    let y = screen_y - h;
+    let bw = 1.0; // border width in pixels
+
+    // Top edge
+    frame.draw_image(
+        iced::Rectangle::new(iced::Point::new(x, y), iced::Size::new(w, bw)),
+        &handle,
     );
-    frame.stroke_rectangle(
-        iced::Point::new(screen_x, screen_y - h),
-        iced::Size::new(w, h),
-        canvas::Stroke::default().with_color(color).with_width(1.0),
+    // Bottom edge
+    frame.draw_image(
+        iced::Rectangle::new(iced::Point::new(x, y + h - bw), iced::Size::new(w, bw)),
+        &handle,
+    );
+    // Left edge
+    frame.draw_image(
+        iced::Rectangle::new(iced::Point::new(x, y), iced::Size::new(bw, h)),
+        &handle,
+    );
+    // Right edge
+    frame.draw_image(
+        iced::Rectangle::new(iced::Point::new(x + w - bw, y), iced::Size::new(bw, h)),
+        &handle,
     );
 }
 
