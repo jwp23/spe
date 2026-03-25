@@ -17,14 +17,14 @@ fn verify_view_renders(app: &App) {
 #[test]
 #[ignore]
 fn app_launches_with_empty_state() {
-    let (app, _) = App::new();
+    let (app, _) = App::new(false);
     verify_view_renders(&app);
 }
 
 #[test]
 #[ignore]
 fn empty_state_shows_welcome_text() {
-    let (app, _) = App::new();
+    let (app, _) = App::new(false);
     let element = app.view();
     let mut ui = simulator(element);
     assert!(
@@ -36,7 +36,7 @@ fn empty_state_shows_welcome_text() {
 #[test]
 #[ignore]
 fn sidebar_toggle_updates_state_and_renders() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     assert!(app.sidebar.visible);
     verify_view_renders(&app);
 
@@ -52,7 +52,7 @@ fn sidebar_toggle_updates_state_and_renders() {
 #[test]
 #[ignore]
 fn zoom_cycle_renders_correctly() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     assert!((app.canvas.zoom - 1.0).abs() < f32::EPSILON);
 
     let _ = app.update(Message::ZoomIn);
@@ -71,7 +71,7 @@ fn undo_redo_with_view_rebuild() {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.document = Some(spe::app::DocumentState {
         source_path: PathBuf::from("/tmp/test.pdf"),
         save_path: None,
@@ -109,7 +109,7 @@ fn page_navigation_with_document() {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     let mut dims = HashMap::new();
     dims.insert(1, (612.0, 792.0));
     dims.insert(2, (612.0, 792.0));
@@ -152,7 +152,7 @@ fn delete_overlay_with_selection() {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.document = Some(spe::app::DocumentState {
         source_path: PathBuf::from("/tmp/test.pdf"),
         save_path: None,
@@ -206,7 +206,7 @@ fn test_document_multipage(page_count: u32) -> spe::app::DocumentState {
 #[test]
 #[ignore]
 fn sidebar_renders_with_thumbnails() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.document = Some(test_document_multipage(3));
     // Simulate thumbnails already rendered
     for p in 1..=3 {
@@ -222,7 +222,7 @@ fn sidebar_renders_with_thumbnails() {
 #[test]
 #[ignore]
 fn sidebar_click_navigates_to_page() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.document = Some(test_document_multipage(5));
     app.sidebar.thumbnail_dpi = 12.0;
 
@@ -235,7 +235,7 @@ fn sidebar_click_navigates_to_page() {
 #[test]
 #[ignore]
 fn sidebar_scroll_independent_of_canvas() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.document = Some(test_document_multipage(10));
     app.sidebar.thumbnail_dpi = 12.0;
     app.canvas.scroll_y = 0.0;
@@ -250,7 +250,7 @@ fn sidebar_scroll_independent_of_canvas() {
 #[test]
 #[ignore]
 fn sidebar_current_page_tracks_canvas_navigation() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     let mut doc = test_document_multipage(3);
     doc.current_page = 1;
     app.document = Some(doc);
@@ -274,7 +274,7 @@ fn sidebar_current_page_tracks_canvas_navigation() {
 #[test]
 #[ignore]
 fn sidebar_resize_updates_width_and_renders() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.document = Some(test_document_multipage(3));
     app.sidebar.thumbnail_dpi = 12.0;
     verify_view_renders(&app);
@@ -324,7 +324,7 @@ fn test_document_with_image() -> spe::app::DocumentState {
 #[test]
 #[ignore]
 fn canvas_renders_with_loaded_page_image() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.document = Some(test_document_with_image());
     verify_view_renders(&app);
 }
@@ -334,7 +334,7 @@ fn canvas_renders_with_loaded_page_image() {
 fn canvas_renders_with_overlays_on_page() {
     use spe::overlay::{PdfPosition, Standard14Font, TextOverlay};
 
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     let mut doc = test_document_with_image();
     doc.overlays.push(TextOverlay {
         page: 1,
@@ -353,7 +353,7 @@ fn canvas_renders_with_overlays_on_page() {
 fn canvas_renders_with_selected_overlay() {
     use spe::overlay::{PdfPosition, Standard14Font, TextOverlay};
 
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     let mut doc = test_document_with_image();
     doc.overlays.push(TextOverlay {
         page: 1,
@@ -371,7 +371,7 @@ fn canvas_renders_with_selected_overlay() {
 #[test]
 #[ignore]
 fn zoom_with_loaded_document_renders() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.document = Some(test_document_with_image());
     verify_view_renders(&app);
 
@@ -388,7 +388,7 @@ fn zoom_with_loaded_document_renders() {
 #[test]
 #[ignore]
 fn page_navigation_with_rendered_pages() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     let mut doc = test_document_with_image();
     doc.page_count = 3;
 
