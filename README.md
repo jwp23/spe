@@ -55,30 +55,21 @@ See [docs/screenshot-tool.md](docs/screenshot-tool.md) for system dependencies, 
 
 ## Project Structure
 
-```
-src/
-├── main.rs           # entry point — launches Iced application
-├── app.rs            # App struct, Message enum, update/view/subscription
-├── command.rs        # undo/redo Command enum with apply/reverse
-├── config.rs         # AppConfig with overlay color, font/size defaults
-├── coordinate.rs     # screen <-> PDF coordinate conversion, AFM width tables
-├── overlay.rs        # TextOverlay, PdfPosition, Standard14Font
-├── pdf/
-│   ├── mod.rs        # page_dimensions() helper
-│   ├── renderer.rs   # pdftoppm wrapper for page rendering
-│   └── writer.rs     # lopdf wrapper for text overlay writing
-└── ui/
-    ├── canvas.rs     # canvas state, hit testing, zoom helpers
-    ├── icons.rs      # Phosphor icon font constants and loading
-    ├── sidebar.rs    # thumbnail sidebar state and helpers
-    └── toolbar.rs    # toolbar view with font picker, zoom, page nav
-assets/
-└── phosphor-subset.ttf  # subsetted Phosphor Icons (~12 glyphs, 3KB)
-tests/
-├── e2e.rs            # E2E tests with iced_test Simulator
-├── pdf_rendering.rs  # integration tests for pdftoppm rendering
-└── pdf_writing.rs    # integration tests for PDF overlay writing
-```
+Key modules in `src/`:
+
+| Module | Purpose |
+|--------|---------|
+| `app/` | Iced application state, Message enum, update/view/subscription, event handlers |
+| `ui/canvas/` | PDF canvas rendering, hit testing, zoom, overlay drawing |
+| `ui/sidebar.rs` | Thumbnail sidebar with drag-resize |
+| `ui/toolbar.rs` | Font picker, zoom controls, page navigation |
+| `pdf/` | PDF rendering (`pdftoppm` wrapper) and writing (`lopdf` overlay embedding) |
+| `overlay.rs` | Text overlay data model (position, font, text, width) |
+| `coordinate.rs` | Screen-to-PDF coordinate conversion, AFM font width tables |
+| `ipc.rs` | IPC protocol for the screenshot development tool |
+| `command.rs` | Undo/redo command pattern |
+
+Tests live in `tests/` (integration/E2E) and co-located `#[cfg(test)]` modules (unit).
 
 ## Phosphor Icon Font (contributors only)
 

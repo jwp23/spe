@@ -166,30 +166,18 @@ Read these only when the trigger condition applies:
 
 ## Project Structure
 
-```
-src/
-├── main.rs           # entry point
-├── app/
-│   ├── mod.rs        # Iced state, messages, update(), subscription()
-│   ├── view.rs       # view(), floating text widget, overlay styling
-│   ├── handlers.rs   # file/save/zoom/sidebar handlers, rendering tasks
-│   └── tests.rs      # unit tests
-├── overlay.rs        # text overlay data model
-├── pdf/
-│   ├── renderer.rs   # pdftoppm wrapper for page rendering
-│   └── writer.rs     # lopdf wrapper for text overlay writing
-└── ui/
-    ├── canvas/
-    │   ├── mod.rs    # Iced canvas Program impl, drawing helpers
-    │   ├── layout.rs # page layout, geometry, hit-testing
-    │   ├── zoom.rs   # zoom level calculations
-    │   └── tests.rs  # unit tests
-    ├── sidebar.rs    # page thumbnail sidebar
-    └── toolbar.rs    # font family and size controls
-tests/
-├── pdf_rendering.rs
-├── pdf_writing.rs
-└── font_discovery.rs
-```
+Key modules in `src/`:
 
-See `docs/decisions/project-directory-structure.md`.
+| Module | Purpose |
+|--------|---------|
+| `app/` | Iced application state, Message enum, update/view/subscription, event handlers |
+| `ui/canvas/` | PDF canvas rendering, hit testing, zoom, overlay drawing |
+| `ui/sidebar.rs` | Thumbnail sidebar with drag-resize |
+| `ui/toolbar.rs` | Font picker, zoom controls, page navigation |
+| `pdf/` | PDF rendering (`pdftoppm` wrapper) and writing (`lopdf` overlay embedding) |
+| `overlay.rs` | Text overlay data model (position, font, text, width) |
+| `coordinate.rs` | Screen-to-PDF coordinate conversion, AFM font width tables |
+| `ipc.rs` | IPC protocol for the screenshot development tool |
+| `command.rs` | Undo/redo command pattern |
+
+Tests live in `tests/` (integration/E2E) and co-located `#[cfg(test)]` modules (unit). See `docs/decisions/project-directory-structure.md`.
