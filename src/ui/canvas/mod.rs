@@ -407,12 +407,6 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
             return vec![frame.into_geometry()];
         }
 
-        let overlay_color = iced::Color::from_rgba(
-            self.overlay_color[0],
-            self.overlay_color[1],
-            self.overlay_color[2],
-            self.overlay_color[3],
-        );
         let scale = render_scale(self.zoom, self.dpi);
 
         // Determine visible pages
@@ -466,7 +460,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                         sx,
                         sy,
                         scaled_size,
-                        overlay_color,
+                        iced::Color::BLACK,
                     );
                 }
 
@@ -500,7 +494,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 preview_screen_x,
                 preview_screen_y,
                 scaled_size,
-                overlay_color,
+                iced::Color::BLACK,
             );
         }
 

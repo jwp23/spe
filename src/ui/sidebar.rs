@@ -188,7 +188,7 @@ impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
                 frame.fill_text(canvas::Text {
                     content: overlay.text.clone(),
                     position: iced::Point::new(screen_x, screen_y - font_display_size),
-                    color: self.overlay_color,
+                    color: Color::BLACK,
                     size: iced::Pixels(font_display_size),
                     ..canvas::Text::default()
                 });
