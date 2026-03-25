@@ -1838,8 +1838,8 @@ fn tint_size_multiline_overlay_single_line_text_height_is_one_line() {
 #[test]
 fn tint_alpha_constant_is_correct() {
     assert!(
-        (super::OVERLAY_TINT_ALPHA - 0.08).abs() < f32::EPSILON,
-        "OVERLAY_TINT_ALPHA should be 0.08"
+        (super::OVERLAY_TINT_ALPHA - 0.15).abs() < f32::EPSILON,
+        "OVERLAY_TINT_ALPHA should be 0.15"
     );
 }
 
@@ -1850,8 +1850,8 @@ fn tint_alpha_constant_is_correct() {
 #[test]
 fn overlay_tint_hover_alpha_constant_is_correct() {
     assert!(
-        (super::OVERLAY_TINT_HOVER_ALPHA - 0.15).abs() < f32::EPSILON,
-        "OVERLAY_TINT_HOVER_ALPHA should be 0.15"
+        (super::OVERLAY_TINT_HOVER_ALPHA - 0.25).abs() < f32::EPSILON,
+        "OVERLAY_TINT_HOVER_ALPHA should be 0.25"
     );
 }
 

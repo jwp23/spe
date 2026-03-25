@@ -23,9 +23,9 @@ const DOUBLE_CLICK_DISTANCE_PX: f32 = 5.0;
 /// Blue used for selection boxes, resize handles, and text input borders.
 pub const SELECTION_COLOR: iced::Color = iced::Color::from_rgb(0.2, 0.5, 1.0);
 /// Opacity for the background tint behind committed overlay text.
-pub(crate) const OVERLAY_TINT_ALPHA: f32 = 0.08;
+pub(crate) const OVERLAY_TINT_ALPHA: f32 = 0.15;
 /// Opacity for the background tint when hovering over an overlay.
-pub(crate) const OVERLAY_TINT_HOVER_ALPHA: f32 = 0.15;
+pub(crate) const OVERLAY_TINT_HOVER_ALPHA: f32 = 0.25;
 /// Opacity for the border drawn around a hovered overlay.
 pub(crate) const OVERLAY_TINT_HOVER_BORDER_ALPHA: f32 = 0.5;
 /// Background color for the canvas area behind PDF pages.
