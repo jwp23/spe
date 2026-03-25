@@ -47,6 +47,12 @@ cargo test -- --ignored      # E2E tests (requires GPU context)
 
 Pre-commit hooks run secrets scanning, fmt, clippy, and tests automatically.
 
+### Visual Debugging (Claude Code)
+
+A screenshot tool lets Claude Code take screenshots of the running app to verify visual output. It uses `cage` (headless Wayland compositor), `grim` (screenshot capture), and `socat` (IPC), and requires starting the app with `--ipc`.
+
+See [docs/screenshot-tool.md](docs/screenshot-tool.md) for system dependencies, harness script usage, and the full IPC command reference.
+
 ## Project Structure
 
 ```

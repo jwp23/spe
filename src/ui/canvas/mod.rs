@@ -28,6 +28,10 @@ pub(crate) const OVERLAY_TINT_ALPHA: f32 = 0.15;
 pub(crate) const OVERLAY_TINT_HOVER_ALPHA: f32 = 0.25;
 /// Opacity for the border drawn around a hovered overlay.
 pub(crate) const OVERLAY_TINT_HOVER_BORDER_ALPHA: f32 = 0.5;
+/// Padding around the selection box border (screen pixels).
+const SELECTION_BOX_PADDING: f32 = 2.0;
+/// Stroke width for selection-style borders drawn via `draw_image` strips.
+const SELECTION_BORDER_WIDTH: f32 = 1.5;
 /// Background color for the canvas area behind PDF pages.
 const CANVAS_BACKGROUND: iced::Color = iced::Color::from_rgb(0.85, 0.85, 0.85);
 
@@ -575,12 +579,15 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
             let rect_w = (end_canvas.x - start_canvas.x).abs();
             let rect_h = (end_canvas.y - start_canvas.y).abs();
 
-            frame.stroke_rectangle(
-                iced::Point::new(rect_x, rect_y),
-                iced::Size::new(rect_w, rect_h),
-                canvas::Stroke::default()
-                    .with_color(SELECTION_COLOR)
-                    .with_width(1.5),
+            draw_image_border(
+                &mut frame,
+                iced::Rectangle::new(
+                    iced::Point::new(rect_x, rect_y),
+                    iced::Size::new(rect_w, rect_h),
+                ),
+                SELECTION_BORDER_WIDTH,
+                SELECTION_COLOR,
+                1.0,
             );
         }
 
@@ -707,49 +714,39 @@ fn color_image(color: iced::Color, alpha: f32) -> Handle {
     Handle::from_rgba(1, 1, pixels)
 }
 
-/// Draw a semi-transparent tint rectangle behind overlay text.
+/// Draw a filled rectangle on top of page images.
 ///
-/// Uses `draw_image` instead of `fill_rectangle` because Iced's wgpu
-/// canvas always renders images on top of tessellated geometry.
-fn draw_overlay_tint(
+/// Uses `draw_image` with a stretched 1x1 pixel image instead of
+/// `fill_rectangle` because Iced's wgpu canvas always renders images
+/// on top of tessellated geometry (spe-4ha).
+fn draw_image_rect(
     frame: &mut canvas::Frame,
-    overlay: &TextOverlay,
-    screen_x: f32,
-    screen_y: f32,
-    scale: f32,
-    tint_color: iced::Color,
+    rect: iced::Rectangle,
+    color: iced::Color,
     alpha: f32,
 ) {
-    let (w, h) = tint_size_for_overlay(overlay, scale);
-    let handle = color_image(tint_color, alpha);
-    frame.draw_image(
-        iced::Rectangle::new(
-            iced::Point::new(screen_x, screen_y - h),
-            iced::Size::new(w, h),
-        ),
-        &handle,
-    );
+    let handle = color_image(color, alpha);
+    frame.draw_image(rect, &handle);
 }
 
-/// Draw a thin border around a hovered overlay.
+/// Draw a rectangular border on top of page images.
 ///
 /// Uses four thin `draw_image` strips instead of `stroke_rectangle`
 /// because Iced's wgpu canvas always renders images on top of
-/// tessellated geometry.
-fn draw_overlay_hover_border(
+/// tessellated geometry (spe-4ha).
+fn draw_image_border(
     frame: &mut canvas::Frame,
-    overlay: &TextOverlay,
-    screen_x: f32,
-    screen_y: f32,
-    scale: f32,
-    border_color: iced::Color,
+    rect: iced::Rectangle,
+    border_width: f32,
+    color: iced::Color,
+    alpha: f32,
 ) {
-    let (w, h) = tint_size_for_overlay(overlay, scale);
-    let handle = color_image(border_color, OVERLAY_TINT_HOVER_BORDER_ALPHA);
-    let x = screen_x;
-    let y = screen_y - h;
-    let bw = 1.0; // border width in pixels
-
+    let handle = color_image(color, alpha);
+    let bw = border_width;
+    let x = rect.x;
+    let y = rect.y;
+    let w = rect.width;
+    let h = rect.height;
     // Top edge
     frame.draw_image(
         iced::Rectangle::new(iced::Point::new(x, y), iced::Size::new(w, bw)),
@@ -772,6 +769,50 @@ fn draw_overlay_hover_border(
     );
 }
 
+/// Draw a semi-transparent tint rectangle behind overlay text.
+fn draw_overlay_tint(
+    frame: &mut canvas::Frame,
+    overlay: &TextOverlay,
+    screen_x: f32,
+    screen_y: f32,
+    scale: f32,
+    tint_color: iced::Color,
+    alpha: f32,
+) {
+    let (w, h) = tint_size_for_overlay(overlay, scale);
+    draw_image_rect(
+        frame,
+        iced::Rectangle::new(
+            iced::Point::new(screen_x, screen_y - h),
+            iced::Size::new(w, h),
+        ),
+        tint_color,
+        alpha,
+    );
+}
+
+/// Draw a thin border around a hovered overlay.
+fn draw_overlay_hover_border(
+    frame: &mut canvas::Frame,
+    overlay: &TextOverlay,
+    screen_x: f32,
+    screen_y: f32,
+    scale: f32,
+    border_color: iced::Color,
+) {
+    let (w, h) = tint_size_for_overlay(overlay, scale);
+    draw_image_border(
+        frame,
+        iced::Rectangle::new(
+            iced::Point::new(screen_x, screen_y - h),
+            iced::Size::new(w, h),
+        ),
+        1.0,
+        border_color,
+        OVERLAY_TINT_HOVER_BORDER_ALPHA,
+    );
+}
+
 /// Draw a selection bounding box around an overlay at a screen position.
 fn draw_selection_box(
     frame: &mut canvas::Frame,
@@ -783,16 +824,20 @@ fn draw_selection_box(
     scale: f32,
 ) {
     let bbox = overlay_bounding_box(text, font, font_size);
-    let w = bbox.width * scale;
-    let h = bbox.height * scale;
-    let padding = 2.0;
-
-    frame.stroke_rectangle(
-        iced::Point::new(screen_x - padding, screen_y - h - padding),
-        iced::Size::new(w + 2.0 * padding, h + 2.0 * padding),
-        canvas::Stroke::default()
-            .with_color(SELECTION_COLOR)
-            .with_width(1.5),
+    let w = bbox.width * scale + 2.0 * SELECTION_BOX_PADDING;
+    let h = bbox.height * scale + 2.0 * SELECTION_BOX_PADDING;
+    draw_image_border(
+        frame,
+        iced::Rectangle::new(
+            iced::Point::new(
+                screen_x - SELECTION_BOX_PADDING,
+                screen_y - bbox.height * scale - SELECTION_BOX_PADDING,
+            ),
+            iced::Size::new(w, h),
+        ),
+        SELECTION_BORDER_WIDTH,
+        SELECTION_COLOR,
+        1.0,
     );
 }
 
@@ -810,10 +855,14 @@ fn draw_resize_handle(
 ) {
     let handle_x = overlay_sx + width_pts * scale;
     let scaled_size = font_size * scale;
-    frame.fill_rectangle(
-        iced::Point::new(handle_x - 2.0, overlay_sy - scaled_size),
-        iced::Size::new(4.0, scaled_size),
+    draw_image_rect(
+        frame,
+        iced::Rectangle::new(
+            iced::Point::new(handle_x - 2.0, overlay_sy - scaled_size),
+            iced::Size::new(4.0, scaled_size),
+        ),
         SELECTION_COLOR,
+        1.0,
     );
 }
 

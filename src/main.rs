@@ -1,6 +1,7 @@
 fn main() -> iced::Result {
+    let ipc_enabled = std::env::args().any(|a| a == "--ipc");
     iced::application(
-        spe::app::App::new,
+        move || spe::app::App::new(ipc_enabled),
         spe::app::App::update,
         spe::app::App::view,
     )

@@ -73,6 +73,12 @@ pub struct App {
     pub editor_content: Option<iced::widget::text_editor::Content>,
     /// Stable ID for the floating text widget, used for programmatic focus.
     pub text_input_id: iced::widget::Id,
+    /// Whether the IPC socket subscription is active.
+    pub ipc_enabled: bool,
+    /// Sender used to deliver responses back to the IPC subscription loop.
+    pub ipc_response_sender: Option<crate::ipc::ResponseSender>,
+    /// A WaitReady command arrived while rendering was in progress; respond when idle.
+    pub pending_ipc_wait: bool,
 }
 
 /// All messages the application can process.
@@ -150,10 +156,13 @@ pub enum Message {
 
     // Font loaded
     FontLoaded(Result<(), iced::font::Error>),
+
+    // IPC
+    Ipc(crate::ipc::IpcEvent),
 }
 
 impl App {
-    pub fn new() -> (Self, iced::Task<Message>) {
+    pub fn new(ipc_enabled: bool) -> (Self, iced::Task<Message>) {
         let app = Self {
             document: None,
             toolbar: ToolbarState::default(),
@@ -168,9 +177,49 @@ impl App {
             status_message: None,
             editor_content: None,
             text_input_id: iced::widget::Id::unique(),
+            ipc_enabled,
+            ipc_response_sender: None,
+            pending_ipc_wait: false,
         };
         let font_task = iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded);
         (app, font_task)
+    }
+
+    /// Returns true when no render tasks are in flight and all pages have been rendered.
+    pub fn is_render_idle(&self) -> bool {
+        if self.sidebar.active_batch_tasks > 0 {
+            return false;
+        }
+        if let Some(doc) = &self.document {
+            for page in 1..=doc.page_count {
+                if !doc.page_images.contains_key(&page) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// If a WaitReady response is pending and rendering is now idle, send the response.
+    pub(super) fn check_ipc_wait(&mut self) -> iced::Task<Message> {
+        if self.pending_ipc_wait && self.is_render_idle() {
+            self.pending_ipc_wait = false;
+            let response = crate::ipc::IpcResponse {
+                ok: true,
+                error: None,
+            };
+            if let Some(sender) = &self.ipc_response_sender {
+                let sender = sender.clone();
+                return iced::Task::perform(
+                    async move {
+                        let tx = sender.0.lock().await;
+                        let _ = tx.send(response).await;
+                    },
+                    |_| Message::Noop,
+                );
+            }
+        }
+        iced::Task::none()
     }
 
     pub fn title(&self) -> String {
@@ -255,7 +304,9 @@ impl App {
                     for (page, handle) in pages {
                         doc.page_images.insert(page, handle);
                     }
-                    return self.render_visible_pages();
+                    let render_task = self.render_visible_pages();
+                    let wait_task = self.check_ipc_wait();
+                    return iced::Task::batch([render_task, wait_task]);
                 }
             }
 
@@ -496,12 +547,16 @@ impl App {
             Message::ThumbnailBatchRendered(batch, generation) => {
                 self.sidebar.active_batch_tasks = self.sidebar.active_batch_tasks.saturating_sub(1);
                 if generation != self.sidebar.backfill_generation {
-                    return self.schedule_thumbnail_backfill();
+                    let backfill_task = self.schedule_thumbnail_backfill();
+                    let wait_task = self.check_ipc_wait();
+                    return iced::Task::batch([backfill_task, wait_task]);
                 }
                 for (page, handle) in batch {
                     self.sidebar.thumbnails.insert(page, handle);
                 }
-                return self.schedule_thumbnail_backfill();
+                let backfill_task = self.schedule_thumbnail_backfill();
+                let wait_task = self.check_ipc_wait();
+                return iced::Task::batch([backfill_task, wait_task]);
             }
             Message::SidebarScrolled(scroll_y, viewport_height) => {
                 self.sidebar.scroll_y = scroll_y;
@@ -594,8 +649,75 @@ impl App {
 
             // --- Font loaded ---
             Message::FontLoaded(_) => {}
+
+            // --- IPC ---
+            Message::Ipc(event) => {
+                return self.handle_ipc_event(event);
+            }
         }
         iced::Task::none()
+    }
+
+    fn handle_ipc_event(&mut self, event: crate::ipc::IpcEvent) -> iced::Task<Message> {
+        match event {
+            crate::ipc::IpcEvent::Ready(sender) => {
+                self.ipc_response_sender = Some(sender);
+                iced::Task::none()
+            }
+            crate::ipc::IpcEvent::Command(cmd) => {
+                let (response, msg_result) = match cmd.to_message(self.document.as_ref()) {
+                    Ok(msg) => (
+                        crate::ipc::IpcResponse {
+                            ok: true,
+                            error: None,
+                        },
+                        Some(msg),
+                    ),
+                    Err(e) => (
+                        crate::ipc::IpcResponse {
+                            ok: false,
+                            error: Some(e.to_string()),
+                        },
+                        None,
+                    ),
+                };
+                if let Some(msg) = msg_result {
+                    let _ = self.update(msg);
+                }
+                if let Some(sender) = &self.ipc_response_sender {
+                    let sender = sender.clone();
+                    return iced::Task::perform(
+                        async move {
+                            let tx = sender.0.lock().await;
+                            let _ = tx.send(response).await;
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+                iced::Task::none()
+            }
+            crate::ipc::IpcEvent::WaitReady => {
+                if self.is_render_idle() {
+                    let response = crate::ipc::IpcResponse {
+                        ok: true,
+                        error: None,
+                    };
+                    if let Some(sender) = &self.ipc_response_sender {
+                        let sender = sender.clone();
+                        return iced::Task::perform(
+                            async move {
+                                let tx = sender.0.lock().await;
+                                let _ = tx.send(response).await;
+                            },
+                            |_| Message::Noop,
+                        );
+                    }
+                } else {
+                    self.pending_ipc_wait = true;
+                }
+                iced::Task::none()
+            }
+        }
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
@@ -656,7 +778,13 @@ impl App {
             iced::Subscription::none()
         };
 
-        iced::Subscription::batch([event_sub, shimmer_sub, toast_sub])
+        let ipc_sub = if self.ipc_enabled {
+            crate::ipc::ipc_subscription().map(Message::Ipc)
+        } else {
+            iced::Subscription::none()
+        };
+
+        iced::Subscription::batch([event_sub, shimmer_sub, toast_sub, ipc_sub])
     }
 }
 

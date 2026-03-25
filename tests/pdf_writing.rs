@@ -12,7 +12,8 @@ use spe::pdf::writer::write_overlays;
 use tempfile::NamedTempFile;
 
 /// Builds a minimal single-page PDF and saves it to `path`.
-fn create_test_pdf(path: &Path) {
+/// This is also used to create the test fixture at `tests/fixtures/single-page.pdf`.
+pub fn create_test_pdf(path: &Path) {
     let mut doc = Document::with_version("1.5");
 
     let pages_id = doc.new_object_id();
@@ -373,4 +374,65 @@ fn write_multiline_word_wrap_breaks_at_width_boundary() {
     });
     assert!(has_aaaa, "expected 'AAAA' in Tj ops");
     assert!(has_bbbb, "expected 'BBBB' in Tj ops");
+}
+
+#[test]
+fn generate_fixture_single_page_pdf() {
+    // This test generates the fixture PDF used by screenshot and other tests.
+    // It creates a blank US Letter page (612x792 points) with no content.
+    let fixtures_dir = std::path::PathBuf::from("tests/fixtures");
+    std::fs::create_dir_all(&fixtures_dir).expect("failed to create fixtures directory");
+
+    let fixture_path = fixtures_dir.join("single-page.pdf");
+    let mut doc = Document::with_version("1.5");
+
+    let pages_id = doc.new_object_id();
+
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! {
+            "F1" => font_id,
+        },
+    });
+
+    // Empty content stream (no visible content)
+    let content = Content { operations: vec![] };
+
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        content.encode().expect("content encoding failed"),
+    ));
+
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+    });
+
+    let pages = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![Object::Reference(page_id)],
+        "Count" => 1_i64,
+        "Resources" => resources_id,
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    doc.save(&fixture_path).expect("failed to save fixture PDF");
+
+    // Verify the fixture was created and is loadable.
+    let loaded = Document::load(&fixture_path).expect("failed to load fixture PDF");
+    let pages = loaded.get_pages();
+    assert_eq!(pages.len(), 1, "fixture PDF must have exactly 1 page");
 }

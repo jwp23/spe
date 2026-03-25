@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn app_default_has_no_document() {
-    let (app, _) = App::new();
+    let (app, _) = App::new(false);
     assert!(app.document.is_none());
     assert!(app.undo_stack.is_empty());
     assert!(app.redo_stack.is_empty());
@@ -10,13 +10,13 @@ fn app_default_has_no_document() {
 
 #[test]
 fn next_page_without_document_is_noop() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.update(Message::NextPage);
     assert!(app.document.is_none());
 }
 
 fn test_app_with_document() -> App {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.document = Some(DocumentState {
         source_path: PathBuf::from("/tmp/test.pdf"),
         save_path: None,
@@ -168,7 +168,7 @@ fn change_font_updates_overlay_and_toolbar() {
 
 #[test]
 fn zoom_in_increases_zoom() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     let initial = app.canvas.zoom;
     app.update(Message::ZoomIn);
     assert!(app.canvas.zoom > initial);
@@ -176,7 +176,7 @@ fn zoom_in_increases_zoom() {
 
 #[test]
 fn zoom_reset_returns_to_one() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.update(Message::ZoomIn);
     app.update(Message::ZoomReset);
     assert!((app.canvas.zoom - 1.0).abs() < f32::EPSILON);
@@ -184,7 +184,7 @@ fn zoom_reset_returns_to_one() {
 
 #[test]
 fn zoom_in_increments_generation() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     assert_eq!(app.canvas.zoom_generation, 0);
     app.update(Message::ZoomIn);
     assert_eq!(app.canvas.zoom_generation, 1);
@@ -194,7 +194,7 @@ fn zoom_in_increments_generation() {
 
 #[test]
 fn zoom_out_increments_generation() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.update(Message::ZoomIn); // go above 1.0 so ZoomOut has room
     let gen_before = app.canvas.zoom_generation;
     app.update(Message::ZoomOut);
@@ -203,7 +203,7 @@ fn zoom_out_increments_generation() {
 
 #[test]
 fn zoom_reset_increments_generation() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.update(Message::ZoomIn);
     let gen_before = app.canvas.zoom_generation;
     app.update(Message::ZoomReset);
@@ -249,7 +249,7 @@ fn zoom_debounce_expired_stale_generation_is_noop() {
 
 #[test]
 fn toggle_sidebar_flips_visibility() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     assert!(app.sidebar.visible);
     app.update(Message::ToggleSidebar);
     assert!(!app.sidebar.visible);
@@ -383,13 +383,13 @@ fn ctrl_minus_maps_to_zoom_out() {
 
 #[test]
 fn view_with_no_document_does_not_panic() {
-    let (app, _) = App::new();
+    let (app, _) = App::new(false);
     let _element = app.view();
 }
 
 #[test]
 fn title_without_document() {
-    let (app, _) = App::new();
+    let (app, _) = App::new(false);
     assert_eq!(app.title(), "SPE - PDF Text Overlay Editor");
 }
 
@@ -544,7 +544,7 @@ fn zoom_fit_width_sets_correct_zoom() {
 
 #[test]
 fn zoom_fit_width_noop_without_document() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.window_size = Some(iced::Size::new(1000.0, 800.0));
     let _ = app.update(Message::ZoomFitWidth);
     assert!((app.canvas.zoom - 1.0).abs() < f32::EPSILON);
@@ -587,26 +587,26 @@ fn zoom_fit_width_increments_generation() {
 
 #[test]
 fn app_default_has_no_window_size() {
-    let (app, _) = App::new();
+    let (app, _) = App::new(false);
     assert!(app.window_size.is_none());
 }
 
 #[test]
 fn app_default_scale_factor_is_one() {
-    let (app, _) = App::new();
+    let (app, _) = App::new(false);
     assert!((app.scale_factor - 1.0).abs() < f32::EPSILON);
 }
 
 #[test]
 fn scale_factor_changed_updates_state() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     let _ = app.update(Message::ScaleFactorChanged(2.0));
     assert!((app.scale_factor - 2.0).abs() < f32::EPSILON);
 }
 
 #[test]
 fn window_resized_stores_size() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     let _ = app.update(Message::WindowResized(iced::Size::new(1920.0, 1080.0)));
     let size = app.window_size.unwrap();
     assert!((size.width - 1920.0).abs() < f32::EPSILON);
@@ -644,7 +644,7 @@ fn thumbnail_batch_rendered_ignores_stale_generation() {
 
 #[test]
 fn schedule_thumbnail_backfill_returns_none_without_document() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     // Should not panic and should return a no-op task
     let _ = app.schedule_thumbnail_backfill();
 }
@@ -1061,7 +1061,7 @@ fn handle_save_with_existing_path_sets_status_message() {
 
 #[test]
 fn dismiss_toast_clears_message_after_five_seconds() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     // Plant a message that is already 6 seconds old
     let old_time = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(6))
@@ -1073,7 +1073,7 @@ fn dismiss_toast_clears_message_after_five_seconds() {
 
 #[test]
 fn dismiss_toast_keeps_message_before_five_seconds() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     // Plant a message that is only 1 second old
     app.status_message = Some(("test".to_string(), std::time::Instant::now()));
     app.update(Message::DismissToast);
@@ -1082,13 +1082,13 @@ fn dismiss_toast_keeps_message_before_five_seconds() {
 
 #[test]
 fn app_default_has_no_status_message() {
-    let (app, _) = App::new();
+    let (app, _) = App::new(false);
     assert!(app.status_message.is_none());
 }
 
 #[test]
 fn view_with_toast_does_not_panic() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     app.status_message = Some(("Saved to foo.pdf".to_string(), std::time::Instant::now()));
     let _element = app.view();
 }
@@ -1333,7 +1333,7 @@ fn edit_overlay_out_of_range_is_noop() {
 
 #[test]
 fn edit_overlay_without_document_is_noop() {
-    let (mut app, _) = App::new();
+    let (mut app, _) = App::new(false);
     // No document — should not panic
     app.update(Message::EditOverlay(0));
     assert!(app.canvas.active_overlay.is_none());
@@ -1557,7 +1557,57 @@ fn edit_multiline_overlay_returns_focus_task() {
 
 #[test]
 fn app_has_text_input_id() {
-    let (app, _) = App::new();
+    let (app, _) = App::new(false);
     // text_input_id must exist for focus operations
     let _id = &app.text_input_id;
+}
+
+// =====================================================================
+// spe-fsu.3.1: --ipc CLI flag and IPC subscription wiring
+// =====================================================================
+
+#[test]
+fn app_default_ipc_disabled() {
+    let (app, _) = App::new(false);
+    assert!(!app.ipc_enabled);
+    assert!(app.ipc_response_sender.is_none());
+    assert!(!app.pending_ipc_wait);
+}
+
+#[test]
+fn app_ipc_enabled_when_requested() {
+    let (app, _) = App::new(true);
+    assert!(app.ipc_enabled);
+}
+
+#[test]
+fn is_render_idle_true_when_no_document() {
+    let (app, _) = App::new(false);
+    assert!(app.is_render_idle());
+}
+
+#[test]
+fn is_render_idle_false_with_active_tasks() {
+    let (mut app, _) = App::new(false);
+    app.sidebar.active_batch_tasks = 1;
+    assert!(!app.is_render_idle());
+}
+
+#[test]
+fn is_render_idle_false_when_page_not_yet_rendered() {
+    let mut app = test_app_with_document();
+    // Document has 3 pages but no page_images — not idle
+    assert!(!app.is_render_idle());
+}
+
+#[test]
+fn is_render_idle_true_when_all_pages_rendered() {
+    let mut app = test_app_with_document();
+    let doc = app.document.as_mut().unwrap();
+    let page_count = doc.page_count;
+    let handle = iced::widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]);
+    for page in 1..=page_count {
+        doc.page_images.insert(page, handle.clone());
+    }
+    assert!(app.is_render_idle());
 }
