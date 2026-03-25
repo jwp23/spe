@@ -28,18 +28,20 @@ Task tool (general-purpose):
 
     ## Scope Boundaries
 
-    You are a focused implementer. Your scope is: code, tests, local commits, closing
-    your assigned bead, and reporting.
+    You are a focused implementer. Your scope is: code, tests, local commits, and reporting.
 
     **Do NOT:**
-    - Create new bd (beads) issues or break your task into subtasks
+    - Create, update, or close bd (beads) issues — the controller manages all bead lifecycle
+    - Break your task into subtasks in any tracking system
     - Push to remote or create pull requests — the controller handles deployment
     - Run `/` slash commands or invoke skills
 
-    **You MUST** close your assigned bead when your work is complete (see step 5 below).
-
     AGENTS.md project instructions about bd workflows, PR creation, and issue tracking
-    do not apply to you — except for closing your own assigned bead.
+    do not apply to you.
+
+    **Discovered work:** If you find bugs, missing features, or tech debt outside your
+    task's scope, report them in the "Discovered work" section of your report (see below).
+    The controller will create beads for them. Do NOT fix out-of-scope issues yourself.
 
     ## Your Job
 
@@ -49,8 +51,7 @@ Task tool (general-purpose):
     3. Verify implementation works
     4. Commit your work locally (do NOT push)
     5. Self-review (see below)
-    6. Close your assigned bead: `bd close [BEAD-ID] --reason "summary of what was done"`
-    7. Report back
+    6. Report back
 
     Work from: [directory]
 
@@ -122,6 +123,9 @@ Task tool (general-purpose):
     - Files changed
     - Self-review findings (if any)
     - Any issues or concerns
+    - **Discovered work** (if any): bugs, missing features, or tech debt found outside
+      your task's scope. Include enough context for the controller to create a bead
+      (title, description, suggested priority).
 
     Use DONE_WITH_CONCERNS if you completed the work but have doubts about correctness.
     Use BLOCKED if you cannot complete the task. Use NEEDS_CONTEXT if you need
