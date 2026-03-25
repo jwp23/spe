@@ -579,40 +579,15 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
             let rect_w = (end_canvas.x - start_canvas.x).abs();
             let rect_h = (end_canvas.y - start_canvas.y).abs();
 
-            // Four draw_image strips instead of stroke_rectangle (spe-4ha).
-            let bw = SELECTION_BORDER_WIDTH;
-            let handle = color_image(SELECTION_COLOR, 1.0);
-            // Top edge
-            frame.draw_image(
+            draw_image_border(
+                &mut frame,
                 iced::Rectangle::new(
                     iced::Point::new(rect_x, rect_y),
-                    iced::Size::new(rect_w, bw),
+                    iced::Size::new(rect_w, rect_h),
                 ),
-                &handle,
-            );
-            // Bottom edge
-            frame.draw_image(
-                iced::Rectangle::new(
-                    iced::Point::new(rect_x, rect_y + rect_h - bw),
-                    iced::Size::new(rect_w, bw),
-                ),
-                &handle,
-            );
-            // Left edge
-            frame.draw_image(
-                iced::Rectangle::new(
-                    iced::Point::new(rect_x, rect_y),
-                    iced::Size::new(bw, rect_h),
-                ),
-                &handle,
-            );
-            // Right edge
-            frame.draw_image(
-                iced::Rectangle::new(
-                    iced::Point::new(rect_x + rect_w - bw, rect_y),
-                    iced::Size::new(bw, rect_h),
-                ),
-                &handle,
+                SELECTION_BORDER_WIDTH,
+                SELECTION_COLOR,
+                1.0,
             );
         }
 
@@ -739,49 +714,39 @@ fn color_image(color: iced::Color, alpha: f32) -> Handle {
     Handle::from_rgba(1, 1, pixels)
 }
 
-/// Draw a semi-transparent tint rectangle behind overlay text.
+/// Draw a filled rectangle on top of page images.
 ///
-/// Uses `draw_image` instead of `fill_rectangle` because Iced's wgpu
-/// canvas always renders images on top of tessellated geometry.
-fn draw_overlay_tint(
+/// Uses `draw_image` with a stretched 1x1 pixel image instead of
+/// `fill_rectangle` because Iced's wgpu canvas always renders images
+/// on top of tessellated geometry (spe-4ha).
+fn draw_image_rect(
     frame: &mut canvas::Frame,
-    overlay: &TextOverlay,
-    screen_x: f32,
-    screen_y: f32,
-    scale: f32,
-    tint_color: iced::Color,
+    rect: iced::Rectangle,
+    color: iced::Color,
     alpha: f32,
 ) {
-    let (w, h) = tint_size_for_overlay(overlay, scale);
-    let handle = color_image(tint_color, alpha);
-    frame.draw_image(
-        iced::Rectangle::new(
-            iced::Point::new(screen_x, screen_y - h),
-            iced::Size::new(w, h),
-        ),
-        &handle,
-    );
+    let handle = color_image(color, alpha);
+    frame.draw_image(rect, &handle);
 }
 
-/// Draw a thin border around a hovered overlay.
+/// Draw a rectangular border on top of page images.
 ///
 /// Uses four thin `draw_image` strips instead of `stroke_rectangle`
 /// because Iced's wgpu canvas always renders images on top of
-/// tessellated geometry.
-fn draw_overlay_hover_border(
+/// tessellated geometry (spe-4ha).
+fn draw_image_border(
     frame: &mut canvas::Frame,
-    overlay: &TextOverlay,
-    screen_x: f32,
-    screen_y: f32,
-    scale: f32,
-    border_color: iced::Color,
+    rect: iced::Rectangle,
+    border_width: f32,
+    color: iced::Color,
+    alpha: f32,
 ) {
-    let (w, h) = tint_size_for_overlay(overlay, scale);
-    let handle = color_image(border_color, OVERLAY_TINT_HOVER_BORDER_ALPHA);
-    let x = screen_x;
-    let y = screen_y - h;
-    let bw = 1.0; // border width in pixels
-
+    let handle = color_image(color, alpha);
+    let bw = border_width;
+    let x = rect.x;
+    let y = rect.y;
+    let w = rect.width;
+    let h = rect.height;
     // Top edge
     frame.draw_image(
         iced::Rectangle::new(iced::Point::new(x, y), iced::Size::new(w, bw)),
@@ -804,11 +769,51 @@ fn draw_overlay_hover_border(
     );
 }
 
+/// Draw a semi-transparent tint rectangle behind overlay text.
+fn draw_overlay_tint(
+    frame: &mut canvas::Frame,
+    overlay: &TextOverlay,
+    screen_x: f32,
+    screen_y: f32,
+    scale: f32,
+    tint_color: iced::Color,
+    alpha: f32,
+) {
+    let (w, h) = tint_size_for_overlay(overlay, scale);
+    draw_image_rect(
+        frame,
+        iced::Rectangle::new(
+            iced::Point::new(screen_x, screen_y - h),
+            iced::Size::new(w, h),
+        ),
+        tint_color,
+        alpha,
+    );
+}
+
+/// Draw a thin border around a hovered overlay.
+fn draw_overlay_hover_border(
+    frame: &mut canvas::Frame,
+    overlay: &TextOverlay,
+    screen_x: f32,
+    screen_y: f32,
+    scale: f32,
+    border_color: iced::Color,
+) {
+    let (w, h) = tint_size_for_overlay(overlay, scale);
+    draw_image_border(
+        frame,
+        iced::Rectangle::new(
+            iced::Point::new(screen_x, screen_y - h),
+            iced::Size::new(w, h),
+        ),
+        1.0,
+        border_color,
+        OVERLAY_TINT_HOVER_BORDER_ALPHA,
+    );
+}
+
 /// Draw a selection bounding box around an overlay at a screen position.
-///
-/// Uses four thin `draw_image` strips instead of `stroke_rectangle`
-/// because Iced's wgpu canvas always renders images on top of
-/// tessellated geometry. See spe-4ha.
 fn draw_selection_box(
     frame: &mut canvas::Frame,
     text: &str,
@@ -821,30 +826,18 @@ fn draw_selection_box(
     let bbox = overlay_bounding_box(text, font, font_size);
     let w = bbox.width * scale + 2.0 * SELECTION_BOX_PADDING;
     let h = bbox.height * scale + 2.0 * SELECTION_BOX_PADDING;
-    let x = screen_x - SELECTION_BOX_PADDING;
-    let y = screen_y - bbox.height * scale - SELECTION_BOX_PADDING;
-    let bw = SELECTION_BORDER_WIDTH;
-    let handle = color_image(SELECTION_COLOR, 1.0);
-
-    // Top edge
-    frame.draw_image(
-        iced::Rectangle::new(iced::Point::new(x, y), iced::Size::new(w, bw)),
-        &handle,
-    );
-    // Bottom edge
-    frame.draw_image(
-        iced::Rectangle::new(iced::Point::new(x, y + h - bw), iced::Size::new(w, bw)),
-        &handle,
-    );
-    // Left edge
-    frame.draw_image(
-        iced::Rectangle::new(iced::Point::new(x, y), iced::Size::new(bw, h)),
-        &handle,
-    );
-    // Right edge
-    frame.draw_image(
-        iced::Rectangle::new(iced::Point::new(x + w - bw, y), iced::Size::new(bw, h)),
-        &handle,
+    draw_image_border(
+        frame,
+        iced::Rectangle::new(
+            iced::Point::new(
+                screen_x - SELECTION_BOX_PADDING,
+                screen_y - bbox.height * scale - SELECTION_BOX_PADDING,
+            ),
+            iced::Size::new(w, h),
+        ),
+        SELECTION_BORDER_WIDTH,
+        SELECTION_COLOR,
+        1.0,
     );
 }
 
@@ -852,9 +845,6 @@ fn draw_selection_box(
 const RESIZE_HANDLE_HIT_RADIUS: f32 = 4.0;
 
 /// Draw a vertical bar resize handle on the right edge of a multi-line overlay.
-///
-/// Uses `draw_image` instead of `fill_rectangle` because Iced's wgpu
-/// canvas always renders images on top of tessellated geometry. See spe-4ha.
 fn draw_resize_handle(
     frame: &mut canvas::Frame,
     overlay_sx: f32,
@@ -865,13 +855,14 @@ fn draw_resize_handle(
 ) {
     let handle_x = overlay_sx + width_pts * scale;
     let scaled_size = font_size * scale;
-    let handle = color_image(SELECTION_COLOR, 1.0);
-    frame.draw_image(
+    draw_image_rect(
+        frame,
         iced::Rectangle::new(
             iced::Point::new(handle_x - 2.0, overlay_sy - scaled_size),
             iced::Size::new(4.0, scaled_size),
         ),
-        &handle,
+        SELECTION_COLOR,
+        1.0,
     );
 }
 
