@@ -45,14 +45,15 @@ digraph process {
 
     subgraph cluster_per_task {
         label="Per Task";
-        "Dispatch implementer subagent (./implementer-prompt.md)" [shape=box];
+        "Assess task complexity\n(see Model Selection)" [shape=diamond];
+        "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)" [shape=box];
         "Implementer subagent asks questions?" [shape=diamond];
         "Answer questions, provide context" [shape=box];
         "Implementer subagent implements, tests, commits, self-reviews" [shape=box];
-        "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)" [shape=box];
+        "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)" [shape=box];
         "Spec reviewer subagent confirms code matches spec?" [shape=diamond];
         "Implementer subagent fixes spec gaps" [shape=box];
-        "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [shape=box];
+        "Dispatch code quality reviewer subagent\n(model: opus)\n(./code-quality-reviewer-prompt.md)" [shape=box];
         "Code quality reviewer subagent approves?" [shape=diamond];
         "Implementer subagent fixes quality issues" [shape=box];
         "Close task: bd close <task-id>" [shape=box];
@@ -67,22 +68,23 @@ digraph process {
     "Use finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
 
     "Load epic features:\nbd children <epic-id> --json" -> "Load feature tasks:\nbd children <feature-id> --json";
-    "Load feature tasks:\nbd children <feature-id> --json" -> "Dispatch implementer subagent (./implementer-prompt.md)";
-    "Dispatch implementer subagent (./implementer-prompt.md)" -> "Implementer subagent asks questions?";
+    "Load feature tasks:\nbd children <feature-id> --json" -> "Assess task complexity\n(see Model Selection)";
+    "Assess task complexity\n(see Model Selection)" -> "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)";
+    "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)" -> "Implementer subagent asks questions?";
     "Implementer subagent asks questions?" -> "Answer questions, provide context" [label="yes"];
-    "Answer questions, provide context" -> "Dispatch implementer subagent (./implementer-prompt.md)";
+    "Answer questions, provide context" -> "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)";
     "Implementer subagent asks questions?" -> "Implementer subagent implements, tests, commits, self-reviews" [label="no"];
-    "Implementer subagent implements, tests, commits, self-reviews" -> "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)";
-    "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)" -> "Spec reviewer subagent confirms code matches spec?";
+    "Implementer subagent implements, tests, commits, self-reviews" -> "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)";
+    "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)" -> "Spec reviewer subagent confirms code matches spec?";
     "Spec reviewer subagent confirms code matches spec?" -> "Implementer subagent fixes spec gaps" [label="no"];
-    "Implementer subagent fixes spec gaps" -> "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)" [label="re-review"];
-    "Spec reviewer subagent confirms code matches spec?" -> "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [label="yes"];
-    "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" -> "Code quality reviewer subagent approves?";
+    "Implementer subagent fixes spec gaps" -> "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)" [label="re-review"];
+    "Spec reviewer subagent confirms code matches spec?" -> "Dispatch code quality reviewer subagent\n(model: opus)\n(./code-quality-reviewer-prompt.md)" [label="yes"];
+    "Dispatch code quality reviewer subagent\n(model: opus)\n(./code-quality-reviewer-prompt.md)" -> "Code quality reviewer subagent approves?";
     "Code quality reviewer subagent approves?" -> "Implementer subagent fixes quality issues" [label="no"];
-    "Implementer subagent fixes quality issues" -> "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [label="re-review"];
+    "Implementer subagent fixes quality issues" -> "Dispatch code quality reviewer subagent\n(model: opus)\n(./code-quality-reviewer-prompt.md)" [label="re-review"];
     "Code quality reviewer subagent approves?" -> "Close task: bd close <task-id>" [label="yes"];
     "Close task: bd close <task-id>" -> "More tasks in feature?";
-    "More tasks in feature?" -> "Dispatch implementer subagent (./implementer-prompt.md)" [label="yes"];
+    "More tasks in feature?" -> "Assess task complexity\n(see Model Selection)" [label="yes"];
     "More tasks in feature?" -> "Close feature:\nbd close <feature-id>" [label="no"];
     "Close feature:\nbd close <feature-id>" -> "More features remain?";
     "More features remain?" -> "Load feature tasks:\nbd children <feature-id> --json" [label="yes"];
@@ -151,34 +153,37 @@ You: I'm using Subagent-Driven Development to execute this plan.
 [Load feature tasks: bd children bd-feat1 --json]
 
 Task 1 (bd-abc): Hook installation script
+  Complexity: 1-2 files, clear spec with code snippets → model: haiku
 
 [bd update bd-abc --claim]
 [Read task design from bd show bd-abc]
-[Dispatch implementation subagent with full task text + context]
+[Dispatch implementer subagent (model: haiku) with full task text + context]
 
 Implementer: "Before I begin - should the hook be installed at user or system level?"
 
 You: "User level (~/.local/share/my-app/hooks/)"
 
-Implementer: "Got it. Implementing now..."
-[Later] Implementer:
+[Re-dispatch implementer (model: haiku) with answer + full context]
+Implementer:
   - Implemented install-hook command
   - Added tests, 5/5 passing
   - Self-review: Found I missed --force flag, added it
   - Committed
 
-[Dispatch spec compliance reviewer]
+[Dispatch spec reviewer (model: sonnet)]
 Spec reviewer: ✅ Spec compliant - all requirements met, nothing extra
 
-[Get git SHAs, dispatch code quality reviewer]
+[Get git SHAs, dispatch code quality reviewer (model: opus)]
 Code reviewer: Strengths: Good test coverage, clean. Issues: None. Approved.
 
 [bd close bd-abc --reason "Implemented"]
 
 Task 2 (bd-def): Recovery modes
+  Complexity: multi-file, integration with hook system → model: sonnet
 
 [bd update bd-def --claim]
-...reviews pass...
+[Dispatch implementer subagent (model: sonnet) with full task text + context]
+...reviews pass (spec: sonnet, quality: opus)...
 
 [bd close bd-def --reason "Implemented"]
 
@@ -190,7 +195,10 @@ Task 2 (bd-def): Recovery modes
 [Load feature tasks: bd children bd-feat2 --json]
 
 Task 3 (bd-ghi): Verify command
-...implement, review, close...
+  Complexity: design judgment, broad codebase understanding → model: opus
+
+[Dispatch implementer subagent (model: opus) with full task text + context]
+...implement, review (spec: sonnet, quality: opus), close...
 [bd close bd-ghi --reason "Implemented"]
 
 [All tasks in feature done — close feature]
@@ -199,7 +207,7 @@ Task 3 (bd-ghi): Verify command
 --- All features complete ---
 
 [bd children <epic-id> shows all features closed — epic auto-closes]
-[Dispatch final code-reviewer]
+[Dispatch final code reviewer (model: opus)]
 Final reviewer: All requirements met, ready to merge
 
 Done!
@@ -240,6 +248,7 @@ Done!
 ## Red Flags
 
 **Never:**
+- Dispatch any subagent without explicitly setting the `model:` parameter (see Model Selection table)
 - Start implementation on main/master branch without explicit user consent
 - Skip reviews (spec compliance OR code quality)
 - Proceed with unfixed issues
