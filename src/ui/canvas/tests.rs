@@ -1776,3 +1776,62 @@ fn should_draw_overlay_text_true_when_no_active_overlay() {
         "should draw when no overlay is active"
     );
 }
+
+// =====================================================================
+// spe-ceg.2: tint size computation
+// =====================================================================
+
+#[test]
+fn tint_size_single_line_overlay_uses_bounding_box() {
+    // Single-line overlay (width=None): tint size comes from overlay_bounding_box.
+    // Courier 12pt, "Hello" → width = 5 * 7.2 = 36.0, height = 12.0
+    // scale=1.0 → w=36.0, h=12.0
+    let overlay = overlay_at(72.0, 720.0, "Hello");
+    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0);
+    assert!((w - 36.0).abs() < 0.1, "width should be ~36, got {w}");
+    assert!((h - 12.0).abs() < 0.1, "height should be 12, got {h}");
+}
+
+#[test]
+fn tint_size_single_line_overlay_scales_with_scale() {
+    // Same as above but scale=2.0 → w=72.0, h=24.0
+    let overlay = overlay_at(72.0, 720.0, "Hello");
+    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 2.0);
+    assert!((w - 72.0).abs() < 0.1, "width should be ~72, got {w}");
+    assert!((h - 24.0).abs() < 0.1, "height should be 24, got {h}");
+}
+
+#[test]
+fn tint_size_multiline_overlay_uses_width_and_line_count() {
+    // Multi-line overlay (width=Some(150)), two lines of text, font_size=12.
+    // scale=1.0 → w=150.0, h=12.0 * 2 = 24.0
+    let overlay = TextOverlay {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 720.0 },
+        text: "line one\nline two".to_string(),
+        font: Standard14Font::Courier,
+        font_size: 12.0,
+        width: Some(150.0),
+    };
+    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0);
+    assert!((w - 150.0).abs() < 0.1, "width should be 150, got {w}");
+    assert!((h - 24.0).abs() < 0.1, "height should be 24, got {h}");
+}
+
+#[test]
+fn tint_size_multiline_overlay_single_line_text_height_is_one_line() {
+    // Multi-line overlay (width=Some) but text has only one line.
+    // Height = font_size * 1 = 12.0
+    let overlay = multiline_overlay_at(72.0, 720.0, 150.0, "Hello");
+    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0);
+    assert!((w - 150.0).abs() < 0.1, "width should be 150, got {w}");
+    assert!((h - 12.0).abs() < 0.1, "height should be 12, got {h}");
+}
+
+#[test]
+fn tint_alpha_constant_is_correct() {
+    assert!(
+        (super::OVERLAY_TINT_ALPHA - 0.08).abs() < f32::EPSILON,
+        "OVERLAY_TINT_ALPHA should be 0.08"
+    );
+}

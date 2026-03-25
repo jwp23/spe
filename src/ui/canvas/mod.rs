@@ -22,6 +22,8 @@ const DOUBLE_CLICK_TIMEOUT_MS: u128 = 500;
 const DOUBLE_CLICK_DISTANCE_PX: f32 = 5.0;
 /// Blue used for selection boxes, resize handles, and text input borders.
 pub const SELECTION_COLOR: iced::Color = iced::Color::from_rgb(0.2, 0.5, 1.0);
+/// Opacity for the background tint behind committed overlay text.
+pub(crate) const OVERLAY_TINT_ALPHA: f32 = 0.08;
 
 /// State for the PDF canvas view (persistent, lives in App).
 pub struct CanvasState {
@@ -408,6 +410,12 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
         }
 
         let scale = render_scale(self.zoom, self.dpi);
+        let overlay_color = iced::Color::from_rgba(
+            self.overlay_color[0],
+            self.overlay_color[1],
+            self.overlay_color[2],
+            self.overlay_color[3],
+        );
 
         // Determine visible pages
         let (first, last) = visible_pages(&self.page_layout, self.scroll_y, self.viewport_height);
@@ -454,6 +462,15 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
                 let scaled_size = overlay.font_size * scale;
 
                 if should_draw_overlay_text(self.editing, self.active_overlay, i) {
+                    draw_overlay_tint(
+                        &mut frame,
+                        overlay,
+                        sx,
+                        sy,
+                        scale,
+                        overlay_color,
+                        OVERLAY_TINT_ALPHA,
+                    );
                     draw_overlay_text(
                         &mut frame,
                         &overlay.text,
@@ -618,6 +635,40 @@ fn draw_overlay_text(
         ..canvas::Text::default()
     };
     frame.fill_text(text);
+}
+
+/// Compute the screen-space (width, height) of the tint rectangle for an overlay.
+/// For multi-line overlays (width=Some), uses the specified width and line count.
+/// For single-line overlays, uses the bounding box of the text.
+pub(crate) fn tint_size_for_overlay(overlay: &TextOverlay, scale: f32) -> (f32, f32) {
+    if let Some(width_pts) = overlay.width {
+        let scaled_width = width_pts * scale;
+        let line_count = overlay.text.lines().count().max(1) as f32;
+        let scaled_height = overlay.font_size * scale * line_count;
+        (scaled_width, scaled_height)
+    } else {
+        let bbox = overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size);
+        (bbox.width * scale, bbox.height * scale)
+    }
+}
+
+/// Draw a semi-transparent tint rectangle behind overlay text.
+fn draw_overlay_tint(
+    frame: &mut canvas::Frame,
+    overlay: &TextOverlay,
+    screen_x: f32,
+    screen_y: f32,
+    scale: f32,
+    tint_color: iced::Color,
+    alpha: f32,
+) {
+    let (w, h) = tint_size_for_overlay(overlay, scale);
+    let color = iced::Color::from_rgba(tint_color.r, tint_color.g, tint_color.b, alpha);
+    frame.fill_rectangle(
+        iced::Point::new(screen_x, screen_y - h),
+        iced::Size::new(w, h),
+        color,
+    );
 }
 
 /// Draw a selection bounding box around an overlay at a screen position.
