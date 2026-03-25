@@ -353,6 +353,145 @@ impl OverlayCanvasProgram<'_> {
         }
     }
 
+    /// Draw a single overlay: tint, hover border, text, selection box, and resize handle.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_single_overlay(
+        &self,
+        frame: &mut canvas::Frame,
+        state: &ProgramState,
+        overlay: &TextOverlay,
+        index: usize,
+        params: &ConversionParams,
+        scale: f32,
+        overlay_color: iced::Color,
+    ) {
+        let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
+        let scaled_size = overlay.font_size * scale;
+
+        if should_draw_overlay_text(self.editing, self.active_overlay, index) {
+            let is_hovered = state.hovered_overlay == Some(index);
+            let tint_alpha = if is_hovered {
+                OVERLAY_TINT_HOVER_ALPHA
+            } else {
+                OVERLAY_TINT_ALPHA
+            };
+            draw_overlay_tint(
+                frame,
+                overlay,
+                sx,
+                sy,
+                scale,
+                overlay_color,
+                tint_alpha,
+                self.font_registry,
+            );
+            if is_hovered {
+                draw_overlay_hover_border(
+                    frame,
+                    overlay,
+                    sx,
+                    sy,
+                    scale,
+                    overlay_color,
+                    self.font_registry,
+                );
+            }
+            draw_overlay_text(
+                frame,
+                &overlay.text,
+                sx,
+                sy,
+                scaled_size,
+                iced::Color::BLACK,
+                self.font_registry.get(overlay.font).iced_font,
+            );
+        }
+
+        if self.active_overlay == Some(index) {
+            draw_selection_box(
+                frame,
+                &overlay.text,
+                overlay.font,
+                overlay.font_size,
+                sx,
+                sy,
+                scale,
+                self.font_registry,
+            );
+            if let Some(width_pts) = overlay.width {
+                draw_resize_handle(frame, sx, sy, width_pts, scale, overlay.font_size);
+            }
+        }
+    }
+
+    /// Draw the overlay text at the cursor position during a drag move.
+    fn draw_drag_preview(
+        &self,
+        frame: &mut canvas::Frame,
+        state: &ProgramState,
+        bounds: iced::Rectangle,
+        scale: f32,
+    ) {
+        if let (Some(drag), Some(cursor_pos)) = (&state.drag, state.cursor_position)
+            && let Some(overlay) = self.overlays.get(drag.overlay_index)
+        {
+            let preview_screen_x = cursor_pos.x - drag.grab_offset_x - bounds.x;
+            let preview_screen_y = cursor_pos.y - drag.grab_offset_y - bounds.y;
+            let scaled_size = overlay.font_size * scale;
+            draw_overlay_text(
+                frame,
+                &overlay.text,
+                preview_screen_x,
+                preview_screen_y,
+                scaled_size,
+                iced::Color::BLACK,
+                self.font_registry.get(overlay.font).iced_font,
+            );
+        }
+    }
+
+    /// Draw the placement drag rectangle preview. Returns true if the frame should be
+    /// finalized early (drag distance below threshold).
+    fn draw_placement_preview(
+        &self,
+        frame: &mut canvas::Frame,
+        state: &ProgramState,
+        bounds: iced::Rectangle,
+    ) -> bool {
+        let Some(placement) = &state.placement_drag else {
+            return false;
+        };
+        let Some(cursor_pos) = state.cursor_position else {
+            return false;
+        };
+
+        let dx = cursor_pos.x - placement.start_screen.x;
+        let dy = cursor_pos.y - placement.start_screen.y;
+        let distance = (dx * dx + dy * dy).sqrt();
+        if distance < MIN_DRAG_DISTANCE {
+            return true;
+        }
+
+        let start_canvas = iced::Point::new(
+            placement.start_screen.x - bounds.x,
+            placement.start_screen.y - bounds.y,
+        );
+        let end_canvas = iced::Point::new(cursor_pos.x - bounds.x, cursor_pos.y - bounds.y);
+        let rect_x = start_canvas.x.min(end_canvas.x);
+        let rect_y = start_canvas.y.min(end_canvas.y);
+        let rect_w = (end_canvas.x - start_canvas.x).abs();
+        let rect_h = (end_canvas.y - start_canvas.y).abs();
+
+        frame.stroke_rectangle(
+            iced::Point::new(rect_x, rect_y),
+            iced::Size::new(rect_w, rect_h),
+            canvas::Stroke::default()
+                .with_color(SELECTION_COLOR)
+                .with_width(SELECTION_BORDER_WIDTH),
+        );
+        false
+    }
+
     /// Handle Ctrl+scroll wheel for zoom in/out.
     fn handle_wheel_scrolled(
         &self,
@@ -447,7 +586,6 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                 offset_y: page_rect.y,
             };
 
-            // Draw overlays on this page
             for (i, overlay) in self.overlays.iter().enumerate() {
                 if overlay.page != page {
                     continue;
@@ -456,113 +594,21 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                 if is_dragging {
                     continue;
                 }
-
-                let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, &local_params);
-                let scaled_size = overlay.font_size * scale;
-
-                if should_draw_overlay_text(self.editing, self.active_overlay, i) {
-                    let is_hovered = state.hovered_overlay == Some(i);
-                    let tint_alpha = if is_hovered {
-                        OVERLAY_TINT_HOVER_ALPHA
-                    } else {
-                        OVERLAY_TINT_ALPHA
-                    };
-                    draw_overlay_tint(
-                        &mut frame,
-                        overlay,
-                        sx,
-                        sy,
-                        scale,
-                        overlay_color,
-                        tint_alpha,
-                        self.font_registry,
-                    );
-                    if is_hovered {
-                        draw_overlay_hover_border(
-                            &mut frame,
-                            overlay,
-                            sx,
-                            sy,
-                            scale,
-                            overlay_color,
-                            self.font_registry,
-                        );
-                    }
-                    draw_overlay_text(
-                        &mut frame,
-                        &overlay.text,
-                        sx,
-                        sy,
-                        scaled_size,
-                        iced::Color::BLACK,
-                        self.font_registry.get(overlay.font).iced_font,
-                    );
-                }
-
-                if self.active_overlay == Some(i) {
-                    draw_selection_box(
-                        &mut frame,
-                        &overlay.text,
-                        overlay.font,
-                        overlay.font_size,
-                        sx,
-                        sy,
-                        scale,
-                        self.font_registry,
-                    );
-                    if let Some(width_pts) = overlay.width {
-                        draw_resize_handle(&mut frame, sx, sy, width_pts, scale, overlay.font_size);
-                    }
-                }
+                self.draw_single_overlay(
+                    &mut frame,
+                    state,
+                    overlay,
+                    i,
+                    &local_params,
+                    scale,
+                    overlay_color,
+                );
             }
         }
 
-        // Drag preview: draw the overlay text at the cursor position
-        if let (Some(drag), Some(cursor_pos)) = (&state.drag, state.cursor_position)
-            && let Some(overlay) = self.overlays.get(drag.overlay_index)
-        {
-            let preview_screen_x = cursor_pos.x - drag.grab_offset_x - bounds.x;
-            let preview_screen_y = cursor_pos.y - drag.grab_offset_y - bounds.y;
-            let scaled_size = overlay.font_size * scale;
-            draw_overlay_text(
-                &mut frame,
-                &overlay.text,
-                preview_screen_x,
-                preview_screen_y,
-                scaled_size,
-                iced::Color::BLACK,
-                self.font_registry.get(overlay.font).iced_font,
-            );
-        }
-
-        // Placement drag preview: rectangle from drag start to cursor
-        if let Some(placement) = &state.placement_drag
-            && let Some(cursor_pos) = state.cursor_position
-        {
-            let dx = cursor_pos.x - placement.start_screen.x;
-            let dy = cursor_pos.y - placement.start_screen.y;
-            let distance = (dx * dx + dy * dy).sqrt();
-            if distance < MIN_DRAG_DISTANCE {
-                return vec![frame.into_geometry()];
-            }
-
-            let start_canvas = iced::Point::new(
-                placement.start_screen.x - bounds.x,
-                placement.start_screen.y - bounds.y,
-            );
-            let end_canvas = iced::Point::new(cursor_pos.x - bounds.x, cursor_pos.y - bounds.y);
-            let rect_x = start_canvas.x.min(end_canvas.x);
-            let rect_y = start_canvas.y.min(end_canvas.y);
-            let rect_w = (end_canvas.x - start_canvas.x).abs();
-            let rect_h = (end_canvas.y - start_canvas.y).abs();
-
-            frame.stroke_rectangle(
-                iced::Point::new(rect_x, rect_y),
-                iced::Size::new(rect_w, rect_h),
-                canvas::Stroke::default()
-                    .with_color(SELECTION_COLOR)
-                    .with_width(SELECTION_BORDER_WIDTH),
-            );
+        self.draw_drag_preview(&mut frame, state, bounds, scale);
+        if self.draw_placement_preview(&mut frame, state, bounds) {
+            return vec![frame.into_geometry()];
         }
 
         vec![frame.into_geometry()]
