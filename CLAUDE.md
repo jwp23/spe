@@ -168,16 +168,24 @@ Read these only when the trigger condition applies:
 
 ```
 src/
-├── main.rs         # entry point
-├── app.rs          # Iced application state and messages
-├── overlay.rs      # text overlay data model
-├── fonts.rs        # fc-list wrapper for font discovery
+├── main.rs           # entry point
+├── app/
+│   ├── mod.rs        # Iced state, messages, update(), subscription()
+│   ├── view.rs       # view(), floating text widget, overlay styling
+│   ├── handlers.rs   # file/save/zoom/sidebar handlers, rendering tasks
+│   └── tests.rs      # unit tests
+├── overlay.rs        # text overlay data model
 ├── pdf/
-│   ├── renderer.rs # pdftoppm wrapper for page rendering
-│   └── writer.rs   # lopdf wrapper for text overlay writing
+│   ├── renderer.rs   # pdftoppm wrapper for page rendering
+│   └── writer.rs     # lopdf wrapper for text overlay writing
 └── ui/
-    ├── canvas.rs   # PDF page display with click-to-place
-    └── toolbar.rs  # font family and size controls
+    ├── canvas/
+    │   ├── mod.rs    # Iced canvas Program impl, drawing helpers
+    │   ├── layout.rs # page layout, geometry, hit-testing
+    │   ├── zoom.rs   # zoom level calculations
+    │   └── tests.rs  # unit tests
+    ├── sidebar.rs    # page thumbnail sidebar
+    └── toolbar.rs    # font family and size controls
 tests/
 ├── pdf_rendering.rs
 ├── pdf_writing.rs
