@@ -124,6 +124,12 @@ const CURRENT_PAGE_BORDER_COLOR: iced::Color = iced::Color {
 
 /// Width of the current-page highlight border in pixels.
 const CURRENT_PAGE_BORDER_WIDTH: f32 = 3.0;
+/// Base gray fill for unloaded thumbnail placeholders.
+const SHIMMER_PLACEHOLDER_BACKGROUND: iced::Color = iced::Color::from_rgb(0.82, 0.82, 0.82);
+/// Semi-transparent white band that sweeps across the shimmer animation.
+const SHIMMER_HIGHLIGHT_COLOR: iced::Color = iced::Color::from_rgba(1.0, 1.0, 1.0, 0.15);
+/// Text color for non-current page number labels.
+const PAGE_LABEL_COLOR: iced::Color = iced::Color::from_rgb(0.878, 0.878, 0.878);
 
 /// Canvas program that draws a single page thumbnail: white background,
 /// cached image or gray placeholder, and a highlight border for the current page.
@@ -134,7 +140,6 @@ pub struct ThumbnailProgram<'a> {
     pub page_width: f32,
     pub page_height: f32,
     pub thumbnail_dpi: f32,
-    pub overlay_color: iced::Color,
     /// Shimmer animation phase in [0, 1) for unrendered placeholder.
     pub shimmer_phase: f32,
 }
@@ -166,7 +171,7 @@ impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
             frame.fill_rectangle(
                 iced::Point::ORIGIN,
                 bounds.size(),
-                iced::Color::from_rgb(0.82, 0.82, 0.82),
+                SHIMMER_PLACEHOLDER_BACKGROUND,
             );
             // Shimmer highlight band sweeping left to right
             let band_width = bounds.width * 0.4;
@@ -174,7 +179,7 @@ impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
             frame.fill_rectangle(
                 iced::Point::new(x_offset, 0.0),
                 iced::Size::new(band_width, bounds.height),
-                iced::Color::from_rgba(1.0, 1.0, 1.0, 0.15),
+                SHIMMER_HIGHLIGHT_COLOR,
             );
         }
 
@@ -188,7 +193,7 @@ impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
                 frame.fill_text(canvas::Text {
                     content: overlay.text.clone(),
                     position: iced::Point::new(screen_x, screen_y - font_display_size),
-                    color: self.overlay_color,
+                    color: Color::BLACK,
                     size: iced::Pixels(font_display_size),
                     ..canvas::Text::default()
                 });
@@ -223,16 +228,8 @@ pub fn sidebar_view<'a>(
     current_page: u32,
     page_dimensions: &'a HashMap<u32, (f32, f32)>,
     overlays: &'a [TextOverlay],
-    overlay_color: [f32; 4],
 ) -> Element<'a, Message> {
     use iced::widget::{button, canvas as canvas_widget, column, container, scrollable, text};
-
-    let overlay_color = Color::from_rgba(
-        overlay_color[0],
-        overlay_color[1],
-        overlay_color[2],
-        overlay_color[3],
-    );
 
     if page_count == 0 {
         return container(text("No document"))
@@ -258,7 +255,6 @@ pub fn sidebar_view<'a>(
             page_width: pw,
             page_height: ph,
             thumbnail_dpi: state.thumbnail_dpi,
-            overlay_color,
             shimmer_phase: state.shimmer_phase,
         };
 
@@ -292,7 +288,7 @@ pub fn sidebar_view<'a>(
         let label_color = if is_current {
             CURRENT_PAGE_BORDER_COLOR
         } else {
-            iced::Color::from_rgb(0.878, 0.878, 0.878)
+            PAGE_LABEL_COLOR
         };
         let label = text(format!("{page}")).size(13).center().color(label_color);
 
@@ -332,7 +328,7 @@ mod tests {
             page_width: 612.0,
             page_height: 792.0,
             thumbnail_dpi: 12.0,
-            overlay_color: iced::Color::from_rgb(0.0, 0.0, 1.0),
+
             shimmer_phase: 0.0,
         };
         assert_eq!(program.page, 1);
@@ -347,7 +343,7 @@ mod tests {
             page_width: 612.0,
             page_height: 792.0,
             thumbnail_dpi: 12.0,
-            overlay_color: iced::Color::from_rgb(0.0, 0.0, 1.0),
+
             shimmer_phase: 0.5,
         };
         assert!((program.shimmer_phase - 0.5).abs() < f32::EPSILON);
@@ -495,13 +491,6 @@ mod tests {
         let state = SidebarState::default();
         let page_dimensions = HashMap::new();
         let overlays: Vec<TextOverlay> = vec![];
-        let _: iced::Element<Message> = sidebar_view(
-            &state,
-            0,
-            1,
-            &page_dimensions,
-            &overlays,
-            [0.0, 0.0, 0.0, 1.0],
-        );
+        let _: iced::Element<Message> = sidebar_view(&state, 0, 1, &page_dimensions, &overlays);
     }
 }

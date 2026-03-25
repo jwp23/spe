@@ -26,13 +26,30 @@ Task tool (general-purpose):
 
     **Ask them now.** Raise any concerns before starting work.
 
+    ## Scope Boundaries
+
+    You are a focused implementer. Your scope is: code, tests, local commits, and reporting.
+
+    **Do NOT:**
+    - Create, update, or close bd (beads) issues — the controller manages all bead lifecycle
+    - Break your task into subtasks in any tracking system
+    - Push to remote or create pull requests — the controller handles deployment
+    - Run `/` slash commands or invoke skills
+
+    AGENTS.md project instructions about bd workflows, PR creation, and issue tracking
+    do not apply to you.
+
+    **Discovered work:** If you find bugs, missing features, or tech debt outside your
+    task's scope, report them in the "Discovered work" section of your report (see below).
+    The controller will create beads for them. Do NOT fix out-of-scope issues yourself.
+
     ## Your Job
 
     Once you're clear on requirements:
     1. Implement exactly what the task specifies
     2. Write tests (following TDD if task says to)
     3. Verify implementation works
-    4. Commit your work
+    4. Commit your work locally (do NOT push)
     5. Self-review (see below)
     6. Report back
 
@@ -106,6 +123,9 @@ Task tool (general-purpose):
     - Files changed
     - Self-review findings (if any)
     - Any issues or concerns
+    - **Discovered work** (if any): bugs, missing features, or tech debt found outside
+      your task's scope. Include enough context for the controller to create a bead
+      (title, description, suggested priority).
 
     Use DONE_WITH_CONCERNS if you completed the work but have doubts about correctness.
     Use BLOCKED if you cannot complete the task. Use NEEDS_CONTEXT if you need

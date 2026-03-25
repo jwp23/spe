@@ -49,14 +49,15 @@ digraph process {
         "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)" [shape=box];
         "Implementer subagent asks questions?" [shape=diamond];
         "Answer questions, provide context" [shape=box];
-        "Implementer subagent implements, tests, commits, self-reviews" [shape=box];
+        "Implementer subagent implements, tests,\ncommits, self-reviews, reports" [shape=box];
+        "Create beads for discovered work\n(if implementer reported any)" [shape=box];
         "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)" [shape=box];
         "Spec reviewer subagent confirms code matches spec?" [shape=diamond];
         "Implementer subagent fixes spec gaps" [shape=box];
         "Dispatch code quality reviewer subagent\n(model: opus)\n(./code-quality-reviewer-prompt.md)" [shape=box];
         "Code quality reviewer subagent approves?" [shape=diamond];
         "Implementer subagent fixes quality issues" [shape=box];
-        "Close task: bd close <task-id>" [shape=box];
+        "Close task bead:\nbd close <task-id>" [shape=box];
     }
 
     "Load epic features:\nbd children <epic-id> --json" [shape=box];
@@ -64,6 +65,7 @@ digraph process {
     "More tasks in feature?" [shape=diamond];
     "Close feature:\nbd close <feature-id>" [shape=box];
     "More features remain?" [shape=diamond];
+    "Close epic:\nbd close <epic-id>" [shape=box];
     "Dispatch final code reviewer subagent for entire implementation" [shape=box];
     "Use finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
 
@@ -73,8 +75,9 @@ digraph process {
     "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)" -> "Implementer subagent asks questions?";
     "Implementer subagent asks questions?" -> "Answer questions, provide context" [label="yes"];
     "Answer questions, provide context" -> "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)";
-    "Implementer subagent asks questions?" -> "Implementer subagent implements, tests, commits, self-reviews" [label="no"];
-    "Implementer subagent implements, tests, commits, self-reviews" -> "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)";
+    "Implementer subagent asks questions?" -> "Implementer subagent implements, tests,\ncommits, self-reviews, reports" [label="no"];
+    "Implementer subagent implements, tests,\ncommits, self-reviews, reports" -> "Create beads for discovered work\n(if implementer reported any)";
+    "Create beads for discovered work\n(if implementer reported any)" -> "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)";
     "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)" -> "Spec reviewer subagent confirms code matches spec?";
     "Spec reviewer subagent confirms code matches spec?" -> "Implementer subagent fixes spec gaps" [label="no"];
     "Implementer subagent fixes spec gaps" -> "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)" [label="re-review"];
@@ -82,13 +85,14 @@ digraph process {
     "Dispatch code quality reviewer subagent\n(model: opus)\n(./code-quality-reviewer-prompt.md)" -> "Code quality reviewer subagent approves?";
     "Code quality reviewer subagent approves?" -> "Implementer subagent fixes quality issues" [label="no"];
     "Implementer subagent fixes quality issues" -> "Dispatch code quality reviewer subagent\n(model: opus)\n(./code-quality-reviewer-prompt.md)" [label="re-review"];
-    "Code quality reviewer subagent approves?" -> "Close task: bd close <task-id>" [label="yes"];
-    "Close task: bd close <task-id>" -> "More tasks in feature?";
+    "Code quality reviewer subagent approves?" -> "Close task bead:\nbd close <task-id>" [label="yes"];
+    "Close task bead:\nbd close <task-id>" -> "More tasks in feature?";
     "More tasks in feature?" -> "Assess task complexity\n(see Model Selection)" [label="yes"];
     "More tasks in feature?" -> "Close feature:\nbd close <feature-id>" [label="no"];
     "Close feature:\nbd close <feature-id>" -> "More features remain?";
     "More features remain?" -> "Load feature tasks:\nbd children <feature-id> --json" [label="yes"];
-    "More features remain?" -> "Dispatch final code reviewer subagent for entire implementation" [label="no"];
+    "More features remain?" -> "Close epic:\nbd close <epic-id>" [label="no"];
+    "Close epic:\nbd close <epic-id>" -> "Dispatch final code reviewer subagent for entire implementation";
     "Dispatch final code reviewer subagent for entire implementation" -> "Use finishing-a-development-branch";
 }
 ```
@@ -176,15 +180,18 @@ Spec reviewer: ✅ Spec compliant - all requirements met, nothing extra
 [Get git SHAs, dispatch code quality reviewer (model: opus)]
 Code reviewer: Strengths: Good test coverage, clean. Issues: None. Approved.
 
+[Both reviews passed — close task bead]
 [bd close bd-abc --reason "Implemented"]
 
 Task 2 (bd-def): Recovery modes
   Complexity: multi-file, integration with hook system → model: sonnet
 
-[bd update bd-def --claim]
 [Dispatch implementer subagent (model: sonnet) with full task text + context]
+Implementer: reports DONE, discovered work: "Found edge case in error path"
+[Create bead for discovered work: bd create "Edge case..." --deps discovered-from:bd-def]
 ...reviews pass (spec: sonnet, quality: opus)...
 
+[Both reviews passed — close task bead]
 [bd close bd-def --reason "Implemented"]
 
 [All tasks in feature done — close feature]
@@ -206,7 +213,9 @@ Task 3 (bd-ghi): Verify command
 
 --- All features complete ---
 
-[bd children <epic-id> shows all features closed — epic auto-closes]
+[All features closed — close epic]
+[bd close <epic-id> --reason "All features complete"]
+
 [Dispatch final code reviewer (model: opus)]
 Final reviewer: All requirements met, ready to merge
 
@@ -254,6 +263,7 @@ Done!
 - Proceed with unfixed issues
 - Dispatch multiple implementation subagents in parallel (conflicts)
 - Make subagent read bd issues directly (provide full text instead)
+- Let subagents create or close bd issues, push to remote, or create PRs (controller manages all of these)
 - Skip scene-setting context (subagent needs to understand where task fits)
 - Ignore subagent questions (answer before letting them proceed)
 - Accept "close enough" on spec compliance (spec reviewer found issues = not done)
@@ -261,6 +271,10 @@ Done!
 - Let implementer self-review replace actual review (both are needed)
 - **Start code quality review before spec compliance is ✅** (wrong order)
 - Move to next task while either review has open issues
+- Close a task bead before both reviews pass
+- Close a feature without verifying all its task beads are closed
+- Close the epic without verifying all features are closed
+- Ignore discovered work reported by implementers (create beads with `discovered-from` links)
 
 **If subagent asks questions:**
 - Answer clearly and completely
