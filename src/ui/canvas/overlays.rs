@@ -428,6 +428,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                         sy,
                         scaled_size,
                         iced::Color::BLACK,
+                        self.font_registry.get(overlay.font).iced_font,
                     );
                 }
 
@@ -463,6 +464,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                 preview_screen_y,
                 scaled_size,
                 iced::Color::BLACK,
+                self.font_registry.get(overlay.font).iced_font,
             );
         }
 

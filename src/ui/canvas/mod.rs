@@ -141,13 +141,14 @@ pub(crate) fn draw_overlay_text(
     screen_y: f32,
     scaled_font_size: f32,
     color: iced::Color,
+    font: iced::Font,
 ) {
     let text = canvas::Text {
         content: content.to_string(),
         position: iced::Point::new(screen_x, screen_y - scaled_font_size),
         color,
         size: iced::Pixels(scaled_font_size),
-        font: iced::Font::default(),
+        font,
         ..canvas::Text::default()
     };
     frame.fill_text(text);
