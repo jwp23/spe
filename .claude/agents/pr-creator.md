@@ -71,16 +71,24 @@ Capture the PR number from the output.
 gh pr checks {number} --watch
 ```
 
-This blocks until checks complete.
+This blocks until required checks complete. After it returns, run the full check list to capture ALL results (including non-required checks like quality gates):
+
+```bash
+gh pr checks {number}
+```
 
 ### 5. Report
+
+Parse the output of `gh pr checks {number}`. If ANY check shows `fail` or `X`, report FAILED.
 
 Report exactly:
 
 - **PR URL**: the full URL
 - **PR number**: the number
 - **CI status**: PASSED or FAILED
-- **If FAILED**: paste the failing check names and any error output from `gh pr checks {number}`
+- **If FAILED**: list EVERY failing check name and its URL
+
+Do NOT classify checks as "blocking" or "non-blocking." Do NOT interpret whether a failure matters. Report the raw status. The caller decides what to do about failures.
 
 ## Rules
 
@@ -88,6 +96,7 @@ Report exactly:
 - Do NOT modify any files.
 - Do NOT create additional commits.
 - Do NOT run tests yourself — CI runs them.
+- Do NOT interpret or filter CI results. If a check failed, it failed. Report it.
 - Use `--body ""` heredoc format for the PR body to preserve formatting.
 - The PR title MUST follow conventional commit format. Reject titles that don't match.
 - If any command fails unexpectedly, report the exact error output and stop.
