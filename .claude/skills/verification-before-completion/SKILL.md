@@ -37,6 +37,32 @@ BEFORE claiming any status or expressing satisfaction:
 Skip any step = lying, not verifying
 ```
 
+## Visual Verification
+
+If your changes affect UI rendering, layout, or visual output, automated tests alone are not sufficient. Visual verification confirms what the user actually sees.
+
+```
+BEFORE claiming UI work is complete:
+
+1. IDENTIFY: What visual scenario proves correctness?
+2. SET UP: Use the project's screenshot/visual verification tooling
+3. CAPTURE: Take a screenshot of the relevant state
+4. INSPECT: Read the screenshot image — check layout, positioning, z-order, text
+5. VERIFY: Does the visual output match expectations?
+   - If NO: Fix and re-verify
+   - If YES: State claim WITH the screenshot as evidence
+```
+
+**When to apply:** Any change to canvas drawing, overlay rendering, layout calculations, coordinate transformations, widget styling, or visual state transitions.
+
+**Not needed for:** Pure logic changes, backend code, test-only changes, documentation.
+
+| Claim | Requires | Not Sufficient |
+|-------|----------|----------------|
+| UI renders correctly | Screenshot showing expected output | Tests pass, code looks right |
+| Layout is correct | Screenshot at relevant zoom/state | Coordinate math unit tests |
+| Visual state works | Screenshots of each state transition | State machine tests alone |
+
 ## Common Failures
 
 | Claim | Requires | Not Sufficient |
