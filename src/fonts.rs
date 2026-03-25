@@ -3,7 +3,7 @@
 use crate::coordinate::BoundingBox;
 
 /// Lightweight font identifier. Stored in overlays, messages, undo commands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct FontId(pub(crate) u16);
 
 /// How the PDF writer should handle this font.
@@ -165,6 +165,16 @@ impl FontRegistry {
             lines.push(String::new());
         }
         lines
+    }
+
+    /// Register an additional font entry. Returns its `FontId`.
+    /// The entry's `id` field is overwritten with a freshly assigned id.
+    pub fn add_entry(&mut self, mut entry: FontEntry) -> FontId {
+        let next = self.fonts.iter().map(|e| e.id.0).max().unwrap_or(0) + 1;
+        let id = FontId(next);
+        entry.id = id;
+        self.fonts.push(entry);
+        id
     }
 
     /// Find a font by display name or PDF name. Returns None if not found.
@@ -877,6 +887,25 @@ mod tests {
         let registry = FontRegistry::new();
         let entry = registry.get(registry.default_font());
         assert_eq!(entry.display_name, "Helvetica");
+    }
+
+    #[test]
+    fn add_entry_assigns_next_id_and_is_retrievable() {
+        let mut registry = FontRegistry::new();
+        assert_eq!(registry.all().len(), 14);
+        let entry = FontEntry {
+            id: FontId::default(),
+            display_name: "TestFont",
+            pdf_name: "TestFont-Regular",
+            iced_font: iced::Font::default(),
+            embedding: PdfEmbedding::BuiltIn,
+            widths: WidthTable::Monospaced(500.0),
+        };
+        let id = registry.add_entry(entry);
+        assert_eq!(registry.all().len(), 15);
+        let retrieved = registry.get(id);
+        assert_eq!(retrieved.display_name, "TestFont");
+        assert_eq!(retrieved.id, id);
     }
 
     #[test]

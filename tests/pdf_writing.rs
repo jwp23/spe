@@ -7,7 +7,7 @@ use std::path::Path;
 
 use lopdf::content::{Content, Operation};
 use lopdf::{Document, Object, Stream, dictionary};
-use spe::fonts::FontRegistry;
+use spe::fonts::{FontEntry, FontRegistry, PdfEmbedding, WidthTable};
 use spe::overlay::{PdfPosition, TextOverlay};
 use spe::pdf::writer::write_overlays;
 use tempfile::NamedTempFile;
@@ -440,4 +440,189 @@ fn generate_fixture_single_page_pdf() {
     let loaded = Document::load(&fixture_path).expect("failed to load fixture PDF");
     let pages = loaded.get_pages();
     assert_eq!(pages.len(), 1, "fixture PDF must have exactly 1 page");
+}
+
+/// Static TTF bytes for testing TrueType embedding.
+const TEST_TTF_BYTES: &[u8] = include_bytes!("../assets/icons/phosphor-subset.ttf");
+
+/// Build a FontRegistry with a TrueType test font added alongside the Standard 14.
+fn registry_with_truetype_font() -> (FontRegistry, spe::fonts::FontId) {
+    let mut registry = FontRegistry::new();
+    let id = registry.add_entry(FontEntry {
+        id: spe::fonts::FontId::default(),
+        display_name: "TestTrueType",
+        pdf_name: "TestTrueType",
+        iced_font: iced::Font::DEFAULT,
+        embedding: PdfEmbedding::TrueType {
+            bytes: TEST_TTF_BYTES,
+        },
+        widths: WidthTable::Monospaced(600.0),
+    });
+    (registry, id)
+}
+
+#[test]
+fn write_truetype_overlay_embeds_font_program() {
+    let (registry, tt_font_id) = registry_with_truetype_font();
+
+    let src = NamedTempFile::new().expect("temp file");
+    create_test_pdf(src.path());
+    let dst = NamedTempFile::new().expect("temp file");
+
+    let overlay = TextOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 500.0 },
+        text: "TrueType test".to_string(),
+        font: tt_font_id,
+        font_size: 14.0,
+        width: None,
+    };
+
+    write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write_overlays failed");
+
+    let doc = Document::load(dst.path()).expect("failed to load output PDF");
+    let pages = doc.get_pages();
+    let &page_id = pages.get(&1).expect("page 1");
+
+    // Find the TrueType font object among page fonts.
+    let fonts = doc.get_page_fonts(page_id).expect("get_page_fonts failed");
+    let tt_font_dict = fonts
+        .values()
+        .find(|fd| matches!(fd.get(b"BaseFont"), Ok(Object::Name(n)) if n == b"TestTrueType"))
+        .expect("TestTrueType font resource not found in page fonts");
+
+    // Verify Subtype is TrueType.
+    let subtype = tt_font_dict.get(b"Subtype").expect("no Subtype");
+    assert_eq!(
+        subtype,
+        &Object::Name(b"TrueType".to_vec()),
+        "expected TrueType subtype, got {subtype:?}"
+    );
+
+    // Verify Encoding is WinAnsiEncoding.
+    let encoding = tt_font_dict.get(b"Encoding").expect("no Encoding");
+    assert_eq!(
+        encoding,
+        &Object::Name(b"WinAnsiEncoding".to_vec()),
+        "expected WinAnsiEncoding, got {encoding:?}"
+    );
+
+    // Verify FirstChar and LastChar.
+    let first_char = tt_font_dict.get(b"FirstChar").expect("no FirstChar");
+    assert_eq!(first_char, &Object::Integer(32));
+    let last_char = tt_font_dict.get(b"LastChar").expect("no LastChar");
+    assert_eq!(last_char, &Object::Integer(255));
+
+    // Verify Widths array exists and has the correct length.
+    let widths_obj = tt_font_dict.get(b"Widths").expect("no Widths");
+    let widths_arr = match widths_obj {
+        Object::Array(arr) => arr,
+        other => panic!("expected Widths array, got {other:?}"),
+    };
+    assert_eq!(
+        widths_arr.len(),
+        224, // 255 - 32 + 1
+        "Widths array should have 224 entries (chars 32-255)"
+    );
+
+    // Verify FontDescriptor reference exists and points to a valid object.
+    let descriptor_ref = tt_font_dict
+        .get(b"FontDescriptor")
+        .expect("no FontDescriptor");
+    let descriptor_id = match descriptor_ref {
+        Object::Reference(id) => *id,
+        other => panic!("expected FontDescriptor reference, got {other:?}"),
+    };
+    let descriptor_obj = doc
+        .get_object(descriptor_id)
+        .expect("FontDescriptor object not found");
+    let descriptor = descriptor_obj
+        .as_dict()
+        .expect("FontDescriptor should be a dictionary");
+
+    // Verify FontDescriptor has required keys.
+    assert_eq!(
+        descriptor.get(b"Type").expect("no Type"),
+        &Object::Name(b"FontDescriptor".to_vec())
+    );
+    assert_eq!(
+        descriptor.get(b"FontName").expect("no FontName"),
+        &Object::Name(b"TestTrueType".to_vec())
+    );
+
+    // Verify FontFile2 reference exists and contains the original TTF bytes.
+    let font_file_ref = descriptor.get(b"FontFile2").expect("no FontFile2");
+    let font_file_id = match font_file_ref {
+        Object::Reference(id) => *id,
+        other => panic!("expected FontFile2 reference, got {other:?}"),
+    };
+    let font_file_obj = doc
+        .get_object(font_file_id)
+        .expect("FontFile2 object not found");
+    let font_file_stream = font_file_obj
+        .as_stream()
+        .expect("FontFile2 should be a stream");
+    assert_eq!(
+        font_file_stream.content, TEST_TTF_BYTES,
+        "FontFile2 stream content must match the original TTF bytes"
+    );
+
+    // Verify Length1 in the stream dictionary matches TTF byte length.
+    let length1 = font_file_stream
+        .dict
+        .get(b"Length1")
+        .expect("no Length1 in FontFile2 stream dict");
+    assert_eq!(
+        length1,
+        &Object::Integer(TEST_TTF_BYTES.len() as i64),
+        "Length1 must equal the TTF byte length"
+    );
+}
+
+#[test]
+fn write_builtin_overlay_still_creates_type1_font() {
+    // Regression test: BuiltIn fonts must still produce Type1 font objects.
+    let registry = FontRegistry::new();
+
+    let src = NamedTempFile::new().expect("temp file");
+    create_test_pdf(src.path());
+    let dst = NamedTempFile::new().expect("temp file");
+
+    // Use Courier (a Standard 14 BuiltIn font) — the test PDF already has Helvetica
+    // under "F1", so Courier will require a new font object.
+    let courier_id = registry.find_by_name("Courier").unwrap();
+    let overlay = TextOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 500.0 },
+        text: "BuiltIn test".to_string(),
+        font: courier_id,
+        font_size: 12.0,
+        width: None,
+    };
+
+    write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write_overlays failed");
+
+    let doc = Document::load(dst.path()).expect("failed to load output PDF");
+    let pages = doc.get_pages();
+    let &page_id = pages.get(&1).expect("page 1");
+
+    let fonts = doc.get_page_fonts(page_id).expect("get_page_fonts failed");
+    let courier_dict = fonts
+        .values()
+        .find(|fd| matches!(fd.get(b"BaseFont"), Ok(Object::Name(n)) if n == b"Courier"))
+        .expect("Courier font resource not found");
+
+    // BuiltIn fonts must be Type1, not TrueType.
+    let subtype = courier_dict.get(b"Subtype").expect("no Subtype");
+    assert_eq!(
+        subtype,
+        &Object::Name(b"Type1".to_vec()),
+        "BuiltIn font should have Type1 subtype, got {subtype:?}"
+    );
+
+    // BuiltIn fonts must NOT have a FontDescriptor (they're Standard 14).
+    assert!(
+        courier_dict.get(b"FontDescriptor").is_err(),
+        "BuiltIn Type1 fonts should not have a FontDescriptor"
+    );
 }

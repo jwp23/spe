@@ -7,7 +7,7 @@ use lopdf::content::{Content, Operation};
 use lopdf::{Document, Object, Stream, dictionary};
 use thiserror::Error;
 
-use crate::fonts::{FontId, FontRegistry};
+use crate::fonts::{FontId, FontRegistry, PdfEmbedding};
 use crate::overlay::TextOverlay;
 
 #[derive(Debug, Error)]
@@ -126,11 +126,59 @@ pub fn write_overlays(
                     })
                     .expect("infinite iterator always finds a free name");
 
-                let font_obj_id = doc.add_object(dictionary! {
-                    "Type" => "Font",
-                    "Subtype" => "Type1",
-                    "BaseFont" => Object::Name(base_font_bytes.to_vec()),
-                });
+                let font_obj_id = match &entry.embedding {
+                    PdfEmbedding::BuiltIn => doc.add_object(dictionary! {
+                        "Type" => "Font",
+                        "Subtype" => "Type1",
+                        "BaseFont" => Object::Name(base_font_bytes.to_vec()),
+                    }),
+                    PdfEmbedding::TrueType { bytes } => {
+                        let font_file_stream = Stream::new(
+                            dictionary! {
+                                "Length1" => Object::Integer(bytes.len() as i64),
+                            },
+                            bytes.to_vec(),
+                        );
+                        let font_file_id = doc.add_object(font_file_stream);
+
+                        let descriptor = dictionary! {
+                            "Type" => "FontDescriptor",
+                            "FontName" => Object::Name(base_font_bytes.to_vec()),
+                            "Flags" => Object::Integer(32),
+                            "FontBBox" => vec![
+                                Object::Integer(0), Object::Integer(0),
+                                Object::Integer(1000), Object::Integer(1000),
+                            ],
+                            "ItalicAngle" => Object::Integer(0),
+                            "Ascent" => Object::Integer(800),
+                            "Descent" => Object::Integer(-200),
+                            "CapHeight" => Object::Integer(700),
+                            "StemV" => Object::Integer(80),
+                            "FontFile2" => Object::Reference(font_file_id),
+                        };
+                        let descriptor_id = doc.add_object(descriptor);
+
+                        let first_char = 32_i64;
+                        let last_char = 255_i64;
+                        let widths: Vec<Object> = (first_char..=last_char)
+                            .map(|c| {
+                                let w = entry.widths.char_width(c as u8 as char);
+                                Object::Integer(w.round() as i64)
+                            })
+                            .collect();
+
+                        doc.add_object(dictionary! {
+                            "Type" => "Font",
+                            "Subtype" => "TrueType",
+                            "BaseFont" => Object::Name(base_font_bytes.to_vec()),
+                            "FirstChar" => Object::Integer(first_char),
+                            "LastChar" => Object::Integer(last_char),
+                            "Widths" => Object::Array(widths),
+                            "FontDescriptor" => Object::Reference(descriptor_id),
+                            "Encoding" => "WinAnsiEncoding",
+                        })
+                    }
+                };
                 new_font_objects.push((new_name.clone(), font_obj_id));
                 font_resource_name.insert(*font, new_name);
             }
@@ -890,6 +938,100 @@ mod tests {
         assert_eq!(
             tj_in_overlay, 1,
             "width:None should produce exactly 1 Tj, got {tj_in_overlay}"
+        );
+    }
+
+    #[test]
+    fn write_truetype_overlay_creates_truetype_font_object() {
+        use crate::fonts::{FontEntry, FontRegistry, PdfEmbedding, WidthTable};
+        use crate::overlay::{PdfPosition, TextOverlay};
+
+        static TEST_TTF: &[u8] = include_bytes!("../../assets/icons/phosphor-subset.ttf");
+
+        let mut registry = FontRegistry::new();
+        let tt_id = registry.add_entry(FontEntry {
+            id: crate::fonts::FontId::default(),
+            display_name: "UnitTestTT",
+            pdf_name: "UnitTestTT",
+            iced_font: iced::Font::DEFAULT,
+            embedding: PdfEmbedding::TrueType { bytes: TEST_TTF },
+            widths: WidthTable::Monospaced(600.0),
+        });
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst = NamedTempFile::new().expect("temp file");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: tt_id,
+            font_size: 12.0,
+            width: None,
+        };
+
+        write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1");
+
+        // Find the TrueType font among page fonts.
+        let fonts = doc.get_page_fonts(page_id).expect("get_page_fonts");
+        let tt_dict = fonts
+            .values()
+            .find(|fd| matches!(fd.get(b"BaseFont"), Ok(Object::Name(n)) if n == b"UnitTestTT"))
+            .expect("UnitTestTT not found in page fonts");
+
+        // Must be TrueType subtype.
+        assert_eq!(
+            tt_dict.get(b"Subtype").expect("no Subtype"),
+            &Object::Name(b"TrueType".to_vec())
+        );
+
+        // Must have FontDescriptor.
+        assert!(
+            matches!(tt_dict.get(b"FontDescriptor"), Ok(Object::Reference(_))),
+            "TrueType font must have a FontDescriptor reference"
+        );
+    }
+
+    #[test]
+    fn write_builtin_overlay_still_produces_type1() {
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst = NamedTempFile::new().expect("temp file");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Regression".to_string(),
+            font: registry.find_by_name("Courier").unwrap(),
+            font_size: 12.0,
+            width: None,
+        };
+
+        write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1");
+
+        let fonts = doc.get_page_fonts(page_id).expect("get_page_fonts");
+        let courier = fonts
+            .values()
+            .find(|fd| matches!(fd.get(b"BaseFont"), Ok(Object::Name(n)) if n == b"Courier"))
+            .expect("Courier not found");
+
+        assert_eq!(
+            courier.get(b"Subtype").expect("no Subtype"),
+            &Object::Name(b"Type1".to_vec()),
+            "BuiltIn font must remain Type1"
         );
     }
 
