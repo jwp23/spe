@@ -1,5 +1,7 @@
 // Unified font model: FontId, PdfEmbedding, WidthTable, FontEntry, FontRegistry.
 
+use crate::coordinate::BoundingBox;
+
 /// Lightweight font identifier. Stored in overlays, messages, undo commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FontId(pub(crate) u16);
@@ -91,6 +93,78 @@ impl FontRegistry {
     /// The id of the default font (Helvetica).
     pub fn default_font(&self) -> FontId {
         self.fonts[0].id
+    }
+
+    /// Compute the bounding box of text using a font in the registry.
+    /// Width is computed from per-character widths in the font's WidthTable.
+    /// Height is the font size.
+    pub fn overlay_bounding_box(&self, text: &str, font_id: FontId, font_size: f32) -> BoundingBox {
+        let entry = self.get(font_id);
+        let width: f32 = text
+            .chars()
+            .map(|c| entry.widths.char_width(c) * font_size / 1000.0)
+            .sum();
+        BoundingBox {
+            width,
+            height: font_size,
+        }
+    }
+
+    /// Wrap text to fit within a maximum width, breaking at word boundaries.
+    /// Respects explicit newlines. Words wider than max_width are kept intact (no mid-word break).
+    /// Returns one line per logical line of wrapped output.
+    pub fn word_wrap(
+        &self,
+        text: &str,
+        font_id: FontId,
+        font_size: f32,
+        max_width: f32,
+    ) -> Vec<String> {
+        let entry = self.get(font_id);
+        let mut lines = Vec::new();
+
+        for paragraph in text.split('\n') {
+            if paragraph.is_empty() {
+                lines.push(String::new());
+                continue;
+            }
+
+            let words: Vec<&str> = paragraph.split_whitespace().collect();
+            if words.is_empty() {
+                lines.push(String::new());
+                continue;
+            }
+
+            let mut current_line = String::new();
+            let mut current_width = 0.0_f32;
+            let space_width = entry.widths.char_width(' ') * font_size / 1000.0;
+
+            for word in &words {
+                let word_width: f32 = word
+                    .chars()
+                    .map(|c| entry.widths.char_width(c) * font_size / 1000.0)
+                    .sum();
+
+                if current_line.is_empty() {
+                    current_line.push_str(word);
+                    current_width = word_width;
+                } else if current_width + space_width + word_width <= max_width {
+                    current_line.push(' ');
+                    current_line.push_str(word);
+                    current_width += space_width + word_width;
+                } else {
+                    lines.push(current_line);
+                    current_line = word.to_string();
+                    current_width = word_width;
+                }
+            }
+            lines.push(current_line);
+        }
+
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines
     }
 }
 
@@ -854,5 +928,99 @@ mod tests {
             default: 750.0,
         };
         assert!((table.char_width('\u{1F600}') - 750.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn registry_bounding_box_courier_monospaced() {
+        let registry = FontRegistry::new();
+        let courier = registry
+            .all()
+            .iter()
+            .find(|e| e.display_name == "Courier")
+            .unwrap();
+        let bbox = registry.overlay_bounding_box("Hello", courier.id, 12.0);
+        let expected = 5.0 * 600.0 * 12.0 / 1000.0; // 36.0
+        assert!((bbox.width - expected).abs() < f32::EPSILON);
+        assert!((bbox.height - 12.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn registry_bounding_box_helvetica_proportional() {
+        let registry = FontRegistry::new();
+        let helv = registry
+            .all()
+            .iter()
+            .find(|e| e.display_name == "Helvetica")
+            .unwrap();
+        let bbox = registry.overlay_bounding_box("Hello", helv.id, 12.0);
+        assert!(bbox.width > 0.0);
+        assert!((bbox.height - 12.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn registry_word_wrap_splits_long_text() {
+        let registry = FontRegistry::new();
+        let courier = registry
+            .all()
+            .iter()
+            .find(|e| e.display_name == "Courier")
+            .unwrap();
+        let lines = registry.word_wrap("Hello World", courier.id, 12.0, 50.0);
+        assert!(lines.len() > 1, "Should wrap at 50pt with Courier 12pt");
+    }
+
+    #[test]
+    fn registry_word_wrap_no_split_when_fits() {
+        let registry = FontRegistry::new();
+        let courier = registry
+            .all()
+            .iter()
+            .find(|e| e.display_name == "Courier")
+            .unwrap();
+        let lines = registry.word_wrap("Hi", courier.id, 12.0, 200.0);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "Hi");
+    }
+
+    #[test]
+    fn registry_word_wrap_empty_text() {
+        let registry = FontRegistry::new();
+        let courier = registry
+            .all()
+            .iter()
+            .find(|e| e.display_name == "Courier")
+            .unwrap();
+        let lines = registry.word_wrap("", courier.id, 12.0, 200.0);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "");
+    }
+
+    #[test]
+    fn registry_word_wrap_respects_explicit_newlines() {
+        let registry = FontRegistry::new();
+        let courier = registry
+            .all()
+            .iter()
+            .find(|e| e.display_name == "Courier")
+            .unwrap();
+        let lines = registry.word_wrap("Hello\nWorld", courier.id, 12.0, 200.0);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "Hello");
+        assert_eq!(lines[1], "World");
+    }
+
+    #[test]
+    fn registry_word_wrap_keeps_wide_word_intact() {
+        let registry = FontRegistry::new();
+        let courier = registry
+            .all()
+            .iter()
+            .find(|e| e.display_name == "Courier")
+            .unwrap();
+        // Courier at 12pt: each char = 600 * 12 / 1000 = 7.2pt
+        // "ABCDEFGHIJ" = 10 chars = 72pt, wider than max_width of 50pt
+        let lines = registry.word_wrap("ABCDEFGHIJ", courier.id, 12.0, 50.0);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "ABCDEFGHIJ");
     }
 }
