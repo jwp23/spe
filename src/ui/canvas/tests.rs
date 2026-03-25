@@ -288,6 +288,19 @@ fn cursor_at(x: f32, y: f32) -> mouse::Cursor {
     mouse::Cursor::Available(iced::Point::new(x, y))
 }
 
+/// ProgramState with an active drag on overlay index 0 at PDF (72, 720).
+fn state_with_drag() -> ProgramState {
+    ProgramState {
+        drag: Some(LocalDragState {
+            overlay_index: 0,
+            initial_pdf_position: PdfPosition { x: 72.0, y: 720.0 },
+            grab_offset_x: 4.0,
+            grab_offset_y: 6.0,
+        }),
+        ..ProgramState::default()
+    }
+}
+
 /// Decompose an update() result into (message, event_status) for assertions.
 fn decompose(action: Option<canvas::Action<Message>>) -> (Option<Message>, event::Status) {
     match action {
@@ -1000,13 +1013,7 @@ fn mouse_interaction_grabbing_during_drag() {
     let imgs = test_page_images();
     let dims = test_page_dimensions();
     let program = test_program(&overlays, &imgs, &dims);
-    let mut state = ProgramState::default();
-    state.drag = Some(LocalDragState {
-        overlay_index: 0,
-        initial_pdf_position: PdfPosition { x: 72.0, y: 720.0 },
-        grab_offset_x: 4.0,
-        grab_offset_y: 6.0,
-    });
+    let state = state_with_drag();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(300.0, 200.0);
 
@@ -1949,13 +1956,7 @@ fn cursor_move_during_drag_skips_hover_tracking() {
     let imgs = test_page_images();
     let dims = test_page_dimensions();
     let program = test_program(&overlays, &imgs, &dims);
-    let mut state = ProgramState::default();
-    state.drag = Some(LocalDragState {
-        overlay_index: 0,
-        initial_pdf_position: PdfPosition { x: 72.0, y: 720.0 },
-        grab_offset_x: 4.0,
-        grab_offset_y: 6.0,
-    });
+    let mut state = state_with_drag();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
 
