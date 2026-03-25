@@ -60,6 +60,319 @@ impl OverlayCanvasProgram<'_> {
         let rect = page_rect_in_canvas(&self.page_layout, page, canvas_width);
         Some((page, rect))
     }
+
+    /// Handle left mouse button press: resize handle, overlay hit test, placement, or deselect.
+    fn handle_left_click(
+        &self,
+        state: &mut ProgramState,
+        bounds: iced::Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        let cursor_pos = cursor.position()?;
+        if !bounds.contains(cursor_pos) {
+            return None;
+        }
+
+        // Any left click while editing commits the current text first
+        if self.editing {
+            return Some(canvas::Action::publish(Message::CommitText).and_capture());
+        }
+
+        let canvas_y = cursor_pos.y - bounds.y;
+        let canvas_x = cursor_pos.x - bounds.x;
+
+        let Some((page, page_rect)) = self.page_at_canvas_y(canvas_y, bounds.width) else {
+            // Click in gap or outside pages
+            state.last_click = None;
+            return Some(canvas::Action::publish(Message::DeselectOverlay).and_capture());
+        };
+
+        let page_screen_rect = to_screen_rect(page_rect, &bounds);
+        let params = self.conversion_params_for_page(page, &page_screen_rect)?;
+
+        if let Some(action) = self.try_resize_handle(state, cursor_pos, page, &params) {
+            return Some(action);
+        }
+
+        if let Some(action) = self.try_hit_overlay(state, cursor_pos, page, &params) {
+            return Some(action);
+        }
+
+        // No overlay hit — start placement drag or deselect
+        state.last_click = None;
+        if page_rect.contains(iced::Point::new(canvas_x, canvas_y)) {
+            state.placement_drag = Some(PlacementDragState {
+                start_screen: cursor_pos,
+                page,
+                page_screen_rect: to_screen_rect(page_rect, &bounds),
+            });
+            Some(canvas::Action::capture())
+        } else {
+            Some(canvas::Action::publish(Message::DeselectOverlay).and_capture())
+        }
+    }
+
+    /// Check if the click hit the resize handle of the selected multi-line overlay.
+    fn try_resize_handle(
+        &self,
+        state: &mut ProgramState,
+        cursor_pos: iced::Point,
+        page: u32,
+        params: &ConversionParams,
+    ) -> Option<canvas::Action<Message>> {
+        let active_idx = self.active_overlay?;
+        let overlay = self.overlays.get(active_idx)?;
+        if overlay.page != page {
+            return None;
+        }
+        let width_pts = overlay.width?;
+        if !resize_handle_hit(cursor_pos.x, cursor_pos.y, overlay, width_pts, params) {
+            return None;
+        }
+        state.resize_drag = Some(ResizeDragState {
+            overlay_index: active_idx,
+            initial_width: width_pts,
+        });
+        Some(canvas::Action::capture())
+    }
+
+    /// Check if the click hit an existing overlay: handle double-click edit or start drag.
+    fn try_hit_overlay(
+        &self,
+        state: &mut ProgramState,
+        cursor_pos: iced::Point,
+        page: u32,
+        params: &ConversionParams,
+    ) -> Option<canvas::Action<Message>> {
+        let idx = hit_test(
+            cursor_pos.x,
+            cursor_pos.y,
+            self.overlays,
+            page,
+            params,
+            self.font_registry,
+        )?;
+
+        let is_double_click = state.last_click.as_ref().is_some_and(|(time, pos)| {
+            time.elapsed().as_millis() < DOUBLE_CLICK_TIMEOUT_MS
+                && (pos.x - cursor_pos.x).abs() < DOUBLE_CLICK_DISTANCE_PX
+                && (pos.y - cursor_pos.y).abs() < DOUBLE_CLICK_DISTANCE_PX
+        });
+        state.last_click = Some((std::time::Instant::now(), cursor_pos));
+
+        if is_double_click {
+            return Some(canvas::Action::publish(Message::EditOverlay(idx)).and_capture());
+        }
+
+        let (overlay_sx, overlay_sy) = pdf_to_screen(
+            self.overlays[idx].position.x,
+            self.overlays[idx].position.y,
+            params,
+        );
+        state.drag = Some(LocalDragState {
+            overlay_index: idx,
+            initial_pdf_position: self.overlays[idx].position,
+            grab_offset_x: cursor_pos.x - overlay_sx,
+            grab_offset_y: cursor_pos.y - overlay_sy,
+        });
+        Some(canvas::Action::publish(Message::SelectOverlay(idx)).and_capture())
+    }
+
+    /// Handle cursor movement: update position, redraw during drags, track hover state.
+    fn handle_cursor_moved(
+        &self,
+        state: &mut ProgramState,
+        bounds: iced::Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        // Use cursor.position() (scroll-adjusted) instead of the raw event
+        // position, so state.cursor_position matches the coordinate space
+        // used by cursor.position() in press/release handlers.
+        state.cursor_position = cursor.position();
+
+        if state.drag.is_some() || state.placement_drag.is_some() || state.resize_drag.is_some() {
+            return Some(canvas::Action::request_redraw());
+        }
+
+        // Hover tracking: hit-test the cursor position against overlays.
+        let new_hover = cursor.position().and_then(|cursor_pos| {
+            if !bounds.contains(cursor_pos) {
+                return None;
+            }
+            let canvas_y = cursor_pos.y - bounds.y;
+            let (page, page_rect) = self.page_at_canvas_y(canvas_y, bounds.width)?;
+            let page_screen_rect = to_screen_rect(page_rect, &bounds);
+            let params = self.conversion_params_for_page(page, &page_screen_rect)?;
+            hit_test(
+                cursor_pos.x,
+                cursor_pos.y,
+                self.overlays,
+                page,
+                &params,
+                self.font_registry,
+            )
+        });
+
+        if new_hover != state.hovered_overlay {
+            state.hovered_overlay = new_hover;
+            Some(canvas::Action::request_redraw())
+        } else {
+            None
+        }
+    }
+
+    /// Handle left mouse button release: finalize placement, resize, or drag move.
+    fn handle_button_released(
+        &self,
+        state: &mut ProgramState,
+        bounds: iced::Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        let cursor_pos = cursor.position()?;
+
+        if let Some(action) = self.handle_placement_release(state, cursor_pos) {
+            return Some(action);
+        }
+
+        if let Some(action) = self.handle_resize_release(state, bounds, cursor_pos) {
+            return Some(action);
+        }
+
+        self.handle_drag_release(state, bounds, cursor_pos)
+    }
+
+    /// Finalize a placement drag: click-to-place (single-line) or drag-to-size (multi-line).
+    fn handle_placement_release(
+        &self,
+        state: &mut ProgramState,
+        cursor_pos: iced::Point,
+    ) -> Option<canvas::Action<Message>> {
+        let placement = state.placement_drag.take()?;
+        let dx = cursor_pos.x - placement.start_screen.x;
+        let dy = cursor_pos.y - placement.start_screen.y;
+        let distance = (dx * dx + dy * dy).sqrt();
+
+        let params =
+            self.conversion_params_for_page(placement.page, &placement.page_screen_rect)?;
+
+        if distance < MIN_DRAG_DISTANCE {
+            // Short drag / click: single-line overlay
+            let (pdf_x, pdf_y) =
+                screen_to_pdf(placement.start_screen.x, placement.start_screen.y, &params);
+            Some(
+                canvas::Action::publish(Message::PlaceOverlay {
+                    page: placement.page,
+                    position: PdfPosition { x: pdf_x, y: pdf_y },
+                    width: None,
+                })
+                .and_capture(),
+            )
+        } else {
+            // Drag: multi-line overlay — width defined by horizontal drag distance
+            let (start_pdf_x, start_pdf_y) =
+                screen_to_pdf(placement.start_screen.x, placement.start_screen.y, &params);
+            let (end_pdf_x, _) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
+            let width_pts = (end_pdf_x - start_pdf_x).abs();
+            let pdf_x = start_pdf_x.min(end_pdf_x);
+            Some(
+                canvas::Action::publish(Message::PlaceOverlay {
+                    page: placement.page,
+                    position: PdfPosition {
+                        x: pdf_x,
+                        y: start_pdf_y,
+                    },
+                    width: Some(width_pts),
+                })
+                .and_capture(),
+            )
+        }
+    }
+
+    /// Finalize a resize drag: compute new width from cursor position.
+    fn handle_resize_release(
+        &self,
+        state: &mut ProgramState,
+        bounds: iced::Rectangle,
+        cursor_pos: iced::Point,
+    ) -> Option<canvas::Action<Message>> {
+        let resize = state.resize_drag.take()?;
+        let overlay = self.overlays.get(resize.overlay_index)?;
+        let page_rect = page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
+        let page_screen_rect = to_screen_rect(page_rect, &bounds);
+        let params = self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
+        let (cursor_pdf_x, _) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
+        let new_width = (cursor_pdf_x - overlay.position.x).max(20.0);
+        if (new_width - resize.initial_width).abs() > 0.1 {
+            Some(
+                canvas::Action::publish(Message::ResizeOverlay {
+                    index: resize.overlay_index,
+                    old_width: resize.initial_width,
+                    new_width,
+                })
+                .and_capture(),
+            )
+        } else {
+            Some(canvas::Action::capture())
+        }
+    }
+
+    /// Finalize a drag-move: compute new PDF position from cursor offset.
+    fn handle_drag_release(
+        &self,
+        state: &mut ProgramState,
+        bounds: iced::Rectangle,
+        cursor_pos: iced::Point,
+    ) -> Option<canvas::Action<Message>> {
+        let drag = state.drag.take()?;
+
+        let overlay = self.overlays.get(drag.overlay_index)?;
+        let page_rect = page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
+        let page_screen_rect = to_screen_rect(page_rect, &bounds);
+        let params = self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
+
+        let overlay_screen_x = cursor_pos.x - drag.grab_offset_x;
+        let overlay_screen_y = cursor_pos.y - drag.grab_offset_y;
+        let (new_pdf_x, new_pdf_y) = screen_to_pdf(overlay_screen_x, overlay_screen_y, &params);
+
+        let moved = (new_pdf_x - drag.initial_pdf_position.x).abs() > 0.1
+            || (new_pdf_y - drag.initial_pdf_position.y).abs() > 0.1;
+
+        if moved {
+            Some(
+                canvas::Action::publish(Message::MoveOverlay(
+                    drag.overlay_index,
+                    PdfPosition {
+                        x: new_pdf_x,
+                        y: new_pdf_y,
+                    },
+                ))
+                .and_capture(),
+            )
+        } else {
+            Some(canvas::Action::capture())
+        }
+    }
+
+    /// Handle Ctrl+scroll wheel for zoom in/out.
+    fn handle_wheel_scrolled(
+        &self,
+        state: &ProgramState,
+        delta: &mouse::ScrollDelta,
+    ) -> Option<canvas::Action<Message>> {
+        if !state.keyboard_modifiers.command() {
+            return None;
+        }
+        let y = match delta {
+            mouse::ScrollDelta::Lines { y, .. } => *y,
+            mouse::ScrollDelta::Pixels { y, .. } => *y,
+        };
+        let msg = if y > 0.0 {
+            Message::ZoomIn
+        } else {
+            Message::ZoomOut
+        };
+        Some(canvas::Action::publish(msg).and_capture())
+    }
 }
 
 impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
@@ -74,267 +387,21 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
     ) -> Option<canvas::Action<Message>> {
         match event {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                let cursor_pos = cursor.position()?;
-                if !bounds.contains(cursor_pos) {
-                    return None;
-                }
-
-                // Any left click while editing commits the current text first
-                if self.editing {
-                    return Some(canvas::Action::publish(Message::CommitText).and_capture());
-                }
-
-                // Determine which page was clicked (canvas-relative y)
-                let canvas_y = cursor_pos.y - bounds.y;
-                let canvas_x = cursor_pos.x - bounds.x;
-
-                if let Some((page, page_rect)) = self.page_at_canvas_y(canvas_y, bounds.width) {
-                    // Convert cursor to page-local coordinates for hit testing
-                    let page_screen_rect = to_screen_rect(page_rect, &bounds);
-                    let params = self.conversion_params_for_page(page, &page_screen_rect)?;
-
-                    // Check if we hit the resize handle of the selected multi-line overlay first.
-                    if let Some(active_idx) = self.active_overlay
-                        && let Some(overlay) = self.overlays.get(active_idx)
-                        && overlay.page == page
-                        && let Some(width_pts) = overlay.width
-                        && resize_handle_hit(
-                            cursor_pos.x,
-                            cursor_pos.y,
-                            overlay,
-                            width_pts,
-                            &params,
-                        )
-                    {
-                        state.resize_drag = Some(ResizeDragState {
-                            overlay_index: active_idx,
-                            initial_width: width_pts,
-                        });
-                        return Some(canvas::Action::capture());
-                    }
-
-                    // Check if we hit an existing overlay on this page
-                    if let Some(idx) = hit_test(
-                        cursor_pos.x,
-                        cursor_pos.y,
-                        self.overlays,
-                        page,
-                        &params,
-                        self.font_registry,
-                    ) {
-                        let is_double_click =
-                            state.last_click.as_ref().is_some_and(|(time, pos)| {
-                                time.elapsed().as_millis() < DOUBLE_CLICK_TIMEOUT_MS
-                                    && (pos.x - cursor_pos.x).abs() < DOUBLE_CLICK_DISTANCE_PX
-                                    && (pos.y - cursor_pos.y).abs() < DOUBLE_CLICK_DISTANCE_PX
-                            });
-                        state.last_click = Some((std::time::Instant::now(), cursor_pos));
-
-                        if is_double_click {
-                            return Some(
-                                canvas::Action::publish(Message::EditOverlay(idx)).and_capture(),
-                            );
-                        }
-
-                        let (overlay_sx, overlay_sy) = pdf_to_screen(
-                            self.overlays[idx].position.x,
-                            self.overlays[idx].position.y,
-                            &params,
-                        );
-                        state.drag = Some(LocalDragState {
-                            overlay_index: idx,
-                            initial_pdf_position: self.overlays[idx].position,
-                            grab_offset_x: cursor_pos.x - overlay_sx,
-                            grab_offset_y: cursor_pos.y - overlay_sy,
-                        });
-                        Some(canvas::Action::publish(Message::SelectOverlay(idx)).and_capture())
-                    } else if page_rect.contains(iced::Point::new(canvas_x, canvas_y)) {
-                        state.last_click = None;
-                        state.placement_drag = Some(PlacementDragState {
-                            start_screen: cursor_pos,
-                            page,
-                            page_screen_rect: to_screen_rect(page_rect, &bounds),
-                        });
-                        Some(canvas::Action::capture())
-                    } else {
-                        state.last_click = None;
-                        Some(canvas::Action::publish(Message::DeselectOverlay).and_capture())
-                    }
-                } else {
-                    // Click in gap or outside pages
-                    state.last_click = None;
-                    Some(canvas::Action::publish(Message::DeselectOverlay).and_capture())
-                }
+                self.handle_left_click(state, bounds, cursor)
             }
-
             canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                // Use cursor.position() (scroll-adjusted) instead of the raw event
-                // position, so state.cursor_position matches the coordinate space
-                // used by cursor.position() in press/release handlers.
-                state.cursor_position = cursor.position();
-
-                if state.drag.is_some()
-                    || state.placement_drag.is_some()
-                    || state.resize_drag.is_some()
-                {
-                    return Some(canvas::Action::request_redraw());
-                }
-
-                // Hover tracking: hit-test the cursor position against overlays.
-                let new_hover = cursor.position().and_then(|cursor_pos| {
-                    if !bounds.contains(cursor_pos) {
-                        return None;
-                    }
-                    let canvas_y = cursor_pos.y - bounds.y;
-                    let (page, page_rect) = self.page_at_canvas_y(canvas_y, bounds.width)?;
-                    let page_screen_rect = to_screen_rect(page_rect, &bounds);
-                    let params = self.conversion_params_for_page(page, &page_screen_rect)?;
-                    hit_test(
-                        cursor_pos.x,
-                        cursor_pos.y,
-                        self.overlays,
-                        page,
-                        &params,
-                        self.font_registry,
-                    )
-                });
-
-                if new_hover != state.hovered_overlay {
-                    state.hovered_overlay = new_hover;
-                    Some(canvas::Action::request_redraw())
-                } else {
-                    None
-                }
+                self.handle_cursor_moved(state, bounds, cursor)
             }
-
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                let cursor_pos = cursor.position()?;
-
-                // Check for placement drag first (click-to-place or drag-to-size)
-                if let Some(placement) = state.placement_drag.take() {
-                    let dx = cursor_pos.x - placement.start_screen.x;
-                    let dy = cursor_pos.y - placement.start_screen.y;
-                    let distance = (dx * dx + dy * dy).sqrt();
-
-                    let params = self
-                        .conversion_params_for_page(placement.page, &placement.page_screen_rect)?;
-
-                    if distance < MIN_DRAG_DISTANCE {
-                        // Short drag / click: single-line overlay
-                        let (pdf_x, pdf_y) = screen_to_pdf(
-                            placement.start_screen.x,
-                            placement.start_screen.y,
-                            &params,
-                        );
-                        return Some(
-                            canvas::Action::publish(Message::PlaceOverlay {
-                                page: placement.page,
-                                position: PdfPosition { x: pdf_x, y: pdf_y },
-                                width: None,
-                            })
-                            .and_capture(),
-                        );
-                    } else {
-                        // Drag: multi-line overlay — width defined by horizontal drag distance
-                        let (start_pdf_x, start_pdf_y) = screen_to_pdf(
-                            placement.start_screen.x,
-                            placement.start_screen.y,
-                            &params,
-                        );
-                        let (end_pdf_x, _) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
-                        let width_pts = (end_pdf_x - start_pdf_x).abs();
-                        let pdf_x = start_pdf_x.min(end_pdf_x);
-                        return Some(
-                            canvas::Action::publish(Message::PlaceOverlay {
-                                page: placement.page,
-                                position: PdfPosition {
-                                    x: pdf_x,
-                                    y: start_pdf_y,
-                                },
-                                width: Some(width_pts),
-                            })
-                            .and_capture(),
-                        );
-                    }
-                }
-
-                // Handle resize drag end before overlay move drag
-                if let Some(resize) = state.resize_drag.take() {
-                    let overlay = self.overlays.get(resize.overlay_index)?;
-                    let page_rect =
-                        page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
-                    let page_screen_rect = to_screen_rect(page_rect, &bounds);
-                    let params =
-                        self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
-                    let (cursor_pdf_x, _) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
-                    let new_width = (cursor_pdf_x - overlay.position.x).max(20.0);
-                    if (new_width - resize.initial_width).abs() > 0.1 {
-                        return Some(
-                            canvas::Action::publish(Message::ResizeOverlay {
-                                index: resize.overlay_index,
-                                old_width: resize.initial_width,
-                                new_width,
-                            })
-                            .and_capture(),
-                        );
-                    }
-                    return Some(canvas::Action::capture());
-                }
-
-                let drag = state.drag.take()?;
-
-                // Use the overlay's page for coordinate conversion
-                let overlay = self.overlays.get(drag.overlay_index)?;
-                let page_rect = page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
-                let page_screen_rect = to_screen_rect(page_rect, &bounds);
-                let params = self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
-
-                let overlay_screen_x = cursor_pos.x - drag.grab_offset_x;
-                let overlay_screen_y = cursor_pos.y - drag.grab_offset_y;
-                let (new_pdf_x, new_pdf_y) =
-                    screen_to_pdf(overlay_screen_x, overlay_screen_y, &params);
-
-                let moved = (new_pdf_x - drag.initial_pdf_position.x).abs() > 0.1
-                    || (new_pdf_y - drag.initial_pdf_position.y).abs() > 0.1;
-
-                if moved {
-                    Some(
-                        canvas::Action::publish(Message::MoveOverlay(
-                            drag.overlay_index,
-                            PdfPosition {
-                                x: new_pdf_x,
-                                y: new_pdf_y,
-                            },
-                        ))
-                        .and_capture(),
-                    )
-                } else {
-                    Some(canvas::Action::capture())
-                }
+                self.handle_button_released(state, bounds, cursor)
             }
-
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                if state.keyboard_modifiers.command() {
-                    let y = match delta {
-                        mouse::ScrollDelta::Lines { y, .. } => *y,
-                        mouse::ScrollDelta::Pixels { y, .. } => *y,
-                    };
-                    let msg = if y > 0.0 {
-                        Message::ZoomIn
-                    } else {
-                        Message::ZoomOut
-                    };
-                    Some(canvas::Action::publish(msg).and_capture())
-                } else {
-                    None
-                }
+                self.handle_wheel_scrolled(state, delta)
             }
-
             canvas::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                 state.keyboard_modifiers = *modifiers;
                 None
             }
-
             _ => None,
         }
     }
