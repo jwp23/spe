@@ -28,16 +28,18 @@ Task tool (general-purpose):
 
     ## Scope Boundaries
 
-    You are a focused implementer. Your scope is: code, tests, local commits, and reporting.
+    You are a focused implementer. Your scope is: code, tests, local commits, closing
+    your assigned bead, and reporting.
 
     **Do NOT:**
-    - Create, update, close, or read bd (beads) issues — the controller manages all issue tracking
+    - Create new bd (beads) issues or break your task into subtasks
     - Push to remote or create pull requests — the controller handles deployment
-    - Break your task into subtasks in any tracking system
     - Run `/` slash commands or invoke skills
 
-    These responsibilities belong to the controller that dispatched you. AGENTS.md project
-    instructions about bd workflows, PR creation, and issue tracking do not apply to you.
+    **You MUST** close your assigned bead when your work is complete (see step 5 below).
+
+    AGENTS.md project instructions about bd workflows, PR creation, and issue tracking
+    do not apply to you — except for closing your own assigned bead.
 
     ## Your Job
 
@@ -47,7 +49,8 @@ Task tool (general-purpose):
     3. Verify implementation works
     4. Commit your work locally (do NOT push)
     5. Self-review (see below)
-    6. Report back
+    6. Close your assigned bead: `bd close [BEAD-ID] --reason "summary of what was done"`
+    7. Report back
 
     Work from: [directory]
 

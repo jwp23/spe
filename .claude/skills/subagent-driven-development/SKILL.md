@@ -46,17 +46,17 @@ digraph process {
     subgraph cluster_per_task {
         label="Per Task";
         "Assess task complexity\n(see Model Selection)" [shape=diamond];
-        "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)" [shape=box];
+        "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)\nPass bead ID for closing" [shape=box];
         "Implementer subagent asks questions?" [shape=diamond];
         "Answer questions, provide context" [shape=box];
-        "Implementer subagent implements, tests, commits, self-reviews" [shape=box];
+        "Implementer subagent implements, tests,\ncommits, self-reviews, closes bead" [shape=box];
         "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)" [shape=box];
         "Spec reviewer subagent confirms code matches spec?" [shape=diamond];
         "Implementer subagent fixes spec gaps" [shape=box];
         "Dispatch code quality reviewer subagent\n(model: opus)\n(./code-quality-reviewer-prompt.md)" [shape=box];
         "Code quality reviewer subagent approves?" [shape=diamond];
         "Implementer subagent fixes quality issues" [shape=box];
-        "Close task: bd close <task-id>" [shape=box];
+        "Verify task bead closed by implementer" [shape=box];
     }
 
     "Load epic features:\nbd children <epic-id> --json" [shape=box];
@@ -64,17 +64,18 @@ digraph process {
     "More tasks in feature?" [shape=diamond];
     "Close feature:\nbd close <feature-id>" [shape=box];
     "More features remain?" [shape=diamond];
+    "Close epic:\nbd close <epic-id>" [shape=box];
     "Dispatch final code reviewer subagent for entire implementation" [shape=box];
     "Use finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
 
     "Load epic features:\nbd children <epic-id> --json" -> "Load feature tasks:\nbd children <feature-id> --json";
     "Load feature tasks:\nbd children <feature-id> --json" -> "Assess task complexity\n(see Model Selection)";
-    "Assess task complexity\n(see Model Selection)" -> "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)";
-    "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)" -> "Implementer subagent asks questions?";
+    "Assess task complexity\n(see Model Selection)" -> "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)\nPass bead ID for closing";
+    "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)\nPass bead ID for closing" -> "Implementer subagent asks questions?";
     "Implementer subagent asks questions?" -> "Answer questions, provide context" [label="yes"];
-    "Answer questions, provide context" -> "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)";
-    "Implementer subagent asks questions?" -> "Implementer subagent implements, tests, commits, self-reviews" [label="no"];
-    "Implementer subagent implements, tests, commits, self-reviews" -> "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)";
+    "Answer questions, provide context" -> "Dispatch implementer subagent\n(model: haiku|sonnet|opus)\n(./implementer-prompt.md)\nPass bead ID for closing";
+    "Implementer subagent asks questions?" -> "Implementer subagent implements, tests,\ncommits, self-reviews, closes bead" [label="no"];
+    "Implementer subagent implements, tests,\ncommits, self-reviews, closes bead" -> "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)";
     "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)" -> "Spec reviewer subagent confirms code matches spec?";
     "Spec reviewer subagent confirms code matches spec?" -> "Implementer subagent fixes spec gaps" [label="no"];
     "Implementer subagent fixes spec gaps" -> "Dispatch spec reviewer subagent\n(model: sonnet)\n(./spec-reviewer-prompt.md)" [label="re-review"];
@@ -82,13 +83,14 @@ digraph process {
     "Dispatch code quality reviewer subagent\n(model: opus)\n(./code-quality-reviewer-prompt.md)" -> "Code quality reviewer subagent approves?";
     "Code quality reviewer subagent approves?" -> "Implementer subagent fixes quality issues" [label="no"];
     "Implementer subagent fixes quality issues" -> "Dispatch code quality reviewer subagent\n(model: opus)\n(./code-quality-reviewer-prompt.md)" [label="re-review"];
-    "Code quality reviewer subagent approves?" -> "Close task: bd close <task-id>" [label="yes"];
-    "Close task: bd close <task-id>" -> "More tasks in feature?";
+    "Code quality reviewer subagent approves?" -> "Verify task bead closed by implementer" [label="yes"];
+    "Verify task bead closed by implementer" -> "More tasks in feature?";
     "More tasks in feature?" -> "Assess task complexity\n(see Model Selection)" [label="yes"];
     "More tasks in feature?" -> "Close feature:\nbd close <feature-id>" [label="no"];
     "Close feature:\nbd close <feature-id>" -> "More features remain?";
     "More features remain?" -> "Load feature tasks:\nbd children <feature-id> --json" [label="yes"];
-    "More features remain?" -> "Dispatch final code reviewer subagent for entire implementation" [label="no"];
+    "More features remain?" -> "Close epic:\nbd close <epic-id>" [label="no"];
+    "Close epic:\nbd close <epic-id>" -> "Dispatch final code reviewer subagent for entire implementation";
     "Dispatch final code reviewer subagent for entire implementation" -> "Use finishing-a-development-branch";
 }
 ```
@@ -176,16 +178,16 @@ Spec reviewer: ✅ Spec compliant - all requirements met, nothing extra
 [Get git SHAs, dispatch code quality reviewer (model: opus)]
 Code reviewer: Strengths: Good test coverage, clean. Issues: None. Approved.
 
-[bd close bd-abc --reason "Implemented"]
+[Verify implementer closed bd-abc — if not, bd close bd-abc]
 
 Task 2 (bd-def): Recovery modes
   Complexity: multi-file, integration with hook system → model: sonnet
 
-[bd update bd-def --claim]
-[Dispatch implementer subagent (model: sonnet) with full task text + context]
+[Dispatch implementer subagent (model: sonnet) with full task text + bead ID bd-def]
+...implementer implements, commits, closes bd-def, reports...
 ...reviews pass (spec: sonnet, quality: opus)...
 
-[bd close bd-def --reason "Implemented"]
+[Verify implementer closed bd-def]
 
 [All tasks in feature done — close feature]
 [bd close bd-feat1 --reason "All tasks complete"]
@@ -206,7 +208,9 @@ Task 3 (bd-ghi): Verify command
 
 --- All features complete ---
 
-[bd children <epic-id> shows all features closed — epic auto-closes]
+[All features closed — close epic]
+[bd close <epic-id> --reason "All features complete"]
+
 [Dispatch final code reviewer (model: opus)]
 Final reviewer: All requirements met, ready to merge
 
