@@ -166,6 +166,14 @@ impl FontRegistry {
         }
         lines
     }
+
+    /// Find a font by display name or PDF name. Returns None if not found.
+    pub fn find_by_name(&self, name: &str) -> Option<FontId> {
+        self.fonts
+            .iter()
+            .find(|e| e.display_name == name || e.pdf_name == name)
+            .map(|e| e.id)
+    }
 }
 
 impl Default for FontRegistry {
@@ -1022,5 +1030,52 @@ mod tests {
         let lines = registry.word_wrap("ABCDEFGHIJ", courier.id, 12.0, 50.0);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0], "ABCDEFGHIJ");
+    }
+
+    #[test]
+    fn find_by_name_display_name() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Helvetica").unwrap();
+        assert_eq!(registry.get(id).display_name, "Helvetica");
+    }
+
+    #[test]
+    fn find_by_name_pdf_name() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Helvetica-Bold").unwrap();
+        assert_eq!(registry.get(id).display_name, "Helvetica Bold");
+    }
+
+    #[test]
+    fn find_by_name_returns_none_for_unknown() {
+        let registry = FontRegistry::new();
+        assert!(registry.find_by_name("Comic Sans").is_none());
+    }
+
+    #[test]
+    fn find_by_name_all_standard14_resolvable() {
+        let registry = FontRegistry::new();
+        let names = [
+            "Helvetica",
+            "Helvetica Bold",
+            "Helvetica Oblique",
+            "Helvetica Bold Oblique",
+            "Times Roman",
+            "Times Bold",
+            "Times Italic",
+            "Times Bold Italic",
+            "Courier",
+            "Courier Bold",
+            "Courier Oblique",
+            "Courier Bold Oblique",
+            "Symbol",
+            "Zapf Dingbats",
+        ];
+        for name in names {
+            assert!(
+                registry.find_by_name(name).is_some(),
+                "Failed to find: {name}"
+            );
+        }
     }
 }
