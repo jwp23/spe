@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::coordinate::{ConversionParams, overlay_bounding_box, pdf_to_screen, render_scale};
-use crate::ui::canvas::{self, PdfCanvasProgram};
+use crate::ui::canvas::{self, OverlayCanvasProgram, PdfPagesProgram};
 use crate::ui::toolbar::{self, ToolbarContext};
 
 impl App {
@@ -25,11 +25,19 @@ impl App {
             let layout =
                 canvas::page_layout(&doc.page_dimensions, doc.page_count, self.canvas.zoom, dpi);
 
-            let program = PdfCanvasProgram {
+            let pages_program = PdfPagesProgram {
                 page_images: &doc.page_images,
                 page_layout: layout.clone(),
                 page_dimensions: &doc.page_dimensions,
                 page_count: doc.page_count,
+                scroll_y: self.canvas.scroll_y,
+                viewport_height: self.canvas.viewport_height,
+                zoom: self.canvas.zoom,
+                dpi,
+            };
+            let overlay_program = OverlayCanvasProgram {
+                page_layout: layout.clone(),
+                page_dimensions: &doc.page_dimensions,
                 scroll_y: self.canvas.scroll_y,
                 viewport_height: self.canvas.viewport_height,
                 overlays: &doc.overlays,
@@ -42,10 +50,16 @@ impl App {
 
             let (canvas_width, canvas_height) = self.canvas_dimensions(doc);
 
-            let canvas_area: iced::Element<Message> = iced::widget::canvas(program)
+            let page_canvas: iced::Element<Message> = iced::widget::canvas(pages_program)
                 .width(canvas_width)
                 .height(canvas_height)
                 .into();
+            let overlay_canvas: iced::Element<Message> = iced::widget::canvas(overlay_program)
+                .width(canvas_width)
+                .height(canvas_height)
+                .into();
+            let canvas_area: iced::Element<Message> =
+                iced::widget::stack![page_canvas, overlay_canvas].into();
 
             let scrollable_canvas: iced::Element<Message> = iced::widget::scrollable(canvas_area)
                 .direction(iced::widget::scrollable::Direction::Both {

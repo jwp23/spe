@@ -38,6 +38,18 @@ cargo run
 
 ## Development
 
+### Development Dependencies
+
+| Tool | Version | Install (Arch) | Purpose |
+|------|---------|----------------|---------|
+| cage | any | `pacman -S cage` | Headless Wayland compositor for screenshot harness |
+| grim | any | `pacman -S grim` | Wayland-native screenshot capture |
+| socat | any | `pacman -S socat` | Unix socket client for IPC commands |
+
+These are only needed for visual debugging with the screenshot tool — not for building or testing.
+
+### Commands
+
 ```bash
 cargo fmt --check            # check formatting
 cargo clippy -- -D warnings  # lint

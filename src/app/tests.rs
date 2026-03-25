@@ -403,7 +403,7 @@ fn title_with_document() {
 #[test]
 fn view_with_document_renders_canvas_widget() {
     let app = test_app_with_document();
-    // Should not panic — constructs PdfCanvasProgram and renders canvas
+    // Should not panic — constructs Stack with PdfPagesProgram and OverlayCanvasProgram
     let _element = app.view();
 }
 

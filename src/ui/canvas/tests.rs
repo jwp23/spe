@@ -1,7 +1,11 @@
 use super::*;
+use crate::app::Message;
 use crate::coordinate::ConversionParams;
 use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
 use iced::event;
+use iced::mouse;
+use iced::widget::canvas;
+use iced::widget::image::Handle;
 use std::collections::HashMap;
 
 // --- PageLayout tests ---
@@ -237,28 +241,21 @@ const TEST_PAGE_DIMS: (f32, f32) = (612.0, 792.0);
 const TEST_ZOOM: f32 = 1.0;
 const TEST_DPI: f32 = 72.0;
 
-fn test_page_images() -> HashMap<u32, Handle> {
-    HashMap::new()
-}
-
 fn test_page_dimensions() -> HashMap<u32, (f32, f32)> {
     let mut dims = HashMap::new();
     dims.insert(1, TEST_PAGE_DIMS);
     dims
 }
 
-/// Build a PdfCanvasProgram for event handling tests (single page).
+/// Build an OverlayCanvasProgram for event handling tests (single page).
 fn test_program<'a>(
     overlays: &'a [TextOverlay],
-    page_images: &'a HashMap<u32, Handle>,
     page_dims: &'a HashMap<u32, (f32, f32)>,
-) -> PdfCanvasProgram<'a> {
+) -> OverlayCanvasProgram<'a> {
     let layout = page_layout(page_dims, 1, TEST_ZOOM, TEST_DPI);
-    PdfCanvasProgram {
-        page_images,
+    OverlayCanvasProgram {
         page_layout: layout,
         page_dimensions: page_dims,
-        page_count: 1,
         scroll_y: 0.0,
         viewport_height: 1000.0,
         overlays,
@@ -362,19 +359,16 @@ fn local_drag_state_construction() {
     assert!((drag.grab_offset_y - 10.0).abs() < f32::EPSILON);
 }
 
-// --- PdfCanvasProgram tests ---
+// --- OverlayCanvasProgram tests ---
 
 #[test]
-fn pdf_canvas_program_construction_with_no_document() {
+fn overlay_canvas_program_construction_with_no_document() {
     let overlays: Vec<TextOverlay> = vec![];
-    let empty_imgs: HashMap<u32, Handle> = HashMap::new();
     let empty_dims: HashMap<u32, (f32, f32)> = HashMap::new();
     let layout = page_layout(&empty_dims, 0, 1.0, 150.0);
-    let program = PdfCanvasProgram {
-        page_images: &empty_imgs,
+    let program = OverlayCanvasProgram {
         page_layout: layout,
         page_dimensions: &empty_dims,
-        page_count: 0,
         scroll_y: 0.0,
         viewport_height: 1000.0,
         overlays: &overlays,
@@ -384,24 +378,18 @@ fn pdf_canvas_program_construction_with_no_document() {
         editing: false,
         overlay_color: [0.0, 0.0, 1.0, 1.0],
     };
-    assert!(program.page_images.is_empty());
     assert!(program.page_dimensions.is_empty());
     assert_eq!(program.overlays.len(), 0);
 }
 
 #[test]
-fn pdf_canvas_program_construction_with_document() {
-    let mut page_images = HashMap::new();
-    let handle = iced::widget::image::Handle::from_rgba(1, 1, vec![0u8; 4]);
-    page_images.insert(1u32, handle);
+fn overlay_canvas_program_construction_with_document() {
     let overlays = vec![overlay_at(72.0, 720.0, "Test")];
     let dims = test_page_dimensions();
     let layout = page_layout(&dims, 1, 1.5, 150.0);
-    let program = PdfCanvasProgram {
-        page_images: &page_images,
+    let program = OverlayCanvasProgram {
         page_layout: layout,
         page_dimensions: &dims,
-        page_count: 1,
         scroll_y: 0.0,
         viewport_height: 1000.0,
         overlays: &overlays,
@@ -411,10 +399,8 @@ fn pdf_canvas_program_construction_with_document() {
         editing: true,
         overlay_color: [0.26, 0.53, 0.96, 1.0],
     };
-    assert_eq!(program.page_images.len(), 1);
     assert!(program.page_dimensions.contains_key(&1));
     assert_eq!(program.overlays.len(), 1);
-    assert_eq!(program.page_count, 1);
     assert!((program.zoom - 1.5).abs() < f32::EPSILON);
     assert!(program.editing);
 }
@@ -646,14 +632,11 @@ fn effective_dpi_at_double_zoom() {
 #[test]
 fn update_ignores_click_when_no_pages() {
     let overlays: Vec<TextOverlay> = vec![];
-    let empty_imgs: HashMap<u32, Handle> = HashMap::new();
     let empty_dims: HashMap<u32, (f32, f32)> = HashMap::new();
     let layout = page_layout(&empty_dims, 0, TEST_ZOOM, TEST_DPI);
-    let program = PdfCanvasProgram {
-        page_images: &empty_imgs,
+    let program = OverlayCanvasProgram {
         page_layout: layout,
         page_dimensions: &empty_dims,
-        page_count: 0,
         scroll_y: 0.0,
         viewport_height: 1000.0,
         overlays: &overlays,
@@ -677,9 +660,9 @@ fn update_ignores_click_when_no_pages() {
 #[test]
 fn update_ignores_click_when_cursor_unavailable() {
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = mouse::Cursor::Unavailable;
@@ -695,9 +678,9 @@ fn update_click_on_empty_page_records_placement_drag_on_press() {
     // On mouse-down over a blank page area, placement is deferred to mouse-up.
     // In multi-page mode, page 1 starts at y=PAGE_GAP/2=8, centered at x=194.
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(300.0, 200.0);
@@ -723,9 +706,9 @@ fn update_click_on_empty_page_places_single_line_overlay_on_release() {
     //   pdf_x = (300 - 194) / 1.0 = 106
     //   pdf_y = 792 - ((200 - 8) / 1.0) = 600
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(300.0, 200.0);
@@ -765,9 +748,9 @@ fn update_drag_on_empty_page_places_multi_line_overlay_on_release() {
     // End: pdf_x = 450 - 194 = 256
     // Width = |256 - 106| = 150 pts
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
 
@@ -804,9 +787,9 @@ fn update_click_on_overlay_selects_it() {
     // page at y=8, so screen_y = (792-720) + 8 = 80
     // Courier 12pt "Hello": hit box x=[266, 302], y=[68, 80]
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
@@ -820,9 +803,9 @@ fn update_click_on_overlay_selects_it() {
 #[test]
 fn update_click_on_overlay_starts_drag() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
@@ -840,9 +823,9 @@ fn update_click_outside_page_deselects() {
     // Page image bounds: (194, 104) to (806, 896).
     // Click at (50, 50) which is outside the page.
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(50.0, 50.0);
@@ -858,12 +841,11 @@ fn update_click_while_editing_commits_text_first() {
     // Iced actions carry a single message, so clicking while editing
     // returns CommitText only. The place/select happens on the next click.
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
     let dims = test_page_dimensions();
-    let program = PdfCanvasProgram {
+    let program = OverlayCanvasProgram {
         editing: true,
         active_overlay: Some(0),
-        ..test_program(&overlays, &imgs, &dims)
+        ..test_program(&overlays, &dims)
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -878,9 +860,9 @@ fn update_click_while_editing_commits_text_first() {
 #[test]
 fn update_cursor_move_updates_state() {
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(400.0, 300.0);
@@ -902,9 +884,9 @@ fn update_cursor_move_updates_state() {
 #[test]
 fn update_mouse_release_without_drag_is_ignored() {
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(300.0, 200.0);
@@ -922,9 +904,9 @@ fn update_drag_and_release_publishes_move() {
     // 3) Release → should publish MoveOverlay
 
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
 
@@ -967,9 +949,9 @@ fn update_drag_and_release_publishes_move() {
 fn update_drag_release_at_same_position_no_move_message() {
     // Click on overlay, don't move, release → no MoveOverlay needed
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
 
@@ -989,9 +971,9 @@ fn update_drag_release_at_same_position_no_move_message() {
 #[test]
 fn update_ignores_right_click() {
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(300.0, 200.0);
@@ -1010,9 +992,9 @@ fn update_ignores_right_click() {
 #[test]
 fn mouse_interaction_grabbing_during_drag() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let state = state_with_drag();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(300.0, 200.0);
@@ -1024,9 +1006,9 @@ fn mouse_interaction_grabbing_during_drag() {
 #[test]
 fn mouse_interaction_pointer_over_overlay() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let state = ProgramState::default();
     let bounds = test_canvas_bounds();
     // Cursor over the overlay's hit box at screen (270, 75) — page y-offset=8
@@ -1039,9 +1021,9 @@ fn mouse_interaction_pointer_over_overlay() {
 #[test]
 fn mouse_interaction_crosshair_on_page() {
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let state = ProgramState::default();
     let bounds = test_canvas_bounds();
     // Cursor inside page image but not over any overlay
@@ -1054,9 +1036,9 @@ fn mouse_interaction_crosshair_on_page() {
 #[test]
 fn mouse_interaction_default_outside_page() {
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let state = ProgramState::default();
     let bounds = test_canvas_bounds();
     // Cursor outside page image (50, 50) but inside canvas bounds
@@ -1069,14 +1051,11 @@ fn mouse_interaction_default_outside_page() {
 #[test]
 fn mouse_interaction_default_when_no_page() {
     let overlays: Vec<TextOverlay> = vec![];
-    let empty_imgs: HashMap<u32, Handle> = HashMap::new();
     let empty_dims: HashMap<u32, (f32, f32)> = HashMap::new();
     let layout = page_layout(&empty_dims, 0, TEST_ZOOM, TEST_DPI);
-    let program = PdfCanvasProgram {
-        page_images: &empty_imgs,
+    let program = OverlayCanvasProgram {
         page_layout: layout,
         page_dimensions: &empty_dims,
-        page_count: 0,
         scroll_y: 0.0,
         viewport_height: 1000.0,
         overlays: &overlays,
@@ -1223,9 +1202,9 @@ fn modifiers_changed_event(modifiers: iced::keyboard::Modifiers) -> canvas::Even
 #[test]
 fn modifiers_changed_updates_program_state() {
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(0.0, 0.0);
@@ -1252,9 +1231,9 @@ fn scroll_event(delta_y: f32) -> canvas::Event {
 #[test]
 fn ctrl_scroll_up_publishes_zoom_in() {
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     state.keyboard_modifiers = iced::keyboard::Modifiers::COMMAND;
     let bounds = test_canvas_bounds();
@@ -1269,9 +1248,9 @@ fn ctrl_scroll_up_publishes_zoom_in() {
 #[test]
 fn ctrl_scroll_down_publishes_zoom_out() {
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     state.keyboard_modifiers = iced::keyboard::Modifiers::COMMAND;
     let bounds = test_canvas_bounds();
@@ -1286,9 +1265,9 @@ fn ctrl_scroll_down_publishes_zoom_out() {
 #[test]
 fn bare_scroll_is_not_captured() {
     let overlays: Vec<TextOverlay> = vec![];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     // No modifiers set
     let bounds = test_canvas_bounds();
@@ -1314,9 +1293,9 @@ fn program_state_default_has_no_last_click() {
 fn single_click_on_overlay_emits_select_not_edit() {
     // First click on overlay — no previous click — should emit SelectOverlay.
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
@@ -1333,9 +1312,9 @@ fn single_click_on_overlay_emits_select_not_edit() {
 fn double_click_on_overlay_emits_edit_overlay() {
     // Two rapid clicks at the same position on an overlay → EditOverlay.
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
@@ -1357,9 +1336,9 @@ fn double_click_on_overlay_emits_edit_overlay() {
 fn double_click_too_far_away_does_not_edit() {
     // Two clicks where second is more than 5px away from first → still SelectOverlay.
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
 
@@ -1380,9 +1359,9 @@ fn double_click_too_far_away_does_not_edit() {
 fn double_click_records_last_click_after_edit() {
     // After a double-click, last_click is updated with the second click's position.
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
@@ -1444,11 +1423,10 @@ fn click_on_resize_handle_starts_resize_drag() {
     // Handle y range: [68, 80].
     // Click at (416, 75): should start resize_drag, not overlay move drag.
     let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
-    let imgs = test_page_images();
     let dims = test_page_dimensions();
-    let program = PdfCanvasProgram {
+    let program = OverlayCanvasProgram {
         active_overlay: Some(0),
-        ..test_program(&overlays, &imgs, &dims)
+        ..test_program(&overlays, &dims)
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -1474,11 +1452,10 @@ fn resize_drag_on_single_line_overlay_does_not_start() {
     // Single-line overlays (width=None) have no resize handle.
     // Click at the same x position should fall through to normal overlay hit test.
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")]; // width=None
-    let imgs = test_page_images();
     let dims = test_page_dimensions();
-    let program = PdfCanvasProgram {
+    let program = OverlayCanvasProgram {
         active_overlay: Some(0),
-        ..test_program(&overlays, &imgs, &dims)
+        ..test_program(&overlays, &dims)
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -1497,10 +1474,10 @@ fn resize_drag_only_starts_on_selected_overlay() {
     // The resize handle only appears for the active (selected) overlay.
     // If no overlay is selected, clicking the handle position starts placement drag.
     let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
     // active_overlay is None — not selected
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(416.0, 75.0);
@@ -1516,11 +1493,10 @@ fn resize_drag_only_starts_on_selected_overlay() {
 fn resize_drag_release_publishes_resize_overlay_message() {
     // Drag from handle at x=416 to x=516 (100px rightward) → new_width = 150 + 100 = 250pt
     let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
-    let imgs = test_page_images();
     let dims = test_page_dimensions();
-    let program = PdfCanvasProgram {
+    let program = OverlayCanvasProgram {
         active_overlay: Some(0),
-        ..test_program(&overlays, &imgs, &dims)
+        ..test_program(&overlays, &dims)
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -1563,11 +1539,10 @@ fn resize_drag_release_publishes_resize_overlay_message() {
 fn resize_drag_release_enforces_minimum_width() {
     // Drag leftward past the overlay's left edge. Width clamped to 20pt.
     let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
-    let imgs = test_page_images();
     let dims = test_page_dimensions();
-    let program = PdfCanvasProgram {
+    let program = OverlayCanvasProgram {
         active_overlay: Some(0),
-        ..test_program(&overlays, &imgs, &dims)
+        ..test_program(&overlays, &dims)
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -1596,11 +1571,10 @@ fn resize_drag_release_enforces_minimum_width() {
 fn resize_drag_release_at_same_position_emits_no_message() {
     // If the user presses and releases the handle without moving, no resize needed.
     let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
-    let imgs = test_page_images();
     let dims = test_page_dimensions();
-    let program = PdfCanvasProgram {
+    let program = OverlayCanvasProgram {
         active_overlay: Some(0),
-        ..test_program(&overlays, &imgs, &dims)
+        ..test_program(&overlays, &dims)
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -1622,11 +1596,10 @@ fn resize_drag_release_at_same_position_emits_no_message() {
 #[test]
 fn cursor_move_requests_redraw_during_resize_drag() {
     let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
-    let imgs = test_page_images();
     let dims = test_page_dimensions();
-    let program = PdfCanvasProgram {
+    let program = OverlayCanvasProgram {
         active_overlay: Some(0),
-        ..test_program(&overlays, &imgs, &dims)
+        ..test_program(&overlays, &dims)
     };
     let mut state = ProgramState::default();
     state.resize_drag = Some(ResizeDragState {
@@ -1648,9 +1621,9 @@ fn cursor_move_requests_redraw_during_resize_drag() {
 fn click_on_empty_page_between_overlay_clicks_prevents_double_click() {
     // Clicking blank page area clears last_click and prevents false-positive double-click.
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
 
@@ -1675,16 +1648,16 @@ fn drag_after_commit_preserves_overlay() {
     // Simulates: editing overlay → commit → click overlay → drag → release.
     // The ProgramState persists across program changes (editing → not editing).
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
     let bounds = test_canvas_bounds();
     let mut state = ProgramState::default();
 
     // Phase 1: User is editing. Move cursor to overlay position to set cursor_position.
-    let editing_program = PdfCanvasProgram {
+    let editing_program = OverlayCanvasProgram {
         editing: true,
         active_overlay: Some(0),
-        ..test_program(&overlays, &imgs, &dims)
+        ..test_program(&overlays, &dims)
     };
     let cursor = cursor_at(270.0, 75.0);
     editing_program.update(&mut state, &cursor_moved_event(270.0, 75.0), bounds, cursor);
@@ -1701,10 +1674,10 @@ fn drag_after_commit_preserves_overlay() {
 
     // Phase 3: After commit, program changes to editing=false.
     // ProgramState MUST persist — cursor_position must survive.
-    let committed_program = PdfCanvasProgram {
+    let committed_program = OverlayCanvasProgram {
         editing: false,
         active_overlay: Some(0),
-        ..test_program(&overlays, &imgs, &dims)
+        ..test_program(&overlays, &dims)
     };
     assert!(
         state.cursor_position.is_some(),
@@ -1874,9 +1847,9 @@ fn cursor_move_over_overlay_sets_hovered_overlay() {
     // Overlay at PDF (72, 720) → screen (266, 80) in multi-page canvas.
     // Hit box includes screen (270, 75). Moving cursor there should set hovered_overlay = Some(0).
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
@@ -1898,9 +1871,9 @@ fn cursor_move_over_overlay_sets_hovered_overlay() {
 fn cursor_move_off_overlay_clears_hovered_overlay() {
     // Start with cursor over overlay, then move away. hovered_overlay should clear.
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     state.hovered_overlay = Some(0);
     let bounds = test_canvas_bounds();
@@ -1928,9 +1901,9 @@ fn cursor_move_off_overlay_clears_hovered_overlay() {
 fn cursor_move_with_no_hover_change_does_not_request_redraw() {
     // Cursor moves over blank page area — hovered_overlay stays None — no redraw needed.
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = ProgramState::default();
     // hovered_overlay already None
     let bounds = test_canvas_bounds();
@@ -1953,9 +1926,9 @@ fn cursor_move_with_no_hover_change_does_not_request_redraw() {
 fn cursor_move_during_drag_skips_hover_tracking() {
     // During an overlay drag, CursorMoved returns redraw immediately without updating hovered_overlay.
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let imgs = test_page_images();
+
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &imgs, &dims);
+    let program = test_program(&overlays, &dims);
     let mut state = state_with_drag();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
