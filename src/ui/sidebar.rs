@@ -124,6 +124,12 @@ const CURRENT_PAGE_BORDER_COLOR: iced::Color = iced::Color {
 
 /// Width of the current-page highlight border in pixels.
 const CURRENT_PAGE_BORDER_WIDTH: f32 = 3.0;
+/// Base gray fill for unloaded thumbnail placeholders.
+const SHIMMER_PLACEHOLDER_BACKGROUND: iced::Color = iced::Color::from_rgb(0.82, 0.82, 0.82);
+/// Semi-transparent white band that sweeps across the shimmer animation.
+const SHIMMER_HIGHLIGHT_COLOR: iced::Color = iced::Color::from_rgba(1.0, 1.0, 1.0, 0.15);
+/// Text color for non-current page number labels.
+const PAGE_LABEL_COLOR: iced::Color = iced::Color::from_rgb(0.878, 0.878, 0.878);
 
 /// Canvas program that draws a single page thumbnail: white background,
 /// cached image or gray placeholder, and a highlight border for the current page.
@@ -166,7 +172,7 @@ impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
             frame.fill_rectangle(
                 iced::Point::ORIGIN,
                 bounds.size(),
-                iced::Color::from_rgb(0.82, 0.82, 0.82),
+                SHIMMER_PLACEHOLDER_BACKGROUND,
             );
             // Shimmer highlight band sweeping left to right
             let band_width = bounds.width * 0.4;
@@ -174,7 +180,7 @@ impl<'a> canvas::Program<Message> for ThumbnailProgram<'a> {
             frame.fill_rectangle(
                 iced::Point::new(x_offset, 0.0),
                 iced::Size::new(band_width, bounds.height),
-                iced::Color::from_rgba(1.0, 1.0, 1.0, 0.15),
+                SHIMMER_HIGHLIGHT_COLOR,
             );
         }
 
@@ -292,7 +298,7 @@ pub fn sidebar_view<'a>(
         let label_color = if is_current {
             CURRENT_PAGE_BORDER_COLOR
         } else {
-            iced::Color::from_rgb(0.878, 0.878, 0.878)
+            PAGE_LABEL_COLOR
         };
         let label = text(format!("{page}")).size(13).center().color(label_color);
 

@@ -28,6 +28,8 @@ pub(crate) const OVERLAY_TINT_ALPHA: f32 = 0.08;
 pub(crate) const OVERLAY_TINT_HOVER_ALPHA: f32 = 0.15;
 /// Opacity for the border drawn around a hovered overlay.
 pub(crate) const OVERLAY_TINT_HOVER_BORDER_ALPHA: f32 = 0.5;
+/// Background color for the canvas area behind PDF pages.
+const CANVAS_BACKGROUND: iced::Color = iced::Color::from_rgb(0.85, 0.85, 0.85);
 
 /// State for the PDF canvas view (persistent, lives in App).
 pub struct CanvasState {
@@ -424,11 +426,7 @@ impl<'a> canvas::Program<Message> for PdfCanvasProgram<'a> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
 
         // Gray background
-        frame.fill_rectangle(
-            iced::Point::ORIGIN,
-            bounds.size(),
-            iced::Color::from_rgb(0.85, 0.85, 0.85),
-        );
+        frame.fill_rectangle(iced::Point::ORIGIN, bounds.size(), CANVAS_BACKGROUND);
 
         if self.page_layout.page_tops.is_empty() {
             return vec![frame.into_geometry()];

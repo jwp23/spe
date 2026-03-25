@@ -79,9 +79,7 @@ impl App {
                         .height(iced::Length::Fill),
                 )
                 .style(|_theme| iced::widget::container::Style {
-                    background: Some(iced::Background::Color(iced::Color::from_rgb(
-                        0.2, 0.2, 0.3,
-                    ))),
+                    background: Some(iced::Background::Color(SIDEBAR_HANDLE_BACKGROUND)),
                     ..Default::default()
                 })
                 .width(4)
@@ -106,9 +104,7 @@ impl App {
                 .padding(8)
                 .width(iced::Length::Fill)
                 .style(|_theme: &iced::Theme| iced::widget::container::Style {
-                    background: Some(iced::Background::Color(iced::Color::from_rgb(
-                        0.15, 0.15, 0.2,
-                    ))),
+                    background: Some(iced::Background::Color(TOAST_BACKGROUND)),
                     text_color: Some(iced::Color::WHITE),
                     ..Default::default()
                 });
@@ -270,6 +266,10 @@ const OVERLAY_BORDER: iced::Border = iced::Border {
 };
 const OVERLAY_PLACEHOLDER: iced::Color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4);
 const OVERLAY_SELECTION: iced::Color = iced::Color::from_rgba(0.2, 0.5, 1.0, 0.3);
+/// Background color for the sidebar resize handle strip.
+const SIDEBAR_HANDLE_BACKGROUND: iced::Color = iced::Color::from_rgb(0.2, 0.2, 0.3);
+/// Background color for the status/toast message bar.
+const TOAST_BACKGROUND: iced::Color = iced::Color::from_rgb(0.15, 0.15, 0.2);
 
 fn overlay_text_input_style(
     _theme: &iced::Theme,
