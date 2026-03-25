@@ -705,6 +705,7 @@ Deploying untested skills = deploying untested code. It's a violation of quality
 
 **Deployment:**
 - [ ] Commit skill to git and push to your fork (if configured)
+- [ ] If this skill involves an agentic workflow decision (model selection, delegation pattern, agent design), record rationale in `.claude/docs/adr/`
 - [ ] Consider contributing back via PR (if broadly useful)
 - [ ] Run skill-creator benchmarks (optional — recommended for widely-shared skills)
 - [ ] Optimize description with skill-creator (optional — recommended before distribution)
