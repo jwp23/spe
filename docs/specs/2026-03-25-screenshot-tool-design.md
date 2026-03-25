@@ -155,6 +155,7 @@ IpcCommand::WaitReady
 
 - `cage` — headless kiosk Wayland compositor
 - `grim` — Wayland screenshot utility
+- `socat` — Unix socket client (used by harness script to send IPC commands)
 
 ### Rust Crates (new)
 
