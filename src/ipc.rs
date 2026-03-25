@@ -1,7 +1,8 @@
-// IPC protocol: command parsing, command-to-Message translation.
+// IPC protocol: command parsing, command-to-Message translation, subscription.
 
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::Deserialize;
 
@@ -30,7 +31,7 @@ impl fmt::Display for IpcError {
 }
 
 /// A command received over the IPC socket.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum IpcCommand {
     Open {
@@ -78,6 +79,15 @@ pub enum IpcCommand {
         y: f32,
     },
     WaitReady,
+}
+
+/// Returns the IPC socket path.
+pub fn socket_path() -> PathBuf {
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        PathBuf::from(dir).join("spe-ipc.sock")
+    } else {
+        PathBuf::from("/tmp/spe-ipc.sock")
+    }
 }
 
 impl IpcCommand {
@@ -130,6 +140,127 @@ impl IpcCommand {
             IpcCommand::WaitReady => Ok(Message::Noop),
         }
     }
+}
+
+/// Response sent from the app back to the IPC subscription.
+#[derive(Debug, Clone)]
+pub struct IpcResponse {
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
+/// Wrapper around the response sender so it can be stored in App state.
+/// Cloneable because Arc.
+#[derive(Debug, Clone)]
+pub struct ResponseSender(pub Arc<tokio::sync::Mutex<tokio::sync::mpsc::Sender<IpcResponse>>>);
+
+/// Events yielded by the IPC subscription to the app.
+#[derive(Debug, Clone)]
+pub enum IpcEvent {
+    /// Subscription is ready — app should store the response sender.
+    Ready(ResponseSender),
+    /// A parsed command from the client.
+    Command(IpcCommand),
+    /// A WaitReady request — app should check idle state.
+    WaitReady,
+}
+
+/// Creates the IPC subscription. Returns events that the app maps to Messages.
+pub fn ipc_subscription() -> iced::Subscription<IpcEvent> {
+    iced::Subscription::run(ipc_stream)
+}
+
+fn ipc_stream() -> impl iced::futures::Stream<Item = IpcEvent> {
+    iced::stream::channel(32, async |mut output| {
+        use iced::futures::SinkExt;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::UnixListener;
+
+        let path = socket_path();
+
+        // Remove stale socket file if it exists.
+        let _ = std::fs::remove_file(&path);
+
+        let listener = match UnixListener::bind(&path) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("IPC: failed to bind {}: {e}", path.display());
+                // Park forever — subscription produces no events.
+                std::future::pending::<()>().await;
+                unreachable!();
+            }
+        };
+
+        // Create the response channel shared between subscription and app.
+        let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel::<IpcResponse>(1);
+        let sender = ResponseSender(Arc::new(tokio::sync::Mutex::new(resp_tx)));
+        let _ = output.send(IpcEvent::Ready(sender)).await;
+
+        loop {
+            let (stream, _addr) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    eprintln!("IPC: accept error: {e}");
+                    continue;
+                }
+            };
+
+            let (reader, mut writer) = tokio::io::split(stream);
+            let mut lines = BufReader::new(reader).lines();
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                let line = line.trim().to_string();
+                if line.is_empty() {
+                    continue;
+                }
+
+                // Try to parse the command.
+                let cmd: IpcCommand = match serde_json::from_str(&line) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let err_json = serde_json::json!({
+                            "ok": false,
+                            "error": format!("parse error: {e}")
+                        });
+                        let mut resp = err_json.to_string();
+                        resp.push('\n');
+                        let _ = writer.write_all(resp.as_bytes()).await;
+                        continue;
+                    }
+                };
+
+                // Yield the appropriate event to the app.
+                let is_wait_ready = matches!(cmd, IpcCommand::WaitReady);
+                if is_wait_ready {
+                    let _ = output.send(IpcEvent::WaitReady).await;
+                } else {
+                    let _ = output.send(IpcEvent::Command(cmd)).await;
+                }
+
+                // Wait for the app to process and send a response.
+                let response = match resp_rx.recv().await {
+                    Some(r) => r,
+                    None => {
+                        // Channel closed — app shut down.
+                        return;
+                    }
+                };
+
+                // Write the response back to the client.
+                let resp_json = if response.ok {
+                    serde_json::json!({"ok": true})
+                } else {
+                    serde_json::json!({
+                        "ok": false,
+                        "error": response.error.unwrap_or_default()
+                    })
+                };
+                let mut resp_str = resp_json.to_string();
+                resp_str.push('\n');
+                let _ = writer.write_all(resp_str.as_bytes()).await;
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -490,5 +621,11 @@ mod tests {
     fn missing_required_field_returns_error() {
         let result = serde_json::from_str::<IpcCommand>(r#"{"cmd": "click", "page": 1}"#);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn socket_path_ends_with_expected_filename() {
+        let path = socket_path();
+        assert!(path.to_str().unwrap().ends_with("spe-ipc.sock"));
     }
 }
