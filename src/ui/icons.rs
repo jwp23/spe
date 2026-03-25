@@ -4,7 +4,7 @@ use iced::Font;
 use iced::font::Family;
 
 /// Subsetted Phosphor Icons Regular font (~12 glyphs, < 20KB).
-const PHOSPHOR_BYTES: &[u8] = include_bytes!("../../assets/phosphor-subset.ttf");
+const PHOSPHOR_BYTES: &[u8] = include_bytes!("../../assets/icons/phosphor-subset.ttf");
 
 /// Iced `Font` descriptor for the Phosphor icon font.
 pub const ICON_FONT: Font = Font {

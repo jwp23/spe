@@ -2,21 +2,47 @@
 
 use iced::widget::{button, pick_list, row, text, text_input};
 
-use crate::overlay::Standard14Font;
+use crate::fonts::{FontId, FontRegistry};
 use crate::ui::icons;
+
+/// Lightweight wrapper for the font pick list. Holds a FontId and display name,
+/// implementing Display for the Iced pick_list widget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontOption {
+    pub id: FontId,
+    pub name: String,
+}
+
+impl std::fmt::Display for FontOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+/// Build the list of FontOption values from a FontRegistry.
+pub fn font_options(registry: &FontRegistry) -> Vec<FontOption> {
+    registry
+        .all()
+        .iter()
+        .map(|e| FontOption {
+            id: e.id,
+            name: e.display_name.to_string(),
+        })
+        .collect()
+}
 
 /// Persistent state for the toolbar that must survive between view calls.
 pub struct ToolbarState {
-    pub font: Standard14Font,
+    pub font: FontId,
     pub font_size: f32,
     pub font_size_input: String,
     pub page_input: String,
 }
 
-impl Default for ToolbarState {
-    fn default() -> Self {
+impl ToolbarState {
+    pub fn new(default_font: FontId) -> Self {
         Self {
-            font: Standard14Font::Helvetica,
+            font: default_font,
             font_size: 12.0,
             font_size_input: "12".to_string(),
             page_input: "1".to_string(),
@@ -32,7 +58,7 @@ pub enum Message {
     SaveAs,
     Undo,
     Redo,
-    FontSelected(Standard14Font),
+    FontSelected(FontOption),
     FontSizeInput(String),
     FontSizeSubmit,
     ZoomIn,
@@ -61,7 +87,11 @@ pub struct ToolbarContext {
 
 /// Renders the application toolbar.
 #[allow(clippy::too_many_lines)]
-pub fn toolbar_view<'a>(state: &ToolbarState, ctx: &ToolbarContext) -> iced::Element<'a, Message> {
+pub fn toolbar_view<'a>(
+    state: &ToolbarState,
+    ctx: &ToolbarContext,
+    options: &[FontOption],
+) -> iced::Element<'a, Message> {
     let has_document = ctx.has_document;
     let can_undo = ctx.can_undo;
     let can_redo = ctx.can_redo;
@@ -97,12 +127,9 @@ pub fn toolbar_view<'a>(state: &ToolbarState, ctx: &ToolbarContext) -> iced::Ele
     .spacing(2);
 
     let font_group = {
-        let font_pick: iced::Element<'a, Message> = pick_list(
-            Standard14Font::ALL.as_slice(),
-            Some(state.font),
-            Message::FontSelected,
-        )
-        .into();
+        let selected = options.iter().find(|o| o.id == state.font).cloned();
+        let font_pick: iced::Element<'a, Message> =
+            pick_list(options.to_vec(), selected, Message::FontSelected).into();
 
         let size_input: iced::Element<'a, Message> = if has_document {
             text_input("size", &state.font_size_input)
@@ -193,18 +220,44 @@ mod tests {
 
     #[test]
     fn toolbar_state_defaults() {
-        let state = ToolbarState::default();
-        assert_eq!(state.font, Standard14Font::Helvetica);
+        let registry = FontRegistry::new();
+        let state = ToolbarState::new(registry.default_font());
+        assert_eq!(state.font, registry.default_font());
         assert!((state.font_size - 12.0).abs() < f32::EPSILON);
         assert_eq!(state.font_size_input, "12");
         assert_eq!(state.page_input, "1");
     }
 
     #[test]
+    fn font_options_has_18_entries() {
+        let registry = FontRegistry::new();
+        let options = font_options(&registry);
+        // 14 Standard 14 + 4 bundled cursive fonts.
+        assert_eq!(options.len(), 18);
+        assert_eq!(options[0].name, "Helvetica");
+    }
+
+    #[test]
+    fn font_option_display() {
+        let registry = FontRegistry::new();
+        let opt = FontOption {
+            id: registry.default_font(),
+            name: "Helvetica".to_string(),
+        };
+        assert_eq!(opt.to_string(), "Helvetica");
+    }
+
+    #[test]
     fn message_variants_are_constructible() {
         let _ = Message::OpenFile;
         let _ = Message::Save;
-        let _ = Message::FontSelected(Standard14Font::Courier);
+        let registry = FontRegistry::new();
+        let courier_id = registry.find_by_name("Courier").unwrap();
+        let opt = FontOption {
+            id: courier_id,
+            name: "Courier".to_string(),
+        };
+        let _ = Message::FontSelected(opt);
         let _ = Message::FontSizeInput("14".to_string());
         let _ = Message::ZoomIn;
         let _ = Message::PreviousPage;

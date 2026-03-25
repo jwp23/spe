@@ -1,7 +1,8 @@
 use super::*;
 use crate::app::Message;
 use crate::coordinate::ConversionParams;
-use crate::overlay::{PdfPosition, Standard14Font, TextOverlay};
+use crate::fonts::FontRegistry;
+use crate::overlay::{PdfPosition, TextOverlay};
 use iced::event;
 use iced::mouse;
 use iced::widget::canvas;
@@ -219,7 +220,7 @@ fn overlay_at(x: f32, y: f32, text: &str) -> TextOverlay {
         page: 1,
         position: PdfPosition { x, y },
         text: text.to_string(),
-        font: Standard14Font::Courier,
+        font: FontRegistry::new().find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: None,
     }
@@ -251,6 +252,7 @@ fn test_page_dimensions() -> HashMap<u32, (f32, f32)> {
 fn test_program<'a>(
     overlays: &'a [TextOverlay],
     page_dims: &'a HashMap<u32, (f32, f32)>,
+    registry: &'a FontRegistry,
 ) -> OverlayCanvasProgram<'a> {
     let layout = page_layout(page_dims, 1, TEST_ZOOM, TEST_DPI);
     OverlayCanvasProgram {
@@ -264,6 +266,7 @@ fn test_program<'a>(
         active_overlay: None,
         editing: false,
         overlay_color: [0.0, 0.0, 1.0, 1.0],
+        font_registry: registry,
     }
 }
 
@@ -366,6 +369,7 @@ fn overlay_canvas_program_construction_with_no_document() {
     let overlays: Vec<TextOverlay> = vec![];
     let empty_dims: HashMap<u32, (f32, f32)> = HashMap::new();
     let layout = page_layout(&empty_dims, 0, 1.0, 150.0);
+    let registry = FontRegistry::new();
     let program = OverlayCanvasProgram {
         page_layout: layout,
         page_dimensions: &empty_dims,
@@ -377,6 +381,7 @@ fn overlay_canvas_program_construction_with_no_document() {
         active_overlay: None,
         editing: false,
         overlay_color: [0.0, 0.0, 1.0, 1.0],
+        font_registry: &registry,
     };
     assert!(program.page_dimensions.is_empty());
     assert_eq!(program.overlays.len(), 0);
@@ -387,6 +392,7 @@ fn overlay_canvas_program_construction_with_document() {
     let overlays = vec![overlay_at(72.0, 720.0, "Test")];
     let dims = test_page_dimensions();
     let layout = page_layout(&dims, 1, 1.5, 150.0);
+    let registry = FontRegistry::new();
     let program = OverlayCanvasProgram {
         page_layout: layout,
         page_dimensions: &dims,
@@ -398,6 +404,7 @@ fn overlay_canvas_program_construction_with_document() {
         active_overlay: Some(0),
         editing: true,
         overlay_color: [0.26, 0.53, 0.96, 1.0],
+        font_registry: &registry,
     };
     assert!(program.page_dimensions.contains_key(&1));
     assert_eq!(program.overlays.len(), 1);
@@ -514,54 +521,59 @@ fn image_to_handle_converts_rgb_image() {
 #[test]
 fn hit_test_returns_none_for_empty_overlays() {
     let params = default_params();
-    assert!(hit_test(100.0, 100.0, &[], 1, &params).is_none());
+    let registry = FontRegistry::new();
+    assert!(hit_test(100.0, 100.0, &[], 1, &params, &registry).is_none());
 }
 
 #[test]
 fn hit_test_finds_overlay_at_position() {
     let params = default_params();
+    let registry = FontRegistry::new();
     // Courier at 12pt: each char is 600/1000 * 12 = 7.2 px wide
     // "Hello" = 5 * 7.2 = 36px wide, 12px tall
     // Overlay at PDF (72, 720) → screen (72, 72) at zoom=1, dpi=72
     // Hit box: x=[72, 108], y=[60, 72]
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
-    let result = hit_test(80.0, 65.0, &overlays, 1, &params);
+    let result = hit_test(80.0, 65.0, &overlays, 1, &params, &registry);
     assert_eq!(result, Some(0));
 }
 
 #[test]
 fn hit_test_returns_none_for_miss() {
     let params = default_params();
+    let registry = FontRegistry::new();
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
     // Click far away from overlay
-    let result = hit_test(500.0, 500.0, &overlays, 1, &params);
+    let result = hit_test(500.0, 500.0, &overlays, 1, &params, &registry);
     assert!(result.is_none());
 }
 
 #[test]
 fn hit_test_returns_topmost_for_overlapping() {
     let params = default_params();
+    let registry = FontRegistry::new();
     let overlays = vec![
         overlay_at(72.0, 720.0, "First"),
         overlay_at(72.0, 720.0, "Second"),
     ];
     // Both at same position, should return index 1 (topmost/last)
-    let result = hit_test(80.0, 65.0, &overlays, 1, &params);
+    let result = hit_test(80.0, 65.0, &overlays, 1, &params, &registry);
     assert_eq!(result, Some(1));
 }
 
 #[test]
 fn hit_test_ignores_overlays_on_other_pages() {
     let params = default_params();
+    let registry = FontRegistry::new();
     let overlays = vec![TextOverlay {
         page: 2,
         position: PdfPosition { x: 72.0, y: 720.0 },
         text: "On page 2".to_string(),
-        font: Standard14Font::Courier,
+        font: registry.find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: None,
     }];
-    let result = hit_test(80.0, 65.0, &overlays, 1, &params);
+    let result = hit_test(80.0, 65.0, &overlays, 1, &params, &registry);
     assert!(result.is_none());
 }
 
@@ -634,6 +646,7 @@ fn update_ignores_click_when_no_pages() {
     let overlays: Vec<TextOverlay> = vec![];
     let empty_dims: HashMap<u32, (f32, f32)> = HashMap::new();
     let layout = page_layout(&empty_dims, 0, TEST_ZOOM, TEST_DPI);
+    let registry = FontRegistry::new();
     let program = OverlayCanvasProgram {
         page_layout: layout,
         page_dimensions: &empty_dims,
@@ -645,6 +658,7 @@ fn update_ignores_click_when_no_pages() {
         active_overlay: None,
         editing: false,
         overlay_color: [0.0, 0.0, 1.0, 1.0],
+        font_registry: &registry,
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -662,7 +676,8 @@ fn update_ignores_click_when_cursor_unavailable() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = mouse::Cursor::Unavailable;
@@ -680,7 +695,8 @@ fn update_click_on_empty_page_records_placement_drag_on_press() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(300.0, 200.0);
@@ -708,7 +724,8 @@ fn update_click_on_empty_page_places_single_line_overlay_on_release() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(300.0, 200.0);
@@ -750,7 +767,8 @@ fn update_drag_on_empty_page_places_multi_line_overlay_on_release() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
 
@@ -789,7 +807,8 @@ fn update_click_on_overlay_selects_it() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
@@ -805,7 +824,8 @@ fn update_click_on_overlay_starts_drag() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
@@ -825,7 +845,8 @@ fn update_click_outside_page_deselects() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(50.0, 50.0);
@@ -842,10 +863,11 @@ fn update_click_while_editing_commits_text_first() {
     // returns CommitText only. The place/select happens on the next click.
     let overlays: Vec<TextOverlay> = vec![];
     let dims = test_page_dimensions();
+    let registry = FontRegistry::new();
     let program = OverlayCanvasProgram {
         editing: true,
         active_overlay: Some(0),
-        ..test_program(&overlays, &dims)
+        ..test_program(&overlays, &dims, &registry)
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -862,7 +884,8 @@ fn update_cursor_move_updates_state() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(400.0, 300.0);
@@ -886,7 +909,8 @@ fn update_mouse_release_without_drag_is_ignored() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(300.0, 200.0);
@@ -906,7 +930,8 @@ fn update_drag_and_release_publishes_move() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
 
@@ -951,7 +976,8 @@ fn update_drag_release_at_same_position_no_move_message() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
 
@@ -973,7 +999,8 @@ fn update_ignores_right_click() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(300.0, 200.0);
@@ -994,7 +1021,8 @@ fn mouse_interaction_grabbing_during_drag() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let state = state_with_drag();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(300.0, 200.0);
@@ -1008,7 +1036,8 @@ fn mouse_interaction_pointer_over_overlay() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let state = ProgramState::default();
     let bounds = test_canvas_bounds();
     // Cursor over the overlay's hit box at screen (270, 75) — page y-offset=8
@@ -1023,7 +1052,8 @@ fn mouse_interaction_crosshair_on_page() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let state = ProgramState::default();
     let bounds = test_canvas_bounds();
     // Cursor inside page image but not over any overlay
@@ -1038,7 +1068,8 @@ fn mouse_interaction_default_outside_page() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let state = ProgramState::default();
     let bounds = test_canvas_bounds();
     // Cursor outside page image (50, 50) but inside canvas bounds
@@ -1053,6 +1084,7 @@ fn mouse_interaction_default_when_no_page() {
     let overlays: Vec<TextOverlay> = vec![];
     let empty_dims: HashMap<u32, (f32, f32)> = HashMap::new();
     let layout = page_layout(&empty_dims, 0, TEST_ZOOM, TEST_DPI);
+    let registry = FontRegistry::new();
     let program = OverlayCanvasProgram {
         page_layout: layout,
         page_dimensions: &empty_dims,
@@ -1064,6 +1096,7 @@ fn mouse_interaction_default_when_no_page() {
         active_overlay: None,
         editing: false,
         overlay_color: [0.0, 0.0, 1.0, 1.0],
+        font_registry: &registry,
     };
     let state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -1204,7 +1237,8 @@ fn modifiers_changed_updates_program_state() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(0.0, 0.0);
@@ -1233,7 +1267,8 @@ fn ctrl_scroll_up_publishes_zoom_in() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     state.keyboard_modifiers = iced::keyboard::Modifiers::COMMAND;
     let bounds = test_canvas_bounds();
@@ -1250,7 +1285,8 @@ fn ctrl_scroll_down_publishes_zoom_out() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     state.keyboard_modifiers = iced::keyboard::Modifiers::COMMAND;
     let bounds = test_canvas_bounds();
@@ -1267,7 +1303,8 @@ fn bare_scroll_is_not_captured() {
     let overlays: Vec<TextOverlay> = vec![];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     // No modifiers set
     let bounds = test_canvas_bounds();
@@ -1295,7 +1332,8 @@ fn single_click_on_overlay_emits_select_not_edit() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
@@ -1314,7 +1352,8 @@ fn double_click_on_overlay_emits_edit_overlay() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
@@ -1338,7 +1377,8 @@ fn double_click_too_far_away_does_not_edit() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
 
@@ -1361,7 +1401,8 @@ fn double_click_records_last_click_after_edit() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
@@ -1385,7 +1426,7 @@ fn multiline_overlay_at(x: f32, y: f32, width: f32, text: &str) -> TextOverlay {
         page: 1,
         position: PdfPosition { x, y },
         text: text.to_string(),
-        font: Standard14Font::Courier,
+        font: FontRegistry::new().find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: Some(width),
     }
@@ -1417,6 +1458,7 @@ fn program_state_default_has_no_resize_drag() {
 
 #[test]
 fn click_on_resize_handle_starts_resize_drag() {
+    let registry = FontRegistry::new();
     // Multi-line overlay at PDF (72, 720), width=150pt.
     // At scale=1: handle_screen_x = 194 + 72 + 150 = 416
     // Overlay screen y = 792-720 + 8 = 80 (baseline). Height = 12*1 = 12.
@@ -1426,7 +1468,7 @@ fn click_on_resize_handle_starts_resize_drag() {
     let dims = test_page_dimensions();
     let program = OverlayCanvasProgram {
         active_overlay: Some(0),
-        ..test_program(&overlays, &dims)
+        ..test_program(&overlays, &dims, &registry)
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -1449,13 +1491,14 @@ fn click_on_resize_handle_starts_resize_drag() {
 
 #[test]
 fn resize_drag_on_single_line_overlay_does_not_start() {
+    let registry = FontRegistry::new();
     // Single-line overlays (width=None) have no resize handle.
     // Click at the same x position should fall through to normal overlay hit test.
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")]; // width=None
     let dims = test_page_dimensions();
     let program = OverlayCanvasProgram {
         active_overlay: Some(0),
-        ..test_program(&overlays, &dims)
+        ..test_program(&overlays, &dims, &registry)
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -1477,7 +1520,8 @@ fn resize_drag_only_starts_on_selected_overlay() {
 
     let dims = test_page_dimensions();
     // active_overlay is None — not selected
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(416.0, 75.0);
@@ -1491,12 +1535,13 @@ fn resize_drag_only_starts_on_selected_overlay() {
 
 #[test]
 fn resize_drag_release_publishes_resize_overlay_message() {
+    let registry = FontRegistry::new();
     // Drag from handle at x=416 to x=516 (100px rightward) → new_width = 150 + 100 = 250pt
     let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
     let dims = test_page_dimensions();
     let program = OverlayCanvasProgram {
         active_overlay: Some(0),
-        ..test_program(&overlays, &dims)
+        ..test_program(&overlays, &dims, &registry)
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -1537,12 +1582,13 @@ fn resize_drag_release_publishes_resize_overlay_message() {
 
 #[test]
 fn resize_drag_release_enforces_minimum_width() {
+    let registry = FontRegistry::new();
     // Drag leftward past the overlay's left edge. Width clamped to 20pt.
     let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
     let dims = test_page_dimensions();
     let program = OverlayCanvasProgram {
         active_overlay: Some(0),
-        ..test_program(&overlays, &dims)
+        ..test_program(&overlays, &dims, &registry)
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -1569,12 +1615,13 @@ fn resize_drag_release_enforces_minimum_width() {
 
 #[test]
 fn resize_drag_release_at_same_position_emits_no_message() {
+    let registry = FontRegistry::new();
     // If the user presses and releases the handle without moving, no resize needed.
     let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
     let dims = test_page_dimensions();
     let program = OverlayCanvasProgram {
         active_overlay: Some(0),
-        ..test_program(&overlays, &dims)
+        ..test_program(&overlays, &dims, &registry)
     };
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
@@ -1595,11 +1642,12 @@ fn resize_drag_release_at_same_position_emits_no_message() {
 
 #[test]
 fn cursor_move_requests_redraw_during_resize_drag() {
+    let registry = FontRegistry::new();
     let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "Hello")];
     let dims = test_page_dimensions();
     let program = OverlayCanvasProgram {
         active_overlay: Some(0),
-        ..test_program(&overlays, &dims)
+        ..test_program(&overlays, &dims, &registry)
     };
     let mut state = ProgramState::default();
     state.resize_drag = Some(ResizeDragState {
@@ -1623,7 +1671,8 @@ fn click_on_empty_page_between_overlay_clicks_prevents_double_click() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
 
@@ -1644,6 +1693,7 @@ fn click_on_empty_page_between_overlay_clicks_prevents_double_click() {
 
 #[test]
 fn drag_after_commit_preserves_overlay() {
+    let registry = FontRegistry::new();
     // Regression: overlay disappeared when drag-moving after text commit.
     // Simulates: editing overlay → commit → click overlay → drag → release.
     // The ProgramState persists across program changes (editing → not editing).
@@ -1657,7 +1707,7 @@ fn drag_after_commit_preserves_overlay() {
     let editing_program = OverlayCanvasProgram {
         editing: true,
         active_overlay: Some(0),
-        ..test_program(&overlays, &dims)
+        ..test_program(&overlays, &dims, &registry)
     };
     let cursor = cursor_at(270.0, 75.0);
     editing_program.update(&mut state, &cursor_moved_event(270.0, 75.0), bounds, cursor);
@@ -1677,7 +1727,7 @@ fn drag_after_commit_preserves_overlay() {
     let committed_program = OverlayCanvasProgram {
         editing: false,
         active_overlay: Some(0),
-        ..test_program(&overlays, &dims)
+        ..test_program(&overlays, &dims, &registry)
     };
     assert!(
         state.cursor_position.is_some(),
@@ -1767,7 +1817,7 @@ fn tint_size_single_line_overlay_uses_bounding_box() {
     // Courier 12pt, "Hello" → width = 5 * 7.2 = 36.0, height = 12.0
     // scale=1.0 → w=36.0, h=12.0
     let overlay = overlay_at(72.0, 720.0, "Hello");
-    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0);
+    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0, &FontRegistry::new());
     assert!((w - 36.0).abs() < 0.1, "width should be ~36, got {w}");
     assert!((h - 12.0).abs() < 0.1, "height should be 12, got {h}");
 }
@@ -1776,7 +1826,7 @@ fn tint_size_single_line_overlay_uses_bounding_box() {
 fn tint_size_single_line_overlay_scales_with_scale() {
     // Same as above but scale=2.0 → w=72.0, h=24.0
     let overlay = overlay_at(72.0, 720.0, "Hello");
-    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 2.0);
+    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 2.0, &FontRegistry::new());
     assert!((w - 72.0).abs() < 0.1, "width should be ~72, got {w}");
     assert!((h - 24.0).abs() < 0.1, "height should be 24, got {h}");
 }
@@ -1789,11 +1839,11 @@ fn tint_size_multiline_overlay_uses_width_and_line_count() {
         page: 1,
         position: PdfPosition { x: 72.0, y: 720.0 },
         text: "line one\nline two".to_string(),
-        font: Standard14Font::Courier,
+        font: FontRegistry::new().find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: Some(150.0),
     };
-    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0);
+    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0, &FontRegistry::new());
     assert!((w - 150.0).abs() < 0.1, "width should be 150, got {w}");
     assert!((h - 24.0).abs() < 0.1, "height should be 24, got {h}");
 }
@@ -1803,7 +1853,7 @@ fn tint_size_multiline_overlay_single_line_text_height_is_one_line() {
     // Multi-line overlay (width=Some) but text has only one line.
     // Height = font_size * 1 = 12.0
     let overlay = multiline_overlay_at(72.0, 720.0, 150.0, "Hello");
-    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0);
+    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0, &FontRegistry::new());
     assert!((w - 150.0).abs() < 0.1, "width should be 150, got {w}");
     assert!((h - 12.0).abs() < 0.1, "height should be 12, got {h}");
 }
@@ -1849,7 +1899,8 @@ fn cursor_move_over_overlay_sets_hovered_overlay() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
@@ -1873,7 +1924,8 @@ fn cursor_move_off_overlay_clears_hovered_overlay() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     state.hovered_overlay = Some(0);
     let bounds = test_canvas_bounds();
@@ -1903,7 +1955,8 @@ fn cursor_move_with_no_hover_change_does_not_request_redraw() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = ProgramState::default();
     // hovered_overlay already None
     let bounds = test_canvas_bounds();
@@ -1928,7 +1981,8 @@ fn cursor_move_during_drag_skips_hover_tracking() {
     let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
 
     let dims = test_page_dimensions();
-    let program = test_program(&overlays, &dims);
+    let registry = FontRegistry::new();
+    let program = test_program(&overlays, &dims, &registry);
     let mut state = state_with_drag();
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(270.0, 75.0);
