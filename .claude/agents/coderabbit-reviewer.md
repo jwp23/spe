@@ -45,7 +45,7 @@ CodeRabbit includes a structured prompt for AI agents in its review body, inside
 
 ```bash
 gh api repos/{owner}/{repo}/pulls/{number}/reviews \
-  --jq '[.[] | select(.user.login == "coderabbitai[bot]")] | .[0].body'
+  --jq '[.[] | select(.user.login == "coderabbitai[bot]")] | .[-1].body'
 ```
 
 Parse the review body to extract the code block inside the `🤖 Prompt for all review comments` section. This prompt lists every actionable finding with file paths, line numbers, and what to change.
