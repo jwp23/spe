@@ -496,10 +496,10 @@ fn standard_14_fonts() -> Vec<FontEntry> {
 
 /// Build a proportional width table from an array of (char_index, width) pairs.
 /// Unspecified characters get the `default` width.
-fn build_proportional_width_table(entries: &[(usize, f32)], default: f32) -> WidthTable {
+fn build_proportional_width_table(entries: &[(u8, f32)], default: f32) -> WidthTable {
     let mut widths = [default; 256];
     for &(i, v) in entries {
-        widths[i] = v;
+        widths[i as usize] = v;
     }
     WidthTable::Proportional { widths, default }
 }
