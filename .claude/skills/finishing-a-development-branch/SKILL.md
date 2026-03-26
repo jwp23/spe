@@ -9,7 +9,7 @@ description: Use when implementation is complete and all tests pass - handles th
 
 Complete development work by pushing the feature branch, creating a PR, and waiting for CI to pass.
 
-**Core principle:** Verify tests -> Push -> PR -> Wait for CI -> Clean up.
+**Core principle:** Verify tests -> Push -> PR -> Wait for CI -> Handle CodeRabbit reviews -> Clean up.
 
 **Announce at start:** "I'm using the finishing-a-development-branch skill to complete this work."
 
@@ -62,7 +62,7 @@ The agent pushes the branch, creates the PR with a brief summary from `git log`,
 
 ### Step 4: Handle CI Result
 
-**If pr-creator reports PASSED:** Report PR URL and status to Joe. Done.
+**If pr-creator reports PASSED:** Continue to Step 4.5.
 
 **If pr-creator reports FAILED:**
 1. Read the failure details from the agent's report
@@ -71,6 +71,27 @@ The agent pushes the branch, creates the PR with a brief summary from `git log`,
 4. Commit and push the fix
 5. Watch CI yourself: `gh pr checks <number> --watch`
 6. Repeat until all checks pass
+7. Continue to Step 4.5
+
+### Step 4.5: Handle CodeRabbit Reviews
+
+After CI passes, dispatch the `coderabbit-reviewer` agent (`.claude/agents/coderabbit-reviewer.md`, model: sonnet) with:
+
+- **number**: the PR number
+
+The agent waits for CodeRabbit's review, extracts the AI agent prompt from the review body, evaluates each suggestion, auto-applies fixes, and replies to comments on GitHub.
+
+**Can run in background** while reporting CI status to Joe.
+
+**Handle the result based on status:**
+
+- **`DONE`**: All suggestions handled (applied or rejected). Report what was done.
+- **`NO_REVIEW`**: CodeRabbit didn't review. Continue — nothing to do.
+- **`NEEDS_ESCALATION`**: Some suggestions were too complex for sonnet. Re-dispatch `coderabbit-reviewer` at **opus** with the escalated items only. Include the escalation list in the prompt so opus knows which comments to address.
+
+After escalation, if opus also reports `NEEDS_ESCALATION`, surface the remaining items to Joe for a decision.
+
+**After any applied changes:** Watch CI again (`gh pr checks <number> --watch`) to verify the fixes didn't break anything.
 
 ### Step 5: Cleanup Worktree
 
@@ -107,6 +128,7 @@ The agent squash merges with no body, checks out main, pulls, watches CI on the 
 | 2. Base branch | Confirm target branch |
 | 3. pr-creator | Dispatch agent: push, PR, CI watch |
 | 4. CI result | If failed: debug, fix, push, re-watch |
+| 4.5 CodeRabbit | Dispatch coderabbit-reviewer: auto-apply or reject. Escalate to opus if needed |
 | 5. Cleanup | Remove worktree if applicable |
 | Merge | Dispatch pr-merger agent (on request) |
 
@@ -153,6 +175,7 @@ The agent squash merges with no body, checks out main, pulls, watches CI on the 
 
 **Dispatches:**
 - **pr-creator** agent (haiku) - Push, PR creation, CI watch (Step 3)
+- **coderabbit-reviewer** agent (sonnet, escalates to opus) - Auto-apply review suggestions (Step 4.5)
 - **pr-merger** agent (haiku) - Squash merge, CI watch, cleanup (Merging)
 
 **Pairs with:**
