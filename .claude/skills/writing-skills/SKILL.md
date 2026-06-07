@@ -19,6 +19,20 @@ You write test cases (pressure scenarios with subagents), watch them fail (basel
 
 **Official guidance:** For Anthropic's official skill authoring best practices, see anthropic-best-practices.md. For the complete guide covering planning, testing, distribution, and the skill-creator tool, see anthropic-skills-guide.md. This skill provides additional TDD-focused methodology that complements the official guidance.
 
+## Which Engine: writing-skills or skill-creator?
+
+**Decide this before you start.** writing-skills and skill-creator are complementary engines, not rivals — but they suit different skills, and picking wrong wastes effort or leaves quality on the table. The deciding question: **what does "good" mean for this skill, and how would you verify it?**
+
+| If the skill is... | "Good" means... | Drive iteration with | Discipline machinery (pressure scenarios, rationalization tables, red flags) |
+|---|---|---|---|
+| **Discipline / process** — TDD, verification, a workflow with gates | the agent complies with a rule under pressure | **writing-skills** (this skill) | Core — use it all |
+| **Generative / artifact** — emits a docx, chart, report, beads tree, code | the output is good, gradable on a spectrum | **skill-creator** — run on real prompts vs. baseline, grade the outputs, iterate; bundle any helper every run re-derives | Mostly N/A — a skill with no rule to violate has nothing to pressure-test; forcing it is theater |
+| **Hybrid** — a process that also emits an artifact | both | author structure here, iterate the output with skill-creator | Use for the rule parts only |
+
+**For generative skills, skill-creator's eval loop is the PRIMARY engine, not optional polish to skip.** It gives you what you actually need — look at many generated outputs, grade them, tune — plus script-bundling, description-trigger tuning, and packaging. Don't hand-roll that loop.
+
+**Every skill type still uses this skill's authoring rules:** the Iron Law (baseline first — for a generative skill, "baseline" = what a fresh agent produces *without* the skill, so you can see the quality gap it must close), CSO/description rules, file organization, one-excellent-example, and reuse discipline. Engine choice changes how you *iterate*, not whether you start from a baseline.
+
 ## What is a Skill?
 
 A **skill** is a reference guide for proven techniques, patterns, or tools. Skills help future Claude instances find and apply effective approaches.
@@ -435,6 +449,8 @@ NO SKILL WITHOUT A FAILING TEST FIRST
 
 This applies to NEW skills AND EDITS to existing skills.
 
+**For generative skills, the "failing test" is the baseline output** — what a fresh agent produces *without* the skill, exposing the quality gap to close (see "Which Engine"). You still start from a baseline; you just grade an artifact instead of checking rule-compliance.
+
 Write skill before testing? Delete it. Start over.
 Edit skill without testing? Same violation.
 
@@ -615,7 +631,9 @@ Agent found new rationalization? Add explicit counter. Re-test until bulletproof
 - Plugging holes systematically
 - Meta-testing techniques
 
-### Automated Eval Tooling (Optional)
+### Automated Eval Tooling
+
+**Optional for discipline skills, PRIMARY for generative ones** — see "Which Engine" above. For a skill whose quality is gradable output (docx, charts, reports, beads trees), skill-creator's eval loop is the main way you iterate, not an afterthought.
 
 The **skill-creator** skill provides automated eval infrastructure that complements the manual TDD workflow above. Use it after completing the RED/GREEN/REFACTOR cycle for:
 
