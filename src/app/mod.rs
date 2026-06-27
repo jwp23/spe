@@ -211,24 +211,24 @@ impl App {
         true
     }
 
+    /// Build a task that delivers an IPC response to the waiting client. Yields
+    /// an empty task when no IPC client is connected.
+    fn send_ipc_response(&self, response: crate::ipc::IpcResponse) -> iced::Task<Message> {
+        let Some(sender) = &self.ipc_response_sender else {
+            return iced::Task::none();
+        };
+        let sender = sender.clone();
+        iced::Task::perform(deliver_ipc_response(sender, response), |_| Message::Noop)
+    }
+
     /// If a WaitReady response is pending and rendering is now idle, send the response.
     pub(super) fn check_ipc_wait(&mut self) -> iced::Task<Message> {
         if self.pending_ipc_wait && self.is_render_idle() {
             self.pending_ipc_wait = false;
-            let response = crate::ipc::IpcResponse {
+            return self.send_ipc_response(crate::ipc::IpcResponse {
                 ok: true,
                 error: None,
-            };
-            if let Some(sender) = &self.ipc_response_sender {
-                let sender = sender.clone();
-                return iced::Task::perform(
-                    async move {
-                        let tx = sender.0.lock().await;
-                        let _ = tx.send(response).await;
-                    },
-                    |_| Message::Noop,
-                );
-            }
+            });
         }
         iced::Task::none()
     }
@@ -394,41 +394,26 @@ impl App {
                             None,
                         ),
                     };
-                if let Some(msg) = msg_result {
-                    let _ = self.update(msg);
-                }
-                if let Some(sender) = &self.ipc_response_sender {
-                    let sender = sender.clone();
-                    return iced::Task::perform(
-                        async move {
-                            let tx = sender.0.lock().await;
-                            let _ = tx.send(response).await;
-                        },
-                        |_| Message::Noop,
-                    );
-                }
-                iced::Task::none()
+                // Run the translated command's update and keep its follow-up task
+                // (e.g. the page-render task from opening a document) so it actually
+                // executes. Discarding it strands rendering and wedges `wait_ready`.
+                let command_task = match msg_result {
+                    Some(msg) => self.update(msg),
+                    None => iced::Task::none(),
+                };
+                let response_task = self.send_ipc_response(response);
+                iced::Task::batch([command_task, response_task])
             }
             crate::ipc::IpcEvent::WaitReady => {
                 if self.is_render_idle() {
-                    let response = crate::ipc::IpcResponse {
+                    self.send_ipc_response(crate::ipc::IpcResponse {
                         ok: true,
                         error: None,
-                    };
-                    if let Some(sender) = &self.ipc_response_sender {
-                        let sender = sender.clone();
-                        return iced::Task::perform(
-                            async move {
-                                let tx = sender.0.lock().await;
-                                let _ = tx.send(response).await;
-                            },
-                            |_| Message::Noop,
-                        );
-                    }
+                    })
                 } else {
                     self.pending_ipc_wait = true;
+                    iced::Task::none()
                 }
-                iced::Task::none()
             }
         }
     }
@@ -463,6 +448,16 @@ impl App {
 
         iced::Subscription::batch([event_sub, shimmer_sub, toast_sub, ipc_sub])
     }
+}
+
+/// Deliver an IPC response over the response channel. Separated from
+/// [`App::send_ipc_response`] so delivery can be tested without the iced runtime.
+async fn deliver_ipc_response(
+    sender: crate::ipc::ResponseSender,
+    response: crate::ipc::IpcResponse,
+) {
+    let tx = sender.0.lock().await;
+    let _ = tx.send(response).await;
 }
 
 /// Map an iced event to an application message, filtering by event type and capture status.
