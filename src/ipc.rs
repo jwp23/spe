@@ -3,6 +3,7 @@
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -84,6 +85,15 @@ pub enum IpcCommand {
     },
     WaitReady,
 }
+
+/// Upper bound on how long the IPC subscription waits for the app to answer a
+/// single command. Deliberately generous: this is a wedge-breaker, not a
+/// latency budget. `wait_ready` legitimately blocks until every page has
+/// rendered, which can take several seconds, so the bound must stay well above
+/// any real processing time. If it elapses, the command is reported to the
+/// client as a timeout and the accept loop continues instead of wedging
+/// forever on a command that will never respond (see spe-z6v).
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Returns the IPC socket path.
 pub fn socket_path() -> PathBuf {
@@ -183,6 +193,18 @@ pub fn ipc_subscription() -> iced::Subscription<IpcEvent> {
     iced::Subscription::run(ipc_stream)
 }
 
+/// Serialize a JSON value as a single newline-terminated line and write it to
+/// the client. Write errors are ignored: the client may already have hung up.
+async fn write_json_line<W>(writer: &mut W, value: serde_json::Value)
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    let mut line = value.to_string();
+    line.push('\n');
+    let _ = writer.write_all(line.as_bytes()).await;
+}
+
 /// Process one JSON line: parse command, yield event, wait for response, write reply.
 /// Returns false if the response channel closed (app shut down).
 async fn process_line(
@@ -190,21 +212,31 @@ async fn process_line(
     output: &mut iced::futures::channel::mpsc::Sender<IpcEvent>,
     resp_rx: &mut tokio::sync::mpsc::Receiver<IpcResponse>,
     writer: &mut tokio::io::WriteHalf<tokio::net::UnixStream>,
+    response_timeout: Duration,
 ) -> bool {
     use iced::futures::SinkExt;
-    use tokio::io::AsyncWriteExt;
+
+    // Best-effort recovery from a previously timed-out command: discard any
+    // late response it left buffered in the shared channel so it is not
+    // mismatched to this command. This only covers responses that have already
+    // landed; the channel carries no correlation id, so a response that arrives
+    // after this drain but before our own recv can still be mismatched. Closing
+    // that window fully needs the correlation/concurrency redesign deferred in
+    // spe-z6v.
+    while resp_rx.try_recv().is_ok() {}
 
     // Try to parse the command.
     let cmd: IpcCommand = match serde_json::from_str(line) {
         Ok(c) => c,
         Err(e) => {
-            let err_json = serde_json::json!({
-                "ok": false,
-                "error": format!("parse error: {e}")
-            });
-            let mut resp = err_json.to_string();
-            resp.push('\n');
-            let _ = writer.write_all(resp.as_bytes()).await;
+            write_json_line(
+                writer,
+                serde_json::json!({
+                    "ok": false,
+                    "error": format!("parse error: {e}")
+                }),
+            )
+            .await;
             return true;
         }
     };
@@ -216,10 +248,22 @@ async fn process_line(
         let _ = output.send(IpcEvent::Command(cmd)).await;
     }
 
-    // Wait for the app to process and send a response.
-    let response = match resp_rx.recv().await {
-        Some(r) => r,
-        None => return false,
+    // Wait for the app to process and send a response. Bounded so a command that
+    // never produces a response cannot wedge the accept loop forever (spe-z6v).
+    let response = match tokio::time::timeout(response_timeout, resp_rx.recv()).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return false,
+        Err(_elapsed) => {
+            write_json_line(
+                writer,
+                serde_json::json!({
+                    "ok": false,
+                    "error": "timeout: app did not respond"
+                }),
+            )
+            .await;
+            return true;
+        }
     };
 
     // Write the response back to the client.
@@ -231,9 +275,7 @@ async fn process_line(
             "error": response.error.unwrap_or_default()
         })
     };
-    let mut resp_str = resp_json.to_string();
-    resp_str.push('\n');
-    let _ = writer.write_all(resp_str.as_bytes()).await;
+    write_json_line(writer, resp_json).await;
     true
 }
 
@@ -242,6 +284,7 @@ async fn handle_connection(
     stream: tokio::net::UnixStream,
     output: &mut iced::futures::channel::mpsc::Sender<IpcEvent>,
     resp_rx: &mut tokio::sync::mpsc::Receiver<IpcResponse>,
+    response_timeout: Duration,
 ) -> bool {
     use tokio::io::AsyncBufReadExt;
 
@@ -253,7 +296,7 @@ async fn handle_connection(
         if line.is_empty() {
             continue;
         }
-        if !process_line(&line, output, resp_rx, &mut writer).await {
+        if !process_line(&line, output, resp_rx, &mut writer, response_timeout).await {
             return false;
         }
     }
@@ -287,7 +330,8 @@ fn ipc_stream() -> impl iced::futures::Stream<Item = IpcEvent> {
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    if !handle_connection(stream, &mut output, &mut resp_rx).await {
+                    if !handle_connection(stream, &mut output, &mut resp_rx, RESPONSE_TIMEOUT).await
+                    {
                         return;
                     }
                 }
@@ -677,5 +721,162 @@ mod tests {
     fn socket_path_ends_with_expected_filename() {
         let path = socket_path();
         assert!(path.to_str().unwrap().ends_with("spe-ipc.sock"));
+    }
+
+    // --- process_line robustness (async) ---
+    //
+    // These exercise the bounded-wait behavior that keeps a non-responding
+    // command from wedging the accept loop (spe-z6v). Each test injects a short
+    // response timeout and wraps the call in an outer timeout so a regression
+    // fails the test instead of hanging the suite.
+    //
+    // Production drives these async fns on iced's executor; tests build a
+    // current-thread tokio runtime since the IPC types need a tokio reactor.
+
+    /// Run an async block to completion on a current-thread tokio runtime.
+    fn run_async<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(fut)
+    }
+
+    /// The channels and socket halves a `process_line` call needs, in the order
+    /// `(output_tx, output_rx, resp_tx, resp_rx, writer, client)`.
+    type ProcessLineHarness = (
+        iced::futures::channel::mpsc::Sender<IpcEvent>,
+        iced::futures::channel::mpsc::Receiver<IpcEvent>,
+        tokio::sync::mpsc::Sender<IpcResponse>,
+        tokio::sync::mpsc::Receiver<IpcResponse>,
+        tokio::io::WriteHalf<tokio::net::UnixStream>,
+        tokio::net::UnixStream,
+    );
+
+    /// Build the channels and socket halves a `process_line` call needs.
+    /// The caller must keep `output_rx` alive so `output.send` never fails on a
+    /// closed channel; the emitted events are irrelevant to these tests.
+    /// `client` is the peer socket end used to read what was written back.
+    fn process_line_harness() -> ProcessLineHarness {
+        let (output_tx, output_rx) = iced::futures::channel::mpsc::channel::<IpcEvent>(32);
+        let (resp_tx, resp_rx) = tokio::sync::mpsc::channel::<IpcResponse>(1);
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (_reader, writer) = tokio::io::split(server);
+        (output_tx, output_rx, resp_tx, resp_rx, writer, client)
+    }
+
+    async fn read_reply(client: &mut tokio::net::UnixStream) -> serde_json::Value {
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; 256];
+        let n = client.read(&mut buf).await.unwrap();
+        serde_json::from_slice(&buf[..n]).unwrap()
+    }
+
+    #[test]
+    fn process_line_times_out_when_no_response_arrives() {
+        run_async(async {
+            // `_resp_tx` must stay bound: dropping it closes the channel, which
+            // would send `process_line` down the `Ok(None)` shutdown path
+            // instead of the timeout path this test exercises.
+            let (mut output, _output_rx, _resp_tx, mut resp_rx, mut writer, mut client) =
+                process_line_harness();
+
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                process_line(
+                    r#"{"cmd":"deselect"}"#,
+                    &mut output,
+                    &mut resp_rx,
+                    &mut writer,
+                    std::time::Duration::from_millis(50),
+                ),
+            )
+            .await
+            .expect("process_line must return on timeout, not wedge forever");
+
+            // Returning true keeps the accept loop alive for later connections.
+            assert!(result);
+
+            let reply = read_reply(&mut client).await;
+            assert_eq!(reply["ok"], false);
+            assert!(
+                reply["error"].as_str().unwrap().contains("timeout"),
+                "expected a timeout error, got: {reply}"
+            );
+        });
+    }
+
+    #[test]
+    fn process_line_discards_stale_response_from_prior_command() {
+        run_async(async {
+            let (mut output, _output_rx, resp_tx, mut resp_rx, mut writer, mut client) =
+                process_line_harness();
+
+            // A late response from a previously timed-out command is buffered in
+            // the shared channel. It must not be mismatched to this command.
+            resp_tx
+                .send(IpcResponse {
+                    ok: true,
+                    error: None,
+                })
+                .await
+                .unwrap();
+
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                process_line(
+                    r#"{"cmd":"deselect"}"#,
+                    &mut output,
+                    &mut resp_rx,
+                    &mut writer,
+                    std::time::Duration::from_millis(50),
+                ),
+            )
+            .await
+            .expect("process_line must return, not wedge");
+
+            assert!(result);
+
+            // The stale ok:true was drained; with no fresh response this command
+            // times out rather than reporting the previous command's success.
+            let reply = read_reply(&mut client).await;
+            assert_eq!(
+                reply["ok"], false,
+                "stale response leaked to the next command: {reply}"
+            );
+        });
+    }
+
+    #[test]
+    fn process_line_writes_ok_when_response_arrives() {
+        run_async(async {
+            let (mut output, _output_rx, resp_tx, mut resp_rx, mut writer, mut client) =
+                process_line_harness();
+
+            // Respond promptly, after process_line drains and sends its event.
+            tokio::spawn(async move {
+                resp_tx
+                    .send(IpcResponse {
+                        ok: true,
+                        error: None,
+                    })
+                    .await
+                    .unwrap();
+            });
+
+            let result = process_line(
+                r#"{"cmd":"deselect"}"#,
+                &mut output,
+                &mut resp_rx,
+                &mut writer,
+                std::time::Duration::from_secs(5),
+            )
+            .await;
+
+            assert!(result);
+
+            let reply = read_reply(&mut client).await;
+            assert_eq!(reply["ok"], true);
+        });
     }
 }
