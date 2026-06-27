@@ -33,8 +33,9 @@ fn socket_path(runtime_dir: &Path) -> PathBuf {
 }
 
 fn cage_available() -> bool {
+    // cage exposes `-v` for the version (there is no long `--version`); it exits 0.
     Command::new("cage")
-        .arg("--version")
+        .arg("-v")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
