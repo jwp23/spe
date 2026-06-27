@@ -33,7 +33,7 @@ jobs:
 
       - name: Generate code coverage
         run: |
-          cargo install cargo-llvm-cov --locked
+          cargo install cargo-llvm-cov --version 0.8.7 --locked
           cargo llvm-cov --lcov --output-path lcov.info -- --include-ignored
 
       # Pinned by version tag rather than SHA: a 40-hex SHA next to "sonarqube"
