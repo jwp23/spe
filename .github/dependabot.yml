@@ -13,3 +13,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # dtolnay/rust-toolchain pins a SHA on the rolling `stable` branch and
+      # publishes no semver release tags, so Dependabot cannot resolve a version
+      # for it and fails the entire github-actions update job. Bump the toolchain
+      # action manually instead.
+      - dependency-name: "dtolnay/rust-toolchain"
