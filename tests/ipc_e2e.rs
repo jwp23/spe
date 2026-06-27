@@ -20,27 +20,37 @@ use std::time::{Duration, Instant};
 /// One command's label paired with its reply (or the error explaining the failure).
 type CommandLog = Vec<(&'static str, Result<String, String>)>;
 
-fn socket_path() -> PathBuf {
-    let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(dir).join("spe-ipc.sock")
+/// Create a unique per-test runtime directory so the socket never collides with
+/// a live app instance or a parallel test run.
+fn make_test_runtime_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("spe-ipc-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("failed to create per-test runtime dir");
+    dir
+}
+
+fn socket_path(runtime_dir: &Path) -> PathBuf {
+    runtime_dir.join("spe-ipc.sock")
 }
 
 fn cage_available() -> bool {
     Command::new("cage")
         .arg("--version")
         .output()
-        .map(|o| o.status.success() || o.status.code().is_some())
+        .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
 /// Launch the app inside headless cage. Mirrors `scripts/screenshot.sh`.
-fn launch_app(socket: &Path) -> Child {
+/// Sets `XDG_RUNTIME_DIR` to `runtime_dir` so the app writes its socket there,
+/// not into the real user runtime directory.
+fn launch_app(runtime_dir: &Path, socket: &Path) -> Child {
     let _ = std::fs::remove_file(socket);
     Command::new("cage")
         .args(["--", env!("CARGO_BIN_EXE_spe"), "--ipc"])
         .env_remove("WAYLAND_DISPLAY")
         .env("WLR_BACKENDS", "headless")
         .env("WLR_LIBINPUT_NO_DEVICES", "1")
+        .env("XDG_RUNTIME_DIR", runtime_dir)
         .spawn()
         .expect("failed to spawn cage")
 }
@@ -102,9 +112,10 @@ fn ipc_command_sequence_all_receive_responses() {
         return;
     }
 
-    let socket = socket_path();
+    let runtime_dir = make_test_runtime_dir();
+    let socket = socket_path(&runtime_dir);
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/single-page.pdf");
-    let mut child = launch_app(&socket);
+    let mut child = launch_app(&runtime_dir, &socket);
 
     // Run the whole sequence, collecting results, so we can always tear cage
     // down before asserting (a panic mid-sequence must not leak the process).
@@ -148,7 +159,7 @@ fn ipc_command_sequence_all_receive_responses() {
 
     let _ = child.kill();
     let _ = child.wait();
-    let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_dir_all(&runtime_dir);
 
     let results = outcome.expect("IPC sequence setup failed");
     for (label, reply) in &results {
