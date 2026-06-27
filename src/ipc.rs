@@ -193,6 +193,18 @@ pub fn ipc_subscription() -> iced::Subscription<IpcEvent> {
     iced::Subscription::run(ipc_stream)
 }
 
+/// Serialize a JSON value as a single newline-terminated line and write it to
+/// the client. Write errors are ignored: the client may already have hung up.
+async fn write_json_line(
+    writer: &mut tokio::io::WriteHalf<tokio::net::UnixStream>,
+    value: serde_json::Value,
+) {
+    use tokio::io::AsyncWriteExt;
+    let mut line = value.to_string();
+    line.push('\n');
+    let _ = writer.write_all(line.as_bytes()).await;
+}
+
 /// Process one JSON line: parse command, yield event, wait for response, write reply.
 /// Returns false if the response channel closed (app shut down).
 async fn process_line(
@@ -203,24 +215,28 @@ async fn process_line(
     response_timeout: Duration,
 ) -> bool {
     use iced::futures::SinkExt;
-    use tokio::io::AsyncWriteExt;
 
-    // Discard any late response left in the shared channel by a previously
-    // timed-out command. The channel carries no correlation id, so a stale
-    // response would otherwise be mismatched to this command (spe-z6v).
+    // Best-effort recovery from a previously timed-out command: discard any
+    // late response it left buffered in the shared channel so it is not
+    // mismatched to this command. This only covers responses that have already
+    // landed; the channel carries no correlation id, so a response that arrives
+    // after this drain but before our own recv can still be mismatched. Closing
+    // that window fully needs the correlation/concurrency redesign deferred in
+    // spe-z6v.
     while resp_rx.try_recv().is_ok() {}
 
     // Try to parse the command.
     let cmd: IpcCommand = match serde_json::from_str(line) {
         Ok(c) => c,
         Err(e) => {
-            let err_json = serde_json::json!({
-                "ok": false,
-                "error": format!("parse error: {e}")
-            });
-            let mut resp = err_json.to_string();
-            resp.push('\n');
-            let _ = writer.write_all(resp.as_bytes()).await;
+            write_json_line(
+                writer,
+                serde_json::json!({
+                    "ok": false,
+                    "error": format!("parse error: {e}")
+                }),
+            )
+            .await;
             return true;
         }
     };
@@ -238,13 +254,14 @@ async fn process_line(
         Ok(Some(r)) => r,
         Ok(None) => return false,
         Err(_elapsed) => {
-            let err_json = serde_json::json!({
-                "ok": false,
-                "error": "timeout: app did not respond"
-            });
-            let mut resp = err_json.to_string();
-            resp.push('\n');
-            let _ = writer.write_all(resp.as_bytes()).await;
+            write_json_line(
+                writer,
+                serde_json::json!({
+                    "ok": false,
+                    "error": "timeout: app did not respond"
+                }),
+            )
+            .await;
             return true;
         }
     };
@@ -258,9 +275,7 @@ async fn process_line(
             "error": response.error.unwrap_or_default()
         })
     };
-    let mut resp_str = resp_json.to_string();
-    resp_str.push('\n');
-    let _ = writer.write_all(resp_str.as_bytes()).await;
+    write_json_line(writer, resp_json).await;
     true
 }
 
@@ -760,6 +775,9 @@ mod tests {
     #[test]
     fn process_line_times_out_when_no_response_arrives() {
         run_async(async {
+            // `_resp_tx` must stay bound: dropping it closes the channel, which
+            // would send `process_line` down the `Ok(None)` shutdown path
+            // instead of the timeout path this test exercises.
             let (mut output, _output_rx, _resp_tx, mut resp_rx, mut writer, mut client) =
                 process_line_harness();
 
