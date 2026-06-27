@@ -1,0 +1,7 @@
+# Sonarqube Action Pinned by Version Tag
+
+Decision: Pin `SonarSource/sonarqube-scan-action` by version tag (`@v8`) rather than by commit SHA. This is the sole intentional exception to the policy of SHA-pinning every GitHub Action.
+
+Rationale: A 40-character hex commit SHA placed next to the word "sonarqube" matches Semgrep's `generic.secrets.security.detected-sonarqube-docs-api-key` detector, which reports a false-positive "SonarQube Docs API Key detected" finding and fails the Semgrep PRO code-scanning check. The flagged value is a commit SHA, not a token. Inline `nosemgrep` suppression proved unreliable against the PRO secrets engine — rule-id-scoped directives did not match its internal rule id, and `nosemgrep` placement support differs between the scanner's container version and newer releases. Pinning by version tag removes the hex string entirely, eliminating the false positive with no suppression needed. Dependabot continues to track the action by tag, exactly as it did at `@v7`.
+
+Trade-off: A version tag is mutable — a compromised upstream tag could be repointed to malicious code, which a SHA pin would prevent. We accept that small supply-chain risk for this single, well-known SonarSource action because the alternative (a SHA pin plus fragile per-scan suppression) is both noisier and less reliable. Revisit and return to a SHA pin if Semgrep gains dependable inline suppression for the PRO secrets engine or the rule is tuned. Tracked in spe-uu3.

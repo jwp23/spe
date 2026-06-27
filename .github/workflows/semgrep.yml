@@ -25,10 +25,12 @@ jobs:
     name: Scan
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep:1.156.0
+      image: semgrep/semgrep:1.168.0
     if: github.actor != 'dependabot[bot]'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
 
       - name: Run Semgrep
         run: semgrep ci --sarif > semgrep.sarif
@@ -36,7 +38,7 @@ jobs:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc # v4
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
         with:
           sarif_file: semgrep.sarif
         if: always()

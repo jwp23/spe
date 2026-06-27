@@ -9,10 +9,26 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Batch non-major updates into a single PR; majors stay separate for review.
+    groups:
+      cargo:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    # Batch non-major updates into a single PR; majors stay separate for review.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
     ignore:
       # dtolnay/rust-toolchain pins a SHA on the rolling `stable` branch and
       # publishes no semver release tags, so Dependabot cannot resolve a version
