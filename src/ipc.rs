@@ -195,10 +195,10 @@ pub fn ipc_subscription() -> iced::Subscription<IpcEvent> {
 
 /// Serialize a JSON value as a single newline-terminated line and write it to
 /// the client. Write errors are ignored: the client may already have hung up.
-async fn write_json_line(
-    writer: &mut tokio::io::WriteHalf<tokio::net::UnixStream>,
-    value: serde_json::Value,
-) {
+async fn write_json_line<W>(writer: &mut W, value: serde_json::Value)
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
     use tokio::io::AsyncWriteExt;
     let mut line = value.to_string();
     line.push('\n');
