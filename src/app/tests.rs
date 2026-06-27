@@ -1613,3 +1613,116 @@ fn is_render_idle_true_when_all_pages_rendered() {
     }
     assert!(app.is_render_idle());
 }
+
+// =====================================================================
+// spe-dr0: IPC event dispatch — commands keep their follow-up task,
+// and responses are delivered for every command.
+// =====================================================================
+
+/// Attach an IPC response channel so the response-sending path executes.
+/// The returned receiver must be kept alive for the duration of the test.
+fn attach_ipc_response_sender(
+    app: &mut App,
+) -> tokio::sync::mpsc::Receiver<crate::ipc::IpcResponse> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<crate::ipc::IpcResponse>(1);
+    app.ipc_response_sender = Some(crate::ipc::ResponseSender(std::sync::Arc::new(
+        tokio::sync::Mutex::new(tx),
+    )));
+    rx
+}
+
+#[test]
+fn ipc_ready_event_stores_response_sender() {
+    let (mut app, _) = App::new(true);
+    assert!(app.ipc_response_sender.is_none());
+    let (tx, _rx) = tokio::sync::mpsc::channel::<crate::ipc::IpcResponse>(1);
+    let sender = crate::ipc::ResponseSender(std::sync::Arc::new(tokio::sync::Mutex::new(tx)));
+    let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::Ready(sender)));
+    assert!(app.ipc_response_sender.is_some());
+}
+
+#[test]
+fn ipc_command_applies_translated_message() {
+    let mut app = test_app_with_document();
+    let _rx = attach_ipc_response_sender(&mut app);
+    let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::Command(
+        crate::ipc::IpcCommand::Click {
+            page: 1,
+            x: 100.0,
+            y: 700.0,
+        },
+    )));
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
+    assert_eq!(app.canvas.active_overlay, Some(0));
+}
+
+#[test]
+fn ipc_command_with_error_does_not_apply_a_message() {
+    let mut app = test_app_with_document();
+    let _rx = attach_ipc_response_sender(&mut app);
+    // An unknown font name produces an error response and no overlay change.
+    let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::Command(
+        crate::ipc::IpcCommand::Font {
+            family: "No Such Font 12345".to_string(),
+        },
+    )));
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+}
+
+#[test]
+fn ipc_wait_ready_when_idle_does_not_set_pending() {
+    let (mut app, _) = App::new(true);
+    let _rx = attach_ipc_response_sender(&mut app);
+    let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::WaitReady));
+    assert!(!app.pending_ipc_wait);
+}
+
+#[test]
+fn ipc_wait_ready_when_rendering_sets_pending() {
+    let mut app = test_app_with_document();
+    // Document has unrendered pages, so rendering is not idle.
+    let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::WaitReady));
+    assert!(app.pending_ipc_wait);
+}
+
+#[test]
+fn ipc_wait_ready_idle_without_sender_is_noop() {
+    let (mut app, _) = App::new(true);
+    let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::WaitReady));
+    assert!(!app.pending_ipc_wait);
+    assert!(app.ipc_response_sender.is_none());
+}
+
+#[test]
+fn check_ipc_wait_clears_pending_when_idle() {
+    let (mut app, _) = App::new(true);
+    let _rx = attach_ipc_response_sender(&mut app);
+    app.pending_ipc_wait = true;
+    let _ = app.check_ipc_wait();
+    assert!(!app.pending_ipc_wait);
+}
+
+#[test]
+fn check_ipc_wait_keeps_pending_when_still_rendering() {
+    let mut app = test_app_with_document();
+    app.pending_ipc_wait = true;
+    let _ = app.check_ipc_wait();
+    assert!(app.pending_ipc_wait);
+}
+
+#[test]
+fn deliver_ipc_response_writes_to_channel() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::ipc::IpcResponse>(1);
+    let sender = crate::ipc::ResponseSender(std::sync::Arc::new(tokio::sync::Mutex::new(tx)));
+    iced::futures::executor::block_on(deliver_ipc_response(
+        sender,
+        crate::ipc::IpcResponse {
+            ok: true,
+            error: None,
+        },
+    ));
+    let received = rx
+        .try_recv()
+        .expect("a response should have been delivered");
+    assert!(received.ok);
+}

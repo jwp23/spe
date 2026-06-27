@@ -218,13 +218,7 @@ impl App {
             return iced::Task::none();
         };
         let sender = sender.clone();
-        iced::Task::perform(
-            async move {
-                let tx = sender.0.lock().await;
-                let _ = tx.send(response).await;
-            },
-            |_| Message::Noop,
-        )
+        iced::Task::perform(deliver_ipc_response(sender, response), |_| Message::Noop)
     }
 
     /// If a WaitReady response is pending and rendering is now idle, send the response.
@@ -454,6 +448,16 @@ impl App {
 
         iced::Subscription::batch([event_sub, shimmer_sub, toast_sub, ipc_sub])
     }
+}
+
+/// Deliver an IPC response over the response channel. Separated from
+/// [`App::send_ipc_response`] so delivery can be tested without the iced runtime.
+async fn deliver_ipc_response(
+    sender: crate::ipc::ResponseSender,
+    response: crate::ipc::IpcResponse,
+) {
+    let tx = sender.0.lock().await;
+    let _ = tx.send(response).await;
 }
 
 /// Map an iced event to an application message, filtering by event type and capture status.
