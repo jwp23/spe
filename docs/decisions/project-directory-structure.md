@@ -20,7 +20,7 @@ spe/
 │   ├── adr/
 │   ├── decisions/
 │   ├── code-style-guide.md
-│   └── architecture.md         # created after bootstrapping
+│   └── architecture.md         # module map and component layout
 ├── src/
 │   ├── main.rs                 # entry point, module declarations
 │   ├── app.rs                  # Iced Application impl, state, messages
