@@ -46,11 +46,4 @@ bd is the durable, cross-session, authoritative issue tracker. TodoWrite is only
 
 ## Session Completion Override
 
-The "Landing the Plane" section above (beads-managed) describes pushing directly to main. **This project uses a PR-based workflow instead.** See `.claude/rules/git-workflow.md` for the authoritative procedure:
-
-1. Push feature branch to origin
-2. Create PR targeting main
-3. Wait for CI checks to pass (fix if needed)
-4. Report PR URL and status
-
-Work is NOT complete until the PR is open and CI checks are green.
+This project uses a PR-based workflow. See `.claude/rules/git-workflow.md` for the authoritative procedure.
