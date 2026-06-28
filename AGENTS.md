@@ -39,10 +39,12 @@ cp -rf source dest          # NOT: cp -r source dest
 <!-- BEGIN BEADS INTEGRATION profile:minimal -->
 ## Issue Tracking with bd (beads)
 
-This project uses **bd (beads)** for ALL issue tracking — never markdown TODOs or external trackers. Run `bd prime` for the full workflow (the single source of truth), or `bd onboard` to get started. Always use `--json`, and link discovered work with `--deps discovered-from:<id>`. See the Quick Reference above for common commands.
+This project uses **bd (beads)** for ALL issue tracking — never markdown TODOs or external trackers. Run `bd prime` for the full bd issue-tracking workflow. Always use `--json`, and link discovered work with `--deps discovered-from:<id>`. See the Quick Reference above for common commands.
 <!-- END BEADS INTEGRATION -->
 
-bd is the durable, cross-session, authoritative issue tracker. TodoWrite is only a transient in-session checklist — never a substitute for bd.
+## bd vs TodoWrite
+
+This project permits TodoWrite as a transient, in-session checklist, overriding bd's blanket prohibition — but it is never a substitute for bd, which is the durable, cross-session, authoritative issue tracker.
 
 ## Session Completion Override
 
