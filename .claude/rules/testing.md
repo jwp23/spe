@@ -3,7 +3,7 @@
 ## Test Pyramid
 
 - **Unit tests**: Every public function and method must have tests. Test edge cases and error paths.
-- **Integration tests**: Mock external dependencies (system utilities, file I/O) at integration boundaries.
+- **Integration tests**: Cover every component interaction; mock external dependencies (system utilities, file I/O) at integration boundaries.
 - **E2E tests**: Cover the core user workflow: open PDF → place text → configure font → save PDF.
 
 ## Test Organization
