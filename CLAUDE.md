@@ -20,40 +20,7 @@ See `docs/adr/` for rationale behind each choice.
 
 ## Decision Recording
 
-### Architectural Decision Records — `docs/adr/`
-
-Use sequential numbering: `001-language-selection.md`, `002-gui-framework.md`, etc.
-
-Format:
-```
-# ADR-NNN: Title
-
-## Context
-What situation or problem prompted this decision?
-
-## Decision
-What was decided and why?
-
-## Trade-offs
-What alternatives were considered? What are we giving up?
-```
-
-### Decision Docs — `docs/decisions/`
-
-For smaller, tactical decisions. Use descriptive filenames: `use-pdftoppm-for-rendering.md`.
-
-Format:
-```
-# Title
-Decision: [what was decided]
-Rationale: [why, in 1-3 sentences]
-```
-
-### When to Record
-
-- **ADR**: Language, framework, architecture, library choices, testing strategy, CI pipeline design
-- **Decision doc**: Specific tool selection, naming conventions, file organization choices, utility preferences
-- **Always ask the user**: "Should I record this in `docs/adr/` or `docs/decisions/`?" before recording
+Recording technical decisions: see `.claude/rules/decision-recording.md` (and `docs/decision-recording.md` for formats and numbering).
 
 ## What This Project Does
 
