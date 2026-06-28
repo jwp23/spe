@@ -4,6 +4,22 @@ External documentation for each dependency in the project. Versions reflect the 
 
 When docs.rs links 404 after a version bump, replace the version segment in the URL with the new version from `Cargo.lock`.
 
+## Stack Overview
+
+| Concern | Choice |
+|---------|--------|
+| Language | Rust (edition 2024) |
+| GUI framework | Iced 0.14 — cross-platform Elm-inspired Rust GUI toolkit, wgpu GPU-accelerated, Wayland-compatible |
+| PDF rendering | `pdftoppm` (poppler-utils) via `std::process::Command` |
+| PDF writing | `lopdf` — modifies existing PDFs to add text content streams |
+| Font discovery | `fc-list` (fontconfig) via `std::process::Command` |
+| File dialogs | `rfd` crate (XDG Desktop Portal) |
+| Testing | `cargo test` with TDD (red/green/refactor) |
+| Linting | `rustfmt` + `clippy -D warnings` |
+| CI | GitHub Actions — same checks as pre-commit |
+
+For rationale behind each choice, see `docs/adr/`. For crate versions and API docs, see the tables below.
+
 ## Rust Crates
 
 | Crate | Version | Documentation |

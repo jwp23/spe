@@ -12,27 +12,12 @@ For extensive changes, use git worktrees in `.worktrees/` (project-local, hidden
 
 ## Completing Work
 
-When implementation is complete and tests pass:
+When implementation is complete and tests pass, YOU MUST invoke the `finishing-a-development-branch` skill via the Skill tool — it dispatches the pr-creator agent for push/PR/CI; the pr-merger agent handles approved merges.
 
-1. Push feature branch: `git push -u origin <branch>`
-2. Create PR: `gh pr create --title "<conventional-commit-title>" --body "<summary>"`
-3. Wait for CI checks: `gh pr checks <number> --watch`
-4. If checks fail: investigate, fix, commit, push, wait again. Repeat until green.
-5. Report PR URL and check status to Joe.
+## Merge Policy
 
-Work is complete when the PR is open and CI is green.
-
-## Merging PRs
-
-When Joe says to merge or close a PR:
-
-1. Squash merge with no body: `gh pr merge <number> --squash --body "" --delete-branch`
-2. Switch to main and pull: `git checkout main && git pull`
-3. Wait for CI checks on main: `gh run watch` (the merge commit triggers a new CI run)
-4. If checks fail: investigate and fix on a new branch
-5. Delete local feature branch: `git branch -d <branch>`
-6. Remove worktree if applicable: `git worktree remove <path>`
+Merges use squash with no body, and delete the branch on merge.
 
 ## Session Completion
 
-This workflow supersedes the beads-generated "Landing the Plane" section in AGENTS.md. Do not push directly to main. Always use the PR-based workflow above.
+Use the PR-based workflow above; never push directly to main. Work is complete only when the PR is open and CI is green; PRs never merge without passing CI.

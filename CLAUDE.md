@@ -6,54 +6,13 @@ A desktop GUI application for Linux that opens PDF documents, renders pages visu
 
 ## Tech Stack
 
-- **Language**: Rust (edition 2024)
-- **GUI**: Iced 0.14 — Cosmic Desktop's native toolkit, GPU-accelerated (wgpu), Wayland-first
-- **PDF rendering**: `pdftoppm` (poppler-utils) via `std::process::Command`
-- **PDF writing**: `lopdf` — modifies existing PDFs to add text content streams
-- **Font discovery**: `fc-list` (fontconfig) via `std::process::Command`
-- **File dialogs**: `rfd` crate (XDG Desktop Portal)
-- **Testing**: `cargo test` with TDD (red/green/refactor)
-- **Linting**: `rustfmt` + `clippy -D warnings`
-- **CI**: GitHub Actions — same checks as pre-commit
+Rust (edition 2024) desktop GUI: Iced 0.14 (wgpu/Wayland); `pdftoppm` rendering; `lopdf` writing; `fc-list` fonts; `rfd` dialogs; `cargo test` + `rustfmt`/`clippy`; GitHub Actions CI.
 
-See `docs/adr/` for rationale behind each choice.
+Full stack detail and per-choice rationale: see `@docs/tech-stack-docs.md` and `docs/adr/`.
 
 ## Decision Recording
 
-### Architectural Decision Records — `docs/adr/`
-
-Use sequential numbering: `001-language-selection.md`, `002-gui-framework.md`, etc.
-
-Format:
-```
-# ADR-NNN: Title
-
-## Context
-What situation or problem prompted this decision?
-
-## Decision
-What was decided and why?
-
-## Trade-offs
-What alternatives were considered? What are we giving up?
-```
-
-### Decision Docs — `docs/decisions/`
-
-For smaller, tactical decisions. Use descriptive filenames: `use-pdftoppm-for-rendering.md`.
-
-Format:
-```
-# Title
-Decision: [what was decided]
-Rationale: [why, in 1-3 sentences]
-```
-
-### When to Record
-
-- **ADR**: Language, framework, architecture, library choices, testing strategy, CI pipeline design
-- **Decision doc**: Specific tool selection, naming conventions, file organization choices, utility preferences
-- **Always ask the user**: "Should I record this in `docs/adr/` or `docs/decisions/`?" before recording
+Recording technical decisions: see `.claude/rules/decision-recording.md`.
 
 ## What This Project Does
 
@@ -84,13 +43,7 @@ When calling system utilities: use `std::process::Command` (never shell). Wrap f
 
 ## Code Style
 
-These principles are mandatory regardless of language or framework. See `@docs/code-style-guide.md` for detailed examples and anti-patterns.
-
-- **Human readable** — Code is read far more than it is written. Optimize for the next developer. Descriptive names, clear control flow, no clever tricks.
-- **Loosely coupled** — Components communicate through well-defined interfaces. No module should need to know another's internals. Changing one component must not cascade through the codebase.
-- **Idiomatic** — Use the conventions of the chosen language and framework. Do not import patterns from other ecosystems. Claude records language-specific idiom decisions in `docs/decisions/`.
-- **Simple** — Do not inherit a ball of mud. Prefer composition over inheritance. Prefer flat over nested. Prefer explicit over implicit. If a pattern adds indirection without clear value, do not use it.
-- **Professional** — Write like a senior engineer shipping to production. No TODO-driven development, no dead code, no commented-out blocks, no "temporary" hacks without a tracked issue.
+Five mandatory principles — human readable, loosely coupled, idiomatic, simple, professional. Details and anti-patterns: see `@docs/code-style-guide.md`.
 
 When style conventions and simplicity conflict, simplicity wins.
 
@@ -116,17 +69,13 @@ When style conventions and simplicity conflict, simplicity wins.
 - **Integration tests** go in `tests/`, marked `#[ignore]` when they require system utilities. CI runs them with `cargo test -- --ignored`.
 - **E2E tests** exercise the full user workflow with real files and real utilities.
 
-### TDD Workflow (Mandatory)
+### TDD (Mandatory)
 
-1. **RED** — Write a failing test first. Verify it actually fails before proceeding.
-2. **GREEN** — Write the minimum code to make the test pass.
-3. **REFACTOR** — Clean up while keeping tests green.
-
-Never skip the RED step. If a test passes immediately, the test is wrong or the code already existed.
+TDD is mandatory for every feature/bugfix — see `.claude/rules/tdd.md`, which triggers the test-driven-development skill (full RED/GREEN/REFACTOR methodology).
 
 ### Test Framework
 
-Rust built-in `cargo test`. Unit tests co-located in `#[cfg(test)]` modules. Integration tests in `tests/` directory, marked `#[ignore]` when they require system utilities. See ADR-005 for full strategy.
+`cargo test`. Unit tests co-located in `#[cfg(test)]` modules. See ADR-005 for full strategy.
 
 ## Git Workflow
 
@@ -134,12 +83,9 @@ Rust built-in `cargo test`. Unit tests co-located in `#[cfg(test)]` modules. Int
   - `feat: add font size selector to overlay toolbar`
   - `fix: prevent crash when opening password-protected PDF`
   - `chore: add ruff to pre-commit hooks`
-- **Branches**: Feature branches: `feat/`, `fix/`, `chore/`, `docs/`, `refactor/`, `test/` + short description.
 - **Lockfiles**: Always commit lockfiles regardless of language/package manager.
-- **CI**: GitHub Actions. PRs cannot merge without passing CI. No exceptions.
-- **Main branch**: Never commit directly to main. All changes go through feature branches and PRs.
-- **Worktrees**: For extensive changes, use git worktrees in `.worktrees/`. See the using-git-worktrees skill.
-- **PR workflow**: Push feature branch, create PR with summary, wait for CI to pass. Squash merge with no body when merging. See `.claude/rules/git-workflow.md`.
+
+See `.claude/rules/git-workflow.md` for branch naming, PR workflow, worktrees, and merge policy.
 
 ## Pre-commit & CI
 
@@ -161,23 +107,10 @@ Read these only when the trigger condition applies:
 - `@docs/code-style-guide.md` — Read when writing or reviewing code. Detailed examples and anti-patterns for the five code style principles.
 - `docs/adr/*.md` — Read when making decisions related to an existing ADR, or when context on a past decision is needed
 - `docs/decisions/*.md` — Read when working in an area covered by an existing decision
-- `docs/architecture.md` — Read when modifying component boundaries or data flow (create after bootstrapping)
+- `docs/decision-recording.md` — Read when recording a technical decision. ADR/decision-doc formats, numbering, and classification.
+- `docs/architecture.md` — Read when navigating the module map, or when modifying component boundaries or data flow
 - `@docs/tech-stack-docs.md` — Read when working with a library or framework API, or when you need documentation for a dependency
 
 ## Project Structure
 
-Key modules in `src/`:
-
-| Module | Purpose |
-|--------|---------|
-| `app/` | Iced application state, Message enum, update/view/subscription, event handlers |
-| `ui/canvas/` | PDF canvas rendering, hit testing, zoom, overlay drawing |
-| `ui/sidebar.rs` | Thumbnail sidebar with drag-resize |
-| `ui/toolbar.rs` | Font picker, zoom controls, page navigation |
-| `pdf/` | PDF rendering (`pdftoppm` wrapper) and writing (`lopdf` overlay embedding) |
-| `overlay.rs` | Text overlay data model (position, font, text, width) |
-| `coordinate.rs` | Screen-to-PDF coordinate conversion, AFM font width tables |
-| `ipc.rs` | IPC protocol for the screenshot development tool |
-| `command.rs` | Undo/redo command pattern |
-
-Tests live in `tests/` (integration/E2E) and co-located `#[cfg(test)]` modules (unit). See `docs/decisions/project-directory-structure.md`.
+Module map: see `docs/architecture.md` (read when navigating or modifying modules).
