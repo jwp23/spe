@@ -12,6 +12,8 @@ A development tool for Claude Code to take screenshots of the running app and dr
 
 The harness script checks for these and prints install instructions if any are missing.
 
+Quick install: `sudo pacman -S cage grim socat`
+
 ## Quick Start
 
 ```bash
@@ -29,6 +31,7 @@ scripts/screenshot.sh send '{"cmd": "deselect"}'
 
 # Capture and view
 scripts/screenshot.sh capture screenshots/overlay-test.png
+# Then use the Read tool in Claude Code to inspect the screenshot
 
 # Tear down
 scripts/screenshot.sh stop

@@ -75,7 +75,7 @@ TDD is mandatory for every feature/bugfix — see `.claude/rules/tdd.md`, which 
 
 ### Test Framework
 
-Rust built-in `cargo test`. Unit tests co-located in `#[cfg(test)]` modules. Integration tests in `tests/` directory, marked `#[ignore]` when they require system utilities. See ADR-005 for full strategy.
+`cargo test`. Unit tests co-located in `#[cfg(test)]` modules. See ADR-005 for full strategy.
 
 ## Git Workflow
 
