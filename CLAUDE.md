@@ -51,13 +51,7 @@ When calling system utilities: use `std::process::Command` (never shell). Wrap f
 
 ## Code Style
 
-These principles are mandatory regardless of language or framework. See `@docs/code-style-guide.md` for detailed examples and anti-patterns.
-
-- **Human readable** — Code is read far more than it is written. Optimize for the next developer. Descriptive names, clear control flow, no clever tricks.
-- **Loosely coupled** — Components communicate through well-defined interfaces. No module should need to know another's internals. Changing one component must not cascade through the codebase.
-- **Idiomatic** — Use the conventions of the chosen language and framework. Do not import patterns from other ecosystems. Claude records language-specific idiom decisions in `docs/decisions/`.
-- **Simple** — Do not inherit a ball of mud. Prefer composition over inheritance. Prefer flat over nested. Prefer explicit over implicit. If a pattern adds indirection without clear value, do not use it.
-- **Professional** — Write like a senior engineer shipping to production. No TODO-driven development, no dead code, no commented-out blocks, no "temporary" hacks without a tracked issue.
+Five mandatory principles — human readable, loosely coupled, idiomatic, simple, professional. Details and anti-patterns: see `@docs/code-style-guide.md`.
 
 When style conventions and simplicity conflict, simplicity wins.
 
