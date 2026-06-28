@@ -116,23 +116,9 @@ Read these only when the trigger condition applies:
 - `docs/adr/*.md` — Read when making decisions related to an existing ADR, or when context on a past decision is needed
 - `docs/decisions/*.md` — Read when working in an area covered by an existing decision
 - `docs/decision-recording.md` — Read when recording a technical decision. ADR/decision-doc formats, numbering, and classification.
-- `docs/architecture.md` — Read when modifying component boundaries or data flow (create after bootstrapping)
+- `docs/architecture.md` — Read when modifying component boundaries or data flow
 - `@docs/tech-stack-docs.md` — Read when working with a library or framework API, or when you need documentation for a dependency
 
 ## Project Structure
 
-Key modules in `src/`:
-
-| Module | Purpose |
-|--------|---------|
-| `app/` | Iced application state, Message enum, update/view/subscription, event handlers |
-| `ui/canvas/` | PDF canvas rendering, hit testing, zoom, overlay drawing |
-| `ui/sidebar.rs` | Thumbnail sidebar with drag-resize |
-| `ui/toolbar.rs` | Font picker, zoom controls, page navigation |
-| `pdf/` | PDF rendering (`pdftoppm` wrapper) and writing (`lopdf` overlay embedding) |
-| `overlay.rs` | Text overlay data model (position, font, text, width) |
-| `coordinate.rs` | Screen-to-PDF coordinate conversion, AFM font width tables |
-| `ipc.rs` | IPC protocol for the screenshot development tool |
-| `command.rs` | Undo/redo command pattern |
-
-Tests live in `tests/` (integration/E2E) and co-located `#[cfg(test)]` modules (unit). See `docs/decisions/project-directory-structure.md`.
+Module map and component layout: see `docs/architecture.md` (read when navigating or modifying modules).
