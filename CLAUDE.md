@@ -6,7 +6,7 @@ A desktop GUI application for Linux that opens PDF documents, renders pages visu
 
 ## Tech Stack
 
-Rust (edition 2024) desktop GUI: Iced 0.14 (wgpu/Wayland) UI; `pdftoppm` rendering; `lopdf` writing; `fc-list` fonts; `rfd` dialogs; `cargo test` + rustfmt/clippy; GitHub Actions CI.
+Rust (edition 2024) desktop GUI: Iced 0.14 (wgpu/Wayland); `pdftoppm` rendering; `lopdf` writing; `fc-list` fonts; `rfd` dialogs; `cargo test` + `rustfmt`/`clippy`; GitHub Actions CI.
 
 Full stack detail and per-choice rationale: see `@docs/tech-stack-docs.md` and `docs/adr/`.
 
