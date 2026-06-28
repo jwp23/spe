@@ -20,7 +20,7 @@ See `docs/adr/` for rationale behind each choice.
 
 ## Decision Recording
 
-Recording technical decisions: see `.claude/rules/decision-recording.md` (and `docs/decision-recording.md` for formats and numbering).
+Recording technical decisions: see `.claude/rules/decision-recording.md`.
 
 ## What This Project Does
 
@@ -121,6 +121,7 @@ Read these only when the trigger condition applies:
 - `@docs/code-style-guide.md` — Read when writing or reviewing code. Detailed examples and anti-patterns for the five code style principles.
 - `docs/adr/*.md` — Read when making decisions related to an existing ADR, or when context on a past decision is needed
 - `docs/decisions/*.md` — Read when working in an area covered by an existing decision
+- `docs/decision-recording.md` — Read when recording a technical decision. ADR/decision-doc formats, numbering, and classification.
 - `docs/architecture.md` — Read when modifying component boundaries or data flow (create after bootstrapping)
 - `@docs/tech-stack-docs.md` — Read when working with a library or framework API, or when you need documentation for a dependency
 
