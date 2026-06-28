@@ -6,17 +6,9 @@ A desktop GUI application for Linux that opens PDF documents, renders pages visu
 
 ## Tech Stack
 
-- **Language**: Rust (edition 2024)
-- **GUI**: Iced 0.14 — Cosmic Desktop's native toolkit, GPU-accelerated (wgpu), Wayland-first
-- **PDF rendering**: `pdftoppm` (poppler-utils) via `std::process::Command`
-- **PDF writing**: `lopdf` — modifies existing PDFs to add text content streams
-- **Font discovery**: `fc-list` (fontconfig) via `std::process::Command`
-- **File dialogs**: `rfd` crate (XDG Desktop Portal)
-- **Testing**: `cargo test` with TDD (red/green/refactor)
-- **Linting**: `rustfmt` + `clippy -D warnings`
-- **CI**: GitHub Actions — same checks as pre-commit
+Rust (edition 2024) desktop GUI: Iced 0.14 (wgpu/Wayland) UI; `pdftoppm` rendering; `lopdf` writing; `fc-list` fonts; `rfd` dialogs; `cargo test` + rustfmt/clippy; GitHub Actions CI.
 
-See `docs/adr/` for rationale behind each choice.
+Full stack detail and per-choice rationale: see `@docs/tech-stack-docs.md` and `docs/adr/`.
 
 ## Decision Recording
 
