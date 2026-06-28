@@ -9,7 +9,7 @@ When docs.rs links 404 after a version bump, replace the version segment in the 
 | Concern | Choice |
 |---------|--------|
 | Language | Rust (edition 2024) |
-| GUI framework | Iced 0.14 — Cosmic Desktop's native toolkit, wgpu GPU-accelerated, Wayland-first |
+| GUI framework | Iced 0.14 — cross-platform Elm-inspired Rust GUI toolkit, wgpu GPU-accelerated, Wayland-compatible |
 | PDF rendering | `pdftoppm` (poppler-utils) via `std::process::Command` |
 | PDF writing | `lopdf` — modifies existing PDFs to add text content streams |
 | Font discovery | `fc-list` (fontconfig) via `std::process::Command` |
