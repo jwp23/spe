@@ -116,6 +116,8 @@ When style conventions and simplicity conflict, simplicity wins.
 - **Integration tests** go in `tests/`, marked `#[ignore]` when they require system utilities. CI runs them with `cargo test -- --ignored`.
 - **E2E tests** exercise the full user workflow with real files and real utilities.
 
+### TDD (Mandatory)
+
 TDD is mandatory for every feature/bugfix — see `.claude/rules/tdd.md`, which triggers the test-driven-development skill (full RED/GREEN/REFACTOR methodology).
 
 ### Test Framework
