@@ -116,13 +116,7 @@ When style conventions and simplicity conflict, simplicity wins.
 - **Integration tests** go in `tests/`, marked `#[ignore]` when they require system utilities. CI runs them with `cargo test -- --ignored`.
 - **E2E tests** exercise the full user workflow with real files and real utilities.
 
-### TDD Workflow (Mandatory)
-
-1. **RED** — Write a failing test first. Verify it actually fails before proceeding.
-2. **GREEN** — Write the minimum code to make the test pass.
-3. **REFACTOR** — Clean up while keeping tests green.
-
-Never skip the RED step. If a test passes immediately, the test is wrong or the code already existed.
+TDD is mandatory for every feature/bugfix — see `.claude/rules/tdd.md`, which triggers the test-driven-development skill (full RED/GREEN/REFACTOR methodology).
 
 ### Test Framework
 
