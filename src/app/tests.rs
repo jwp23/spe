@@ -2135,6 +2135,75 @@ fn ipc_command_error_does_not_leak_into_the_next_command() {
 }
 
 // =====================================================================
+// spe-7f1: `click_at` goes through the canvas hit test, so automation can
+// exercise real click-to-select instead of always placing.
+// =====================================================================
+
+/// Place an overlay reading "Hello" at PDF (100, 700) on page 1 and leave
+/// nothing selected — the state a subsequent click has to interpret.
+fn app_with_committed_overlay() -> App {
+    let mut app = test_app_with_document();
+    app.document
+        .as_mut()
+        .unwrap()
+        .page_dimensions
+        .insert(1, (612.0, 792.0));
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 100.0,
+        y: 700.0,
+    });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Hello".to_string(),
+    });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Deselect);
+    app
+}
+
+#[test]
+fn ipc_click_at_on_an_existing_overlay_selects_it_instead_of_placing() {
+    let mut app = app_with_committed_overlay();
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::ClickAt {
+        page: 1,
+        x: 102.0,
+        y: 705.0,
+    });
+    assert!(response.ok);
+    assert_eq!(
+        app.document.as_ref().unwrap().overlays.len(),
+        1,
+        "no new overlay"
+    );
+    assert_eq!(app.canvas.active_overlay, Some(0));
+}
+
+#[test]
+fn ipc_click_at_on_empty_page_area_places_a_new_overlay() {
+    let mut app = app_with_committed_overlay();
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::ClickAt {
+        page: 1,
+        x: 400.0,
+        y: 300.0,
+    });
+    assert!(response.ok);
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 2);
+    assert_eq!(app.canvas.active_overlay, Some(1));
+}
+
+#[test]
+fn ipc_click_bypasses_the_hit_test_and_always_places() {
+    // The older `click` command is deliberately unconditional; keeping it
+    // distinguishable from `click_at` is what makes `click_at` meaningful.
+    let mut app = app_with_committed_overlay();
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 102.0,
+        y: 705.0,
+    });
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 2);
+}
+
+// =====================================================================
 // spe-94g: save over IPC — reuses the writer, bypasses only the dialog
 // =====================================================================
 

@@ -101,7 +101,8 @@ the real filesystem error the same way.
 |---------|------|
 | Open PDF | `{"cmd": "open", "path": "/path/to.pdf"}` |
 | Save PDF | `{"cmd": "save", "path": "/path/to-out.pdf"}` |
-| Click canvas | `{"cmd": "click", "page": 1, "x": 100.0, "y": 700.0}` |
+| Click canvas (always places) | `{"cmd": "click", "page": 1, "x": 100.0, "y": 700.0}` |
+| Click canvas (like the mouse) | `{"cmd": "click_at", "page": 1, "x": 100.0, "y": 700.0}` |
 | Drag (multiline) | `{"cmd": "drag", "page": 1, "x1": 100.0, "y1": 700.0, "x2": 300.0, "y2": 700.0}` |
 | Type text | `{"cmd": "type", "text": "Hello"}` |
 | Select overlay | `{"cmd": "select", "index": 0}` |
@@ -118,6 +119,35 @@ the real filesystem error the same way.
 | Zoom reset | `{"cmd": "zoom_reset"}` |
 | Zoom fit width | `{"cmd": "zoom_fit_width"}` |
 | Wait for idle | `{"cmd": "wait_ready"}` |
+
+### `click` vs `click_at`
+
+`click` places an overlay unconditionally. It is the blunt instrument: useful
+when a test just needs an overlay at a known position, but it can never select
+an existing one, so it cannot exercise click-to-select.
+
+`click_at` reproduces what a left mouse press-and-release at that point does,
+by consulting the same hit test the mouse path uses (`hit_test_pdf`, which
+`hit_test` also delegates to — there is only one hit box):
+
+| Point | Result |
+|-------|--------|
+| Over an existing overlay | selects it (topmost/last-placed wins) |
+| Over blank page area | places a new overlay there |
+| Off the page | deselects |
+| While an overlay is being edited | commits the text first, like any click does |
+
+Residual differences from a real mouse, which need a pointer device the IPC
+protocol does not model:
+
+- **No double-click.** Two `click_at` commands select twice; they never open an
+  overlay for editing the way a real double-click does. Use `edit` for that.
+- **No press-move-release.** Drag-to-move and drag-to-size are not produced by
+  `click_at`; use `move`, `resize`, and `drag`.
+- **No resize handle.** The handle's hit area is a fixed pixel radius around the
+  overlay's right edge, so it is zoom-dependent and has no PDF-space equivalent.
+  Use `resize`.
+- **No hover.** Hover highlighting is driven by cursor-move events.
 
 ### Font Family Values
 

@@ -11,6 +11,7 @@ use serde::Deserialize;
 use crate::app::{DocumentState, Message};
 use crate::fonts::FontRegistry;
 use crate::overlay::PdfPosition;
+use crate::ui::canvas::hit_test_pdf;
 
 /// Errors that can occur when translating an IpcCommand to a Message.
 #[derive(Debug, PartialEq)]
@@ -116,7 +117,18 @@ pub enum IpcCommand {
     Save {
         path: PathBuf,
     },
+    /// Place an overlay at a PDF position, unconditionally. Bypasses the
+    /// canvas hit test, so it can never select an existing overlay — use
+    /// `ClickAt` to reproduce what a real mouse click would do.
     Click {
+        page: u32,
+        x: f32,
+        y: f32,
+    },
+    /// Click at a PDF position the way the mouse does: commit an in-progress
+    /// edit, select an overlay under the point, place a new one on empty page,
+    /// or deselect when the point is off the page.
+    ClickAt {
         page: u32,
         x: f32,
         y: f32,
@@ -205,6 +217,10 @@ impl IpcCommand {
                     width: None,
                 })
             }
+            IpcCommand::ClickAt { page, x, y } => {
+                let doc = ctx.require_page(page)?;
+                Ok(click_at_message(doc, ctx.editing, page, x, y, registry))
+            }
             IpcCommand::Type { text } => {
                 ctx.require_active_overlay()?;
                 Ok(Message::UpdateOverlayText(text))
@@ -279,6 +295,44 @@ impl IpcCommand {
             }
             IpcCommand::WaitReady => Ok(Message::Noop),
         }
+    }
+}
+
+/// Decide what a left click at a PDF position does, mirroring the canvas
+/// program's own press handling (`OverlayCanvasProgram::handle_left_click`):
+/// a click while editing commits first, a click on an overlay selects it, a
+/// click on blank page area places a new overlay, and a click off the page
+/// deselects. The overlay lookup is the same [`hit_test_pdf`] the mouse path
+/// reaches through `hit_test`, so automation and the mouse cannot diverge.
+///
+/// Pages whose dimensions have not been read yet are treated as unbounded,
+/// since a click cannot be shown to be off a page of unknown size.
+fn click_at_message(
+    doc: &DocumentState,
+    editing: bool,
+    page: u32,
+    x: f32,
+    y: f32,
+    registry: &FontRegistry,
+) -> Message {
+    if editing {
+        return Message::CommitText;
+    }
+    if let Some(index) = hit_test_pdf(x, y, &doc.overlays, page, registry) {
+        return Message::SelectOverlay(index);
+    }
+    let on_page = match doc.page_dimensions.get(&page) {
+        Some((w, h)) => x >= 0.0 && x <= *w && y >= 0.0 && y <= *h,
+        None => true,
+    };
+    if on_page {
+        Message::PlaceOverlay {
+            page,
+            position: PdfPosition { x, y },
+            width: None,
+        }
+    } else {
+        Message::DeselectOverlay
     }
 }
 
@@ -501,7 +555,7 @@ mod tests {
             page_count: 1,
             current_page: 1,
             page_images: HashMap::new(),
-            page_dimensions: HashMap::new(),
+            page_dimensions: HashMap::from([(1, (612.0, 792.0))]),
             overlays: vec![TextOverlay {
                 page: 1,
                 position: PdfPosition { x: 100.0, y: 700.0 },
@@ -1035,6 +1089,91 @@ mod tests {
         };
         let msg = cmd.to_message(&ctx, &test_registry()).unwrap();
         assert!(matches!(msg, Message::UpdateOverlayText(ref t) if t == "Hello"));
+    }
+
+    // --- click_at: routed through the canvas hit test (spe-7f1) ---
+
+    #[test]
+    fn click_at_on_empty_space_places_an_overlay() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::ClickAt {
+            page: 1,
+            x: 300.0,
+            y: 300.0,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(
+            msg,
+            Message::PlaceOverlay { page: 1, position: PdfPosition { x, y }, width: None }
+            if (x - 300.0).abs() < f32::EPSILON && (y - 300.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn click_at_on_an_existing_overlay_selects_it() {
+        let doc = test_document_with_overlay();
+        // Just inside the existing overlay's bounding box at (100, 700).
+        let cmd = IpcCommand::ClickAt {
+            page: 1,
+            x: 102.0,
+            y: 705.0,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(msg, Message::SelectOverlay(0)));
+    }
+
+    #[test]
+    fn click_at_outside_the_page_deselects() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::ClickAt {
+            page: 1,
+            x: 900.0,
+            y: 900.0,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(msg, Message::DeselectOverlay));
+    }
+
+    #[test]
+    fn click_at_while_editing_commits_the_text_first() {
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            active_overlay: Some(0),
+            editing: true,
+            ..CommandContext::default()
+        };
+        let cmd = IpcCommand::ClickAt {
+            page: 1,
+            x: 300.0,
+            y: 300.0,
+        };
+        let msg = cmd.to_message(&ctx, &test_registry()).unwrap();
+        assert!(matches!(msg, Message::CommitText));
+    }
+
+    #[test]
+    fn click_at_without_document_is_rejected() {
+        let cmd = IpcCommand::ClickAt {
+            page: 1,
+            x: 1.0,
+            y: 1.0,
+        };
+        let result = cmd.to_message(&CommandContext::default(), &test_registry());
+        assert!(matches!(result, Err(IpcError::NoDocument)));
+    }
+
+    #[test]
+    fn parse_click_at_command() {
+        let json = r#"{"cmd": "click_at", "page": 1, "x": 100.0, "y": 700.0}"#;
+        let cmd: IpcCommand = serde_json::from_str(json).unwrap();
+        assert!(matches!(cmd, IpcCommand::ClickAt { page: 1, .. }));
     }
 
     // --- save (spe-94g) ---

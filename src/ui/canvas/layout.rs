@@ -2,7 +2,7 @@
 
 use iced::widget::image::Handle;
 
-use crate::coordinate::{ConversionParams, pdf_to_screen, render_scale};
+use crate::coordinate::{ConversionParams, render_scale, screen_to_pdf};
 use crate::fonts::FontRegistry;
 use crate::overlay::TextOverlay;
 
@@ -167,6 +167,9 @@ pub fn image_to_handle(img: image::DynamicImage) -> Handle {
 
 /// Test whether a screen-space click hits any overlay on the current page.
 /// Returns the index of the topmost (last-placed) overlay hit, or None.
+///
+/// Converts to PDF space and defers to [`hit_test_pdf`]: the mouse and the IPC
+/// automation path must reach the same verdict, so there is only one hit box.
 pub fn hit_test(
     screen_x: f32,
     screen_y: f32,
@@ -175,19 +178,33 @@ pub fn hit_test(
     params: &ConversionParams,
     registry: &FontRegistry,
 ) -> Option<usize> {
+    let (pdf_x, pdf_y) = screen_to_pdf(screen_x, screen_y, params);
+    hit_test_pdf(pdf_x, pdf_y, overlays, current_page, registry)
+}
+
+/// Test whether a PDF-space point hits any overlay on the given page.
+/// Returns the index of the topmost (last-placed) overlay hit, or None.
+///
+/// The hit box is the overlay's bounding box: text extends right from the
+/// position and upward from the baseline, so it spans
+/// `[x, x + width] × [y, y + height]` in PDF points. Being expressed in PDF
+/// points makes it independent of zoom, DPI, and scroll position.
+pub fn hit_test_pdf(
+    pdf_x: f32,
+    pdf_y: f32,
+    overlays: &[TextOverlay],
+    current_page: u32,
+    registry: &FontRegistry,
+) -> Option<usize> {
     // Test in reverse order so topmost (last-placed) overlay wins
     for (i, overlay) in overlays.iter().enumerate().rev() {
         if overlay.page != current_page {
             continue;
         }
-        let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
         let bbox = registry.overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size);
-        let scale = params.scale();
-        let w = bbox.width * scale;
-        let h = bbox.height * scale;
-        // In screen space, the overlay baseline is at sy.
-        // Text extends upward from baseline, so the hit box is [sy - h, sy].
-        if screen_x >= sx && screen_x <= sx + w && screen_y >= sy - h && screen_y <= sy {
+        let x = overlay.position.x;
+        let y = overlay.position.y;
+        if pdf_x >= x && pdf_x <= x + bbox.width && pdf_y >= y && pdf_y <= y + bbox.height {
             return Some(i);
         }
     }
