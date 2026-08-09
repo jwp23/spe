@@ -281,7 +281,9 @@ impl IpcCommand {
             }
             IpcCommand::Undo => {
                 ctx.require_document()?;
-                if ctx.undo_depth == 0 {
+                // An in-progress edit is itself undoable: undo cancels the
+                // session before it reaches the command history.
+                if ctx.undo_depth == 0 && !ctx.editing {
                     return Err(IpcError::NothingToUndo);
                 }
                 Ok(Message::Undo)
@@ -1246,6 +1248,21 @@ mod tests {
         let doc = test_document_with_overlay();
         let result = IpcCommand::Undo.to_message(&context_with_document(&doc), &test_registry());
         assert!(matches!(result, Err(IpcError::NothingToUndo)));
+    }
+
+    #[test]
+    fn undo_with_an_edit_session_is_allowed_even_with_an_empty_stack() {
+        // Undo cancels an in-progress edit before it touches the command
+        // history, so an edit session is on its own something to undo.
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            active_overlay: Some(0),
+            editing: true,
+            ..CommandContext::default()
+        };
+        let msg = IpcCommand::Undo.to_message(&ctx, &test_registry()).unwrap();
+        assert!(matches!(msg, Message::Undo));
     }
 
     #[test]

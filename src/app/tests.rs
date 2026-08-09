@@ -2371,18 +2371,25 @@ fn ipc_undo_reverts_a_placement() {
 }
 
 #[test]
-fn ipc_redo_restores_an_undone_placement() {
-    let mut app = test_app_with_document();
-    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Click {
-        page: 1,
-        x: 100.0,
-        y: 700.0,
+fn ipc_redo_restores_an_undone_edit() {
+    // The edit is committed first: while a placement is still being edited,
+    // undo cancels that session rather than popping the command history, so
+    // there would be nothing to redo.
+    let mut app = app_with_committed_overlay();
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Edit { index: 0 });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Hello again".to_string(),
     });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Deselect);
     let _ = app.run_ipc_command(crate::ipc::IpcCommand::Undo);
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
 
     let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Redo);
-    assert!(response.ok);
-    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
+    assert!(response.ok, "redo reported: {:?}", response.error);
+    assert_eq!(
+        app.document.as_ref().unwrap().overlays[0].text,
+        "Hello again"
+    );
 }
 
 #[test]
