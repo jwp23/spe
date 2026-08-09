@@ -314,8 +314,8 @@ impl App {
             } => self.handle_resize_overlay(index, old_width, new_width),
             Message::ChangeFont(font) => return self.handle_change_font(font),
             Message::ChangeFontSize(size) => return self.handle_change_font_size(size),
-            Message::DeleteOverlay => self.handle_delete_overlay(),
-            Message::SelectOverlay(index) => self.handle_select_overlay(index),
+            Message::DeleteOverlay => return self.handle_delete_overlay(),
+            Message::SelectOverlay(index) => return self.handle_select_overlay(index),
             Message::EditOverlay(index) => return self.handle_edit_overlay(index),
             Message::DeselectOverlay => return self.handle_deselect_overlay(),
             Message::Noop => {}
@@ -355,7 +355,7 @@ impl App {
 
             // --- Undo/Redo ---
             Message::Undo => self.handle_undo(),
-            Message::Redo => self.handle_redo(),
+            Message::Redo => return self.handle_redo(),
 
             // --- Window ---
             Message::WindowResized(size) => self.window_size = Some(size),

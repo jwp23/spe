@@ -2060,6 +2060,7 @@ fn discarding_an_earlier_overlay_keeps_a_later_placement_in_history() {
         position: PdfPosition { x: 200.0, y: 600.0 },
         width: None,
     });
+    app.update(Message::UpdateOverlayText("two".to_string()));
     app.update(Message::EditOverlay(0));
     app.update(Message::UpdateOverlayText(String::new()));
     app.update(Message::DeselectOverlay);
@@ -2402,20 +2403,26 @@ fn document_always_matches_undo_history_under_arbitrary_interleavings() {
             log.push(format!("{msg:?}"));
             app.update(msg);
 
-            // Positions identify overlays; text is excluded because an open
-            // edit session legitimately holds text not yet in the history.
-            let live: Vec<f32> = app
+            // Positions identify overlays. Text is compared too, except while
+            // an edit session is open, which legitimately holds text the
+            // history has not recorded yet.
+            let include_text = !app.canvas.editing;
+            let describe = |o: &TextOverlay| {
+                if include_text {
+                    format!("{}@{}", o.text, o.position.x)
+                } else {
+                    format!("@{}", o.position.x)
+                }
+            };
+            let live: Vec<String> = app
                 .document
                 .as_ref()
                 .unwrap()
                 .overlays
                 .iter()
-                .map(|o| o.position.x)
+                .map(describe)
                 .collect();
-            let replayed: Vec<f32> = replay_undo_stack(&app)
-                .iter()
-                .map(|o| o.position.x)
-                .collect();
+            let replayed: Vec<String> = replay_undo_stack(&app).iter().map(describe).collect();
             assert_eq!(
                 live,
                 replayed,
@@ -2442,4 +2449,137 @@ fn undo_while_editing_without_changes_falls_through_to_the_history() {
         "a no-op edit session must not swallow the undo keystroke"
     );
     assert!(!app.canvas.editing);
+}
+
+#[test]
+fn selecting_an_overlay_while_editing_commits_the_pending_text() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "original");
+
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText("typed".to_string()));
+    // The canvas commits before selecting, but IPC `select` does not.
+    app.update(Message::SelectOverlay(0));
+
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "typed");
+    assert_history_matches_document(&app, "after selecting mid-edit");
+}
+
+#[test]
+fn selecting_a_later_overlay_while_a_blank_one_is_discarded_selects_the_same_overlay() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "first");
+    place_committed_overlay(&mut app, 200.0, "second");
+    place_committed_overlay(&mut app, 300.0, "third");
+
+    // Blanking the middle overlay discards it on commit, shifting "third" down.
+    app.update(Message::EditOverlay(1));
+    app.update(Message::UpdateOverlayText(String::new()));
+    app.update(Message::SelectOverlay(2));
+
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 2);
+    assert_eq!(
+        app.canvas.active_overlay,
+        Some(1),
+        "the requested overlay shifted down when the blank one was discarded"
+    );
+    assert_eq!(overlays[1].text, "third");
+}
+
+#[test]
+fn editing_another_overlay_while_editing_commits_the_pending_text() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "original");
+
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText("typed".to_string()));
+    app.update(Message::EditOverlay(0));
+
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "typed");
+    assert_history_matches_document(&app, "after re-entering edit mid-edit");
+}
+
+#[test]
+fn redo_while_typing_into_a_fresh_placement_keeps_the_placement() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("draft".to_string()));
+    app.update(Message::Redo);
+
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 1, "redo must never undo a placement");
+    assert_eq!(overlays[0].text, "draft");
+}
+
+#[test]
+fn redo_while_editing_an_existing_overlay_keeps_the_typed_text() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "original");
+
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText("typed".to_string()));
+    app.update(Message::Redo);
+
+    assert_eq!(
+        app.document.as_ref().unwrap().overlays[0].text,
+        "typed",
+        "redo must not revert in-progress typing"
+    );
+    assert_history_matches_document(&app, "after redo mid-edit");
+}
+
+#[test]
+fn typing_outside_an_edit_session_is_ignored() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "original");
+    app.update(Message::SelectOverlay(0));
+
+    app.update(Message::UpdateOverlayText("stray".to_string()));
+
+    assert_eq!(
+        app.document.as_ref().unwrap().overlays[0].text,
+        "original",
+        "text changes outside an edit session leave no undo history"
+    );
+    assert_history_matches_document(&app, "after stray text message");
+}
+
+#[test]
+fn undoing_a_delete_made_while_typing_restores_only_recorded_text() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("typed".to_string()));
+    app.update(Message::DeleteOverlay);
+    app.update(Message::Undo);
+
+    assert_history_matches_document(&app, "after undoing a delete made mid-edit");
+}
+
+#[test]
+fn placing_an_overlay_while_editing_commits_the_pending_text() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("first".to_string()));
+    // The canvas commits before placing, but IPC `click` does not.
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 200.0, y: 600.0 },
+        width: None,
+    });
+
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "first");
+    assert_history_matches_document(&app, "after placing mid-edit");
 }
