@@ -1681,7 +1681,7 @@ mod tests {
         // Great Vibes has real glyphs for both characters; a width equal to
         // the table's fallback would mean the advance never made it into the
         // font's WidthTable, not just a coincidental match with char_width.
-        let fallback = width_at(b' '); // space is unaffected by the divergent block
+        let fallback = entry.widths.char_width('\u{4E2D}').round() as i64;
         assert_ne!(
             width_at(0x80),
             fallback,

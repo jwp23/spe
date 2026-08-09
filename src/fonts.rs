@@ -267,15 +267,24 @@ fn build_ttf_width_table(font_bytes: &[u8]) -> WidthTable {
     let charmap = font.charmap();
     let glyph_metrics = font.glyph_metrics(Size::unscaled(), &[][..]);
     let mut widths = [0.0_f32; 256];
+    let mut has_glyph = [false; 256];
+
     for code in 0u8..=255 {
         if let Some(c) = win_ansi::decode(code)
             && let Some(glyph_id) = charmap.map(c)
         {
             let advance = glyph_metrics.advance_width(glyph_id).unwrap_or(0.0);
-            widths[usize::from(code)] = advance / units_per_em * 1000.0;
+            let index = usize::from(code);
+            widths[index] = advance / units_per_em * 1000.0;
+            has_glyph[index] = true;
         }
     }
     let default = widths[usize::from(b' ')].max(500.0);
+    for code in 0..widths.len() {
+        if !has_glyph[code] {
+            widths[code] = default;
+        }
+    }
     WidthTable::Proportional { widths, default }
 }
 
