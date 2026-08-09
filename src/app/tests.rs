@@ -1677,8 +1677,8 @@ fn step_via_arrow_key_result(increment: bool) -> App {
 }
 
 /// Simulates a real click on the toolbar's font-size stepper button whose
-/// label matches `glyph` (`"+"` or `"-"`) and applies whatever messages it
-/// produces.
+/// label matches `glyph` (the Phosphor caret-up/caret-down icon glyph) and
+/// applies whatever messages it produces.
 fn click_font_size_stepper(app: &mut App, glyph: &str) {
     let mut simulator = iced_test::Simulator::new(app.view());
     simulator.click(glyph).unwrap_or_else(|_| {
@@ -1772,7 +1772,7 @@ fn undo_font_size_change_syncs_toolbar_to_active_overlay() {
 fn clicking_font_size_increment_button_steps_up_the_overlay_size() {
     let mut app = selected_overlay_at_font_size(12.0);
 
-    click_font_size_stepper(&mut app, "+");
+    click_font_size_stepper(&mut app, &crate::ui::icons::CARET_UP.to_string());
 
     assert!((app.toolbar.font_size - 13.0).abs() < f32::EPSILON);
     let doc = app.document.as_ref().unwrap();
@@ -1783,7 +1783,7 @@ fn clicking_font_size_increment_button_steps_up_the_overlay_size() {
 fn clicking_font_size_decrement_button_steps_down_the_overlay_size() {
     let mut app = selected_overlay_at_font_size(12.0);
 
-    click_font_size_stepper(&mut app, "-");
+    click_font_size_stepper(&mut app, &crate::ui::icons::CARET_DOWN.to_string());
 
     assert!((app.toolbar.font_size - 11.0).abs() < f32::EPSILON);
     let doc = app.document.as_ref().unwrap();

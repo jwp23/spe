@@ -3,7 +3,7 @@
 use iced::Font;
 use iced::font::Family;
 
-/// Subsetted Phosphor Icons Regular font (~12 glyphs, < 20KB).
+/// Subsetted Phosphor Icons Regular font (~14 glyphs, < 20KB).
 const PHOSPHOR_BYTES: &[u8] = include_bytes!("../../assets/icons/phosphor-subset.ttf");
 
 /// Iced `Font` descriptor for the Phosphor icon font.
@@ -23,8 +23,10 @@ pub fn font_bytes() -> &'static [u8] {
 pub const ARROW_CLOCKWISE: char = '\u{E036}';
 pub const ARROW_COUNTER_CLOCKWISE: char = '\u{E038}';
 pub const ARROW_U_UP_LEFT: char = '\u{E08A}';
+pub const CARET_DOWN: char = '\u{E136}';
 pub const CARET_LEFT: char = '\u{E138}';
 pub const CARET_RIGHT: char = '\u{E13A}';
+pub const CARET_UP: char = '\u{E13C}';
 pub const FLOPPY_DISK: char = '\u{E248}';
 pub const FOLDER_OPEN: char = '\u{E256}';
 pub const MAGNIFYING_GLASS: char = '\u{E30C}';
@@ -68,8 +70,10 @@ mod tests {
             ARROW_CLOCKWISE,
             ARROW_COUNTER_CLOCKWISE,
             ARROW_U_UP_LEFT,
+            CARET_DOWN,
             CARET_LEFT,
             CARET_RIGHT,
+            CARET_UP,
             FLOPPY_DISK,
             FOLDER_OPEN,
             MAGNIFYING_GLASS,
@@ -89,13 +93,15 @@ mod tests {
     }
 
     #[test]
-    fn all_twelve_icons_are_unique() {
+    fn all_fourteen_icons_are_unique() {
         let icons = [
             ARROW_CLOCKWISE,
             ARROW_COUNTER_CLOCKWISE,
             ARROW_U_UP_LEFT,
+            CARET_DOWN,
             CARET_LEFT,
             CARET_RIGHT,
+            CARET_UP,
             FLOPPY_DISK,
             FOLDER_OPEN,
             MAGNIFYING_GLASS,
@@ -108,7 +114,7 @@ mod tests {
         for icon in icons {
             assert!(seen.insert(icon), "Duplicate icon: U+{:04X}", icon as u32);
         }
-        assert_eq!(seen.len(), 12);
+        assert_eq!(seen.len(), 14);
     }
 
     #[test]
