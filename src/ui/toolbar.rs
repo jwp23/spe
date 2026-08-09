@@ -200,9 +200,9 @@ pub fn toolbar_view<'a>(
         };
 
         let size_stepper = row![
-            spinner_button('-', Message::FontSizeDecrement, has_document),
+            spinner_button(icons::CARET_DOWN, Message::FontSizeDecrement, has_document),
             size_input,
-            spinner_button('+', Message::FontSizeIncrement, has_document),
+            spinner_button(icons::CARET_UP, Message::FontSizeIncrement, has_document),
         ]
         .spacing(2)
         .align_y(iced::Alignment::Center);
@@ -284,12 +284,9 @@ fn icon_button(icon: char, message: Message, enabled: bool) -> iced::Element<'st
     }
 }
 
-/// A small `+`/`-` button flanking the font size input. Uses a plain glyph
-/// (not the Phosphor icon font) because regenerating the icon subset
-/// requires the original Phosphor.ttf, which isn't available in this repo
-/// (see README.md's "Phosphor Icon Font" section for the regen process).
+/// A small caret-up/caret-down button flanking the font size input.
 fn spinner_button(glyph: char, message: Message, enabled: bool) -> iced::Element<'static, Message> {
-    let label = text(glyph).size(14);
+    let label = text(glyph).font(icons::ICON_FONT).size(14);
     let btn = button(label).padding([0, 6]);
     if enabled {
         btn.on_press(message).into()
