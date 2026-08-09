@@ -161,6 +161,15 @@ fn build_font_mapping(
     }
 }
 
+/// Vertical spacing between overlay lines, as a multiple of font size.
+///
+/// Defined *as* `crate::ui::canvas::TEXT_LINE_HEIGHT_RATIO` rather than merely
+/// equal to it: the canvas lays overlay lines out at that ratio while editing,
+/// so the saved PDF's `Td` leading must reproduce the same spacing or a
+/// multiline overlay's lines land at different offsets when the file is
+/// reopened elsewhere (spe-5xe).
+const LINE_SPACING_RATIO: f32 = crate::ui::canvas::TEXT_LINE_HEIGHT_RATIO;
+
 /// The `/Encoding` a Standard 14 font must declare so its bytes are read as
 /// WinAnsi, or `None` for the two symbolic fonts (Symbol and ZapfDingbats),
 /// whose own built-in encodings WinAnsiEncoding would override with the wrong
@@ -376,7 +385,7 @@ fn build_overlay_operations(
             vec![overlay.text.clone()]
         };
 
-        let leading = overlay.font_size * 1.2;
+        let leading = overlay.font_size * LINE_SPACING_RATIO;
         for (i, line) in lines.iter().enumerate() {
             if i == 0 {
                 operations.push(Operation::new(
@@ -538,6 +547,19 @@ pub fn write_overlays(
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
+
+    /// The writer's line spacing must stay in lockstep with the canvas's, or a
+    /// saved PDF's lines land at different offsets than they were edited at
+    /// (spe-5xe). `LINE_SPACING_RATIO` is defined *as* the canvas constant
+    /// rather than merely equal to it, so this test can only ever fail if that
+    /// direct link is ever replaced with an independent literal.
+    #[test]
+    fn line_spacing_ratio_is_the_canvas_text_line_height_ratio() {
+        assert_eq!(
+            LINE_SPACING_RATIO,
+            crate::ui::canvas::TEXT_LINE_HEIGHT_RATIO
+        );
+    }
 
     /// Builds a minimal single-page PDF and saves it to `path`. Its Helvetica
     /// page font declares WinAnsiEncoding, as real-world text PDFs do.
@@ -1354,8 +1376,8 @@ mod tests {
         let td_ops: Vec<&Operation> = ops.iter().filter(|o| o.operator == "Td").collect();
         assert_eq!(td_ops.len(), 3, "expected 3 Td ops, got {}", td_ops.len());
 
-        // Verify leading offset for the second Td: (0, -(12.0 * 1.2)) = (0, -14.4)
-        let leading = 12.0_f64 * 1.2;
+        // Verify leading offset for the second Td: (0, -(12.0 * LINE_SPACING_RATIO)).
+        let leading = 12.0_f64 * f64::from(LINE_SPACING_RATIO);
         let second_td = td_ops[1];
         let x = match &second_td.operands[0] {
             Object::Real(v) => *v as f64,
