@@ -16,6 +16,9 @@ const ANCHOR_HEIGHT: f32 = 28.0;
 /// Point size family names are previewed at. Large enough for the cursive
 /// families to read as themselves.
 const PREVIEW_SIZE: f32 = 16.0;
+/// Width of the list. Wider than the anchor so the longest family names
+/// ("Helvetica Bold Oblique") stay on one line.
+const LIST_WIDTH: f32 = 220.0;
 /// Tallest the list may grow before it starts scrolling.
 const LIST_MAX_HEIGHT: f32 = 320.0;
 /// Plain glyph marking the anchor as a drop-down. The Phosphor icon subset
@@ -67,7 +70,7 @@ fn family_list<'a>(options: &[FontOption], selected: FontId) -> iced::Element<'a
     let entries = column(options.iter().map(|option| family_entry(option, selected)));
 
     container(scrollable(entries).height(iced::Length::Shrink))
-        .width(PICKER_WIDTH)
+        .width(LIST_WIDTH)
         .max_height(LIST_MAX_HEIGHT)
         .padding(2)
         .style(container::rounded_box)
