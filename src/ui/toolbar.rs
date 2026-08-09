@@ -60,8 +60,14 @@ pub struct ToolbarState {
     pub font_size_input: String,
     pub page_input: String,
     /// Stable ID for the font-size text_input, used to query its focus
-    /// state when handling ArrowUp/ArrowDown key presses.
+    /// state when handling ArrowUp/ArrowDown key presses, and to send focus
+    /// back after a submit whose ChangeFontSize path refocuses the overlay
+    /// editor instead.
     pub font_size_input_id: iced::widget::Id,
+    /// Stable ID for the page-number text_input, used to send focus back
+    /// after a submit whose GoToPage path refocuses the overlay editor
+    /// instead.
+    pub page_input_id: iced::widget::Id,
 }
 
 impl ToolbarState {
@@ -72,6 +78,7 @@ impl ToolbarState {
             font_size_input: "12".to_string(),
             page_input: "1".to_string(),
             font_size_input_id: iced::widget::Id::unique(),
+            page_input_id: iced::widget::Id::unique(),
         }
     }
 }
@@ -203,12 +210,16 @@ pub fn toolbar_view<'a>(
 
         let page_input: iced::Element<'a, Message> = if has_document {
             text_input("page", &state.page_input)
+                .id(state.page_input_id.clone())
                 .on_input(Message::PageInput)
                 .on_submit(Message::PageInputSubmit)
                 .width(40)
                 .into()
         } else {
-            text_input("page", &state.page_input).width(40).into()
+            text_input("page", &state.page_input)
+                .id(state.page_input_id.clone())
+                .width(40)
+                .into()
         };
 
         row![

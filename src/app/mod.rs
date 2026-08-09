@@ -99,6 +99,12 @@ pub enum Message {
     Save,
     SaveAs,
     SaveDestinationChosen(PathBuf),
+    /// The Open or Save As file dialog was closed without picking a path.
+    /// Distinct from `Noop` so canceling can safely refocus an in-progress
+    /// overlay edit — `Noop` also fires for the font-size arrow-key's
+    /// unfocused case, where refocusing would yank the cursor away from
+    /// in-editor arrow-key navigation.
+    DialogDismissed,
 
     // Page navigation
     GoToPage(u32),
@@ -360,8 +366,9 @@ impl App {
                 return self.handle_save_as();
             }
             Message::SaveDestinationChosen(path) => {
-                self.handle_save_destination(path);
+                return self.handle_save_destination(path);
             }
+            Message::DialogDismissed => return self.refocus_editing_widget(),
 
             // --- Page navigation (scroll to target page) ---
             Message::NextPage => return self.handle_next_page(),
@@ -416,7 +423,7 @@ impl App {
             }
 
             // --- Sidebar ---
-            Message::ToggleSidebar => self.sidebar.visible = !self.sidebar.visible,
+            Message::ToggleSidebar => return self.handle_toggle_sidebar(),
             Message::ThumbnailBatchRendered(batch, generation) => {
                 return self.handle_thumbnail_batch_rendered(batch, generation);
             }

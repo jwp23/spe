@@ -2263,6 +2263,349 @@ fn change_font_size_when_not_editing_returns_no_focus_task() {
 }
 
 // =====================================================================
+// spe-fxn: toolbar focus audit — controls that must preserve the
+// in-progress edit and hand focus back to the floating text widget,
+// mirroring the change_font_while_editing precedent above.
+// =====================================================================
+
+#[test]
+fn zoom_in_while_editing_returns_more_task_units_than_not_editing() {
+    let mut editing_app = test_app_with_overlay();
+    editing_app.update(Message::EditOverlay(0));
+    let editing_task = editing_app.update(Message::ZoomIn);
+
+    let mut selected_app = test_app_with_overlay();
+    selected_app.update(Message::SelectOverlay(0));
+    let selected_task = selected_app.update(Message::ZoomIn);
+
+    assert!(
+        editing_task.units() > selected_task.units(),
+        "ZoomIn while editing should include a focus task alongside the zoom render task"
+    );
+}
+
+#[test]
+fn zoom_out_while_editing_returns_more_task_units_than_not_editing() {
+    let mut editing_app = test_app_with_overlay();
+    editing_app.update(Message::EditOverlay(0));
+    let editing_task = editing_app.update(Message::ZoomOut);
+
+    let mut selected_app = test_app_with_overlay();
+    selected_app.update(Message::SelectOverlay(0));
+    let selected_task = selected_app.update(Message::ZoomOut);
+
+    assert!(
+        editing_task.units() > selected_task.units(),
+        "ZoomOut while editing should include a focus task alongside the zoom render task"
+    );
+}
+
+#[test]
+fn zoom_reset_while_editing_returns_more_task_units_than_not_editing() {
+    let mut editing_app = test_app_with_overlay();
+    editing_app.update(Message::EditOverlay(0));
+    let editing_task = editing_app.update(Message::ZoomReset);
+
+    let mut selected_app = test_app_with_overlay();
+    selected_app.update(Message::SelectOverlay(0));
+    let selected_task = selected_app.update(Message::ZoomReset);
+
+    assert!(
+        editing_task.units() > selected_task.units(),
+        "ZoomReset while editing should include a focus task alongside the zoom render task"
+    );
+}
+
+#[test]
+fn zoom_fit_width_while_editing_returns_more_task_units_than_not_editing() {
+    let window = iced::Size::new(1000.0, 800.0);
+
+    let mut editing_app = test_app_with_overlay();
+    editing_app
+        .document
+        .as_mut()
+        .unwrap()
+        .page_dimensions
+        .insert(1, (612.0, 792.0));
+    editing_app.window_size = Some(window);
+    editing_app.update(Message::EditOverlay(0));
+    let editing_task = editing_app.update(Message::ZoomFitWidth);
+
+    let mut selected_app = test_app_with_overlay();
+    selected_app
+        .document
+        .as_mut()
+        .unwrap()
+        .page_dimensions
+        .insert(1, (612.0, 792.0));
+    selected_app.window_size = Some(window);
+    selected_app.update(Message::SelectOverlay(0));
+    let selected_task = selected_app.update(Message::ZoomFitWidth);
+
+    assert!(
+        editing_task.units() > selected_task.units(),
+        "ZoomFitWidth while editing should include a focus task alongside the zoom render task"
+    );
+}
+
+#[test]
+fn toggle_sidebar_while_editing_returns_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::ToggleSidebar);
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "ToggleSidebar while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn toggle_sidebar_when_not_editing_returns_no_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+
+    let task = app.update(Message::ToggleSidebar);
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "ToggleSidebar without an active edit must not steal focus, got: {debug}"
+    );
+}
+
+#[test]
+fn page_input_submit_while_editing_returns_more_task_units_than_not_editing() {
+    let mut editing_app = test_app_with_overlay();
+    editing_app.update(Message::EditOverlay(0));
+    editing_app.toolbar.page_input = "1".to_string();
+    let editing_task = editing_app.update(Message::Toolbar(toolbar::Message::PageInputSubmit));
+
+    let mut selected_app = test_app_with_overlay();
+    selected_app.update(Message::SelectOverlay(0));
+    selected_app.toolbar.page_input = "1".to_string();
+    let selected_task = selected_app.update(Message::Toolbar(toolbar::Message::PageInputSubmit));
+
+    assert!(
+        editing_task.units() > selected_task.units(),
+        "PageInputSubmit while editing should include a focus task alongside the scroll task"
+    );
+}
+
+#[test]
+fn next_page_while_editing_returns_more_task_units_than_not_editing() {
+    let mut editing_app = test_app_with_overlay();
+    editing_app.update(Message::EditOverlay(0));
+    let editing_task = editing_app.update(Message::NextPage);
+
+    let mut selected_app = test_app_with_overlay();
+    selected_app.update(Message::SelectOverlay(0));
+    let selected_task = selected_app.update(Message::NextPage);
+
+    assert!(
+        editing_task.units() > selected_task.units(),
+        "NextPage while editing should include a focus task alongside the scroll task"
+    );
+}
+
+#[test]
+fn previous_page_while_editing_returns_more_task_units_than_not_editing() {
+    let mut editing_app = test_app_with_overlay();
+    editing_app.document.as_mut().unwrap().current_page = 2;
+    editing_app.update(Message::EditOverlay(0));
+    let editing_task = editing_app.update(Message::PreviousPage);
+
+    let mut selected_app = test_app_with_overlay();
+    selected_app.document.as_mut().unwrap().current_page = 2;
+    selected_app.update(Message::SelectOverlay(0));
+    let selected_task = selected_app.update(Message::PreviousPage);
+
+    assert!(
+        editing_task.units() > selected_task.units(),
+        "PreviousPage while editing should include a focus task alongside the scroll task"
+    );
+}
+
+#[test]
+fn save_with_existing_path_while_editing_returns_focus_task() {
+    let mut app = test_app_with_document();
+    let tmp_source = make_temp_pdf();
+    let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+    let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
+    app.document.as_mut().unwrap().save_path = Some(tmp_dest.path().to_path_buf());
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    assert!(app.canvas.editing);
+
+    let task = app.update(Message::Save);
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "Save while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn save_when_not_editing_returns_no_focus_task() {
+    let mut app = test_app_with_document();
+    let tmp_source = make_temp_pdf();
+    let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+    let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
+    app.document.as_mut().unwrap().save_path = Some(tmp_dest.path().to_path_buf());
+
+    let task = app.update(Message::Save);
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "Save without an active edit must not steal focus, got: {debug}"
+    );
+}
+
+#[test]
+fn save_destination_chosen_while_editing_returns_focus_task() {
+    let mut app = test_app_with_document();
+    let tmp_source = make_temp_pdf();
+    let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    assert!(app.canvas.editing);
+    let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
+
+    let task = app.update(Message::SaveDestinationChosen(
+        tmp_dest.path().to_path_buf(),
+    ));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "SaveDestinationChosen while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn save_destination_chosen_when_not_editing_returns_no_focus_task() {
+    let mut app = test_app_with_document();
+    let tmp_source = make_temp_pdf();
+    let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+    let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
+
+    let task = app.update(Message::SaveDestinationChosen(
+        tmp_dest.path().to_path_buf(),
+    ));
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "SaveDestinationChosen without an active edit must not steal focus, got: {debug}"
+    );
+}
+
+#[test]
+fn dialog_dismissed_while_editing_returns_focus_task() {
+    // Canceling the Open or Save As file dialog (no path chosen) must not
+    // strand the floating overlay editor unfocused, same as every other
+    // toolbar interaction that doesn't end the edit.
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::DialogDismissed);
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "DialogDismissed while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn dialog_dismissed_when_not_editing_returns_no_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+
+    let task = app.update(Message::DialogDismissed);
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "DialogDismissed without an active edit must not steal focus, got: {debug}"
+    );
+}
+
+#[test]
+fn font_size_decrement_while_editing_returns_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "FontSizeDecrement while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn font_size_submit_refocuses_font_size_input_while_editing() {
+    // Same corrective-chain class as FontSizeArrowKeyResult: ChangeFontSize's
+    // shared refocus_editing_widget() step steals focus back to the overlay's
+    // text widget, so a typed size submitted from the font-size field must
+    // chain a corrective refocus back onto that field afterward, or the
+    // user's next keystroke silently lands in the overlay editor instead.
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::EditOverlay(0));
+    app.toolbar.font_size_input = "18".to_string();
+
+    let task = app.update(Message::Toolbar(toolbar::Message::FontSizeSubmit));
+
+    assert_eq!(
+        task.units(),
+        2,
+        "FontSizeSubmit while editing should refocus the font-size input \
+         after ChangeFontSize's editor refocus, so the user's next keystroke \
+         lands in the font-size field, not the overlay editor"
+    );
+}
+
+#[test]
+fn page_input_submit_refocuses_page_input_while_editing() {
+    // Same corrective-chain class: GoToPage's scroll_to_page batches
+    // refocus_editing_widget(), which steals focus back to the overlay's
+    // text widget. A page number submitted from the page-input field must
+    // chain a corrective refocus back onto that field afterward, or the
+    // user's next digits silently corrupt the overlay text instead.
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+    app.toolbar.page_input = "1".to_string();
+
+    let task = app.update(Message::Toolbar(toolbar::Message::PageInputSubmit));
+
+    // scroll_to_page already batches a scroll operation with the editor
+    // refocus (2 units); the corrective refocus onto the page input adds a
+    // third.
+    assert_eq!(
+        task.units(),
+        3,
+        "PageInputSubmit while editing should refocus the page-number input \
+         after GoToPage's editor refocus, so the user's next keystroke lands \
+         in the page field, not the overlay editor"
+    );
+}
+
+// =====================================================================
 // spe-zr9: text_input has matching font size and zero padding
 // =====================================================================
 
