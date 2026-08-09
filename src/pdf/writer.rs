@@ -68,7 +68,7 @@ fn build_font_mapping(
 ) -> FontMapping {
     // Build a map from resource name -> BaseFont for the page's existing fonts.
     // Uses lopdf's get_page_fonts which resolves inherited resources from parent nodes.
-    type FontIdentity = (Vec<u8>, Option<Vec<u8>>);
+    type FontIdentity = (Vec<u8>, Option<Vec<u8>>, Option<FontProgramFingerprint>);
     let existing: HashMap<Vec<u8>, FontIdentity> = doc
         .get_page_fonts(page_id)
         .map(|fonts| {
@@ -80,7 +80,8 @@ fn build_font_mapping(
                             Ok(Object::Name(name)) => Some(name.clone()),
                             _ => None,
                         };
-                        Some((key, (base.clone(), encoding)))
+                        let program = embedded_font_program_fingerprint(doc, fd);
+                        Some((key, (base.clone(), encoding, program)))
                     } else {
                         None
                     }
@@ -101,10 +102,23 @@ fn build_font_mapping(
         // reads bytes the way the overlay writes them; a font left on the
         // default StandardEncoding would show the wrong glyphs for our bytes.
         let wanted_encoding = win_ansi_encoding_for(entry.pdf_name);
+        // A page font can share our BaseFont name yet embed a different font
+        // program (two documents both naming a custom font the same thing).
+        // Standard 14 fonts have no embedded program to diverge, so only
+        // TrueType entries need this check.
+        let wanted_program = match &entry.embedding {
+            PdfEmbedding::TrueType { bytes } => Some(FontProgramFingerprint::of(bytes)),
+            PdfEmbedding::BuiltIn => None,
+        };
         let reuse_name = existing
             .iter()
-            .find(|(_, (base, encoding))| {
-                base.as_slice() == base_font_bytes && encoding.as_deref() == wanted_encoding
+            .find(|(_, (base, encoding, program))| {
+                base.as_slice() == base_font_bytes
+                    && encoding.as_deref() == wanted_encoding
+                    && match &wanted_program {
+                        Some(wanted) => program.as_ref() == Some(wanted),
+                        None => true,
+                    }
             })
             .map(|(key, _)| String::from_utf8_lossy(key).into_owned());
 
@@ -156,6 +170,53 @@ fn win_ansi_encoding_for(pdf_name: &str) -> Option<&'static [u8]> {
         "Symbol" | "ZapfDingbats" => None,
         _ => Some(b"WinAnsiEncoding"),
     }
+}
+
+/// A cheap identity for a TrueType font program: byte length plus an FNV-1a
+/// hash of its contents. Cheaper than comparing the bytes directly (no need
+/// to hold both font programs in memory at once) while still distinguishing
+/// same-length font files, which a length-only check would conflate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FontProgramFingerprint {
+    length: usize,
+    hash: u64,
+}
+
+impl FontProgramFingerprint {
+    fn of(bytes: &[u8]) -> Self {
+        const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x100_0000_01b3;
+        let mut hash = FNV_OFFSET_BASIS;
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        Self {
+            length: bytes.len(),
+            hash,
+        }
+    }
+}
+
+/// The identity of the TrueType font program a page font dictionary embeds,
+/// or `None` when it has no `FontFile2` to check (a Standard 14 font, or a
+/// TrueType font PDF spec allows without an embedded program).
+fn embedded_font_program_fingerprint(
+    doc: &Document,
+    font_dict: &lopdf::Dictionary,
+) -> Option<FontProgramFingerprint> {
+    let descriptor = match font_dict.get(b"FontDescriptor").ok()? {
+        Object::Reference(id) => doc.get_dictionary(*id).ok()?,
+        Object::Dictionary(dict) => dict,
+        _ => return None,
+    };
+    let font_file = match descriptor.get(b"FontFile2").ok()? {
+        Object::Reference(id) => doc.get_object(*id).ok()?.as_stream().ok()?,
+        Object::Stream(stream) => stream,
+        _ => return None,
+    };
+    let content = font_file.decompressed_content().ok()?;
+    Some(FontProgramFingerprint::of(&content))
 }
 
 /// Create a TrueType font object with embedded font program and descriptor.
@@ -1628,6 +1689,86 @@ mod tests {
         assert_eq!(
             helvetica_count, 2,
             "the overlay needs its own WinAnsi-encoded Helvetica alongside the page's"
+        );
+    }
+
+    /// A page font can share our BaseFont name and WinAnsiEncoding yet embed a
+    /// completely different font program — e.g. two documents both naming a
+    /// custom font "UnitTestTT" but shipping different TrueType files.
+    /// Reusing that resource would show our overlay text in the wrong glyphs
+    /// (or a font with none of the glyphs we need). The reuse predicate must
+    /// check the embedded font program's identity, not just its name (spe-adl).
+    #[test]
+    fn write_overlays_does_not_reuse_a_same_named_font_with_a_different_program() {
+        use crate::fonts::{FontEntry, FontId, FontRegistry, PdfEmbedding, WidthTable};
+        use crate::overlay::{PdfPosition, TextOverlay};
+
+        static FONT_A: &[u8] = include_bytes!("../../assets/icons/phosphor-subset.ttf");
+        static FONT_B: &[u8] = include_bytes!("../../assets/fonts/dancing-script.ttf");
+
+        let font_entry = |bytes: &'static [u8]| FontEntry {
+            id: FontId::default(),
+            display_name: "UnitTestTT",
+            pdf_name: "UnitTestTT",
+            iced_font: iced::Font::DEFAULT,
+            embedding: PdfEmbedding::TrueType { bytes },
+            widths: WidthTable::Monospaced(600.0),
+            descriptor: None,
+        };
+
+        // Write once with FONT_A to produce a document whose page already
+        // embeds a "UnitTestTT" font backed by FONT_A's bytes.
+        let mut registry_a = FontRegistry::new();
+        let font_a = registry_a.add_entry(font_entry(FONT_A));
+        let plain = NamedTempFile::new().expect("temp file");
+        create_test_pdf(plain.path());
+        let with_font_a = NamedTempFile::new().expect("temp file");
+        write_overlays(
+            plain.path(),
+            with_font_a.path(),
+            &[TextOverlay {
+                page: 1,
+                position: PdfPosition { x: 72.0, y: 720.0 },
+                text: "Hello".to_string(),
+                font: font_a,
+                font_size: 12.0,
+                width: None,
+            }],
+            &registry_a,
+        )
+        .expect("first write failed");
+
+        // Now write an overlay needing "UnitTestTT" backed by FONT_B's
+        // (different) bytes onto that same document.
+        let mut registry_b = FontRegistry::new();
+        let font_b = registry_b.add_entry(font_entry(FONT_B));
+        let with_font_b = NamedTempFile::new().expect("temp file");
+        write_overlays(
+            with_font_a.path(),
+            with_font_b.path(),
+            &[TextOverlay {
+                page: 1,
+                position: PdfPosition { x: 72.0, y: 700.0 },
+                text: "World".to_string(),
+                font: font_b,
+                font_size: 12.0,
+                width: None,
+            }],
+            &registry_b,
+        )
+        .expect("second write failed");
+
+        let doc = Document::load(with_font_b.path()).expect("load failed");
+        let &page_id = doc.get_pages().get(&1).expect("page 1");
+
+        let unit_test_tt_count = collect_page_font_names(&doc, page_id)
+            .iter()
+            .filter(|n| n.as_str() == "UnitTestTT")
+            .count();
+        assert_eq!(
+            unit_test_tt_count, 2,
+            "a same-named font with a different program must not be reused; \
+             the overlay needs its own FONT_B-backed resource alongside FONT_A's"
         );
     }
 
