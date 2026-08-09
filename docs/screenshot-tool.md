@@ -21,7 +21,7 @@ Quick install: `sudo pacman -S cage grim socat`
 scripts/screenshot.sh start
 
 # Load a PDF and wait for it to render
-scripts/screenshot.sh send '{"cmd": "open", "path": "tests/fixtures/two-page.pdf"}'
+scripts/screenshot.sh send '{"cmd": "open", "path": "tests/fixtures/single-page.pdf"}'
 scripts/screenshot.sh send '{"cmd": "wait_ready"}'
 
 # Drive the UI
@@ -49,6 +49,12 @@ scripts/screenshot.sh stop
 | `capture [path]` | Screenshot with grim (default: `screenshots/latest.png`) |
 
 The `screenshots/` directory is gitignored — screenshots are ephemeral development artifacts.
+
+### Parallel Instances
+
+Each invocation is isolated by an instance key so multiple worktrees (e.g. parallel agents) can run the harness at the same time without stealing each other's IPC socket, pidfile, or Wayland display. The key defaults to a short hash of the project directory, so running the script from a given checkout is stable and requires no setup — running `start` and `stop` from the same worktree always target the same instance. Set `SPE_SCREENSHOT_INSTANCE` to override the key explicitly (e.g. to run two instances from the same checkout).
+
+All per-instance state lives under `$XDG_RUNTIME_DIR/spe-screenshot-<instance>/` (or `/tmp/spe-screenshot-<instance>/` if `XDG_RUNTIME_DIR` is unset), and is removed on `stop`.
 
 ## The `--ipc` Flag
 
