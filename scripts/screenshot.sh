@@ -13,6 +13,17 @@ SCREENSHOT_DIR="$PROJECT_DIR/screenshots"
 # a 108-byte limit, so the key must stay short regardless of how long the
 # worktree path is.
 INSTANCE_ID="${SPE_SCREENSHOT_INSTANCE:-$(printf '%s' "$PROJECT_DIR" | sha256sum | cut -c1-8)}"
+
+# Guard against a malicious or malformed SPE_SCREENSHOT_INSTANCE: it is
+# spliced into RUNTIME_DIR below, which gets rm -rf'd on every start and
+# stop. A value like '../../some-dir' would otherwise escape the
+# spe-screenshot-<instance> subtree. The length bound also keeps the socket
+# path under the 108-byte AF_UNIX limit.
+if [[ ! "$INSTANCE_ID" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
+    echo "Invalid SPE_SCREENSHOT_INSTANCE (want 1-32 chars of [A-Za-z0-9_-])" >&2
+    exit 1
+fi
+
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/spe-screenshot-$INSTANCE_ID"
 SOCKET_PATH="$RUNTIME_DIR/spe-ipc.sock"
 PIDFILE="$RUNTIME_DIR/harness.pid"
@@ -23,6 +34,7 @@ check_deps() {
     command -v cage >/dev/null 2>&1 || missing+=(cage)
     command -v grim >/dev/null 2>&1 || missing+=(grim)
     command -v socat >/dev/null 2>&1 || missing+=(socat)
+    command -v sha256sum >/dev/null 2>&1 || missing+=(sha256sum)
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo "Missing dependencies: ${missing[*]}"
         echo "Install with: sudo pacman -S ${missing[*]}"
