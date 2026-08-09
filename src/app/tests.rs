@@ -1093,6 +1093,33 @@ fn view_with_toast_does_not_panic() {
     let _element = app.view();
 }
 
+#[test]
+fn toast_renders_below_toolbar_and_above_content() {
+    let (mut app, _) = App::new(false);
+    app.status_message = Some(("Saved to foo.pdf".to_string(), std::time::Instant::now()));
+
+    let mut simulator = iced_test::Simulator::new(app.view());
+    let toast_bounds = simulator
+        .find("Saved to foo.pdf")
+        .expect("toast text should be present in the view")
+        .bounds();
+    let content_bounds = simulator
+        .find("Open a PDF to get started")
+        .expect("placeholder content text should be present in the view")
+        .bounds();
+
+    assert!(
+        toast_bounds.height > 0.0,
+        "toast must occupy nonzero height, got {toast_bounds:?}"
+    );
+    assert!(
+        toast_bounds.y < content_bounds.y,
+        "toast (y={}) must render above the content area (y={})",
+        toast_bounds.y,
+        content_bounds.y
+    );
+}
+
 // --- Floating text input (spe-vnm.3.1) ---
 
 #[test]

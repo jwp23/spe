@@ -113,7 +113,9 @@ impl App {
             iced::widget::center(iced::widget::text("Open a PDF to get started").size(20)).into()
         };
 
-        let mut main_column = iced::widget::column![toolbar];
+        let mut main_column = iced::widget::column![toolbar]
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill);
 
         if let Some((msg, _)) = &self.status_message {
             let toast = iced::widget::container(iced::widget::text(msg.as_str()).size(14))
