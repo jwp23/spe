@@ -14,6 +14,6 @@ Key modules in `src/`:
 | `overlay.rs` | Text overlay data model (position, font, text, width) |
 | `coordinate.rs` | Screen-to-PDF coordinate conversion, AFM font width tables |
 | `ipc.rs` | IPC protocol for the screenshot development tool |
-| `command.rs` | Undo/redo command pattern |
+| `command.rs` | Undo/redo command pattern, plus the finer-grained history of an open edit session |
 
 Tests live in `tests/` (integration/E2E) and co-located `#[cfg(test)]` modules (unit). See `docs/decisions/project-directory-structure.md`.
