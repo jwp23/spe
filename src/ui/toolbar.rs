@@ -31,12 +31,31 @@ pub fn font_options(registry: &FontRegistry) -> Vec<FontOption> {
         .collect()
 }
 
+/// Amount the size stepper buttons/keys change the font size per press.
+const FONT_SIZE_STEP: f32 = 1.0;
+/// Smallest font size the stepper will produce (matches the `> 0.0` bound
+/// enforced when a typed value is submitted).
+const MIN_FONT_SIZE: f32 = 1.0;
+
+/// Step the font size up by one increment.
+pub fn increment_font_size(current: f32) -> f32 {
+    current + FONT_SIZE_STEP
+}
+
+/// Step the font size down by one increment, floored at [`MIN_FONT_SIZE`].
+pub fn decrement_font_size(current: f32) -> f32 {
+    (current - FONT_SIZE_STEP).max(MIN_FONT_SIZE)
+}
+
 /// Persistent state for the toolbar that must survive between view calls.
 pub struct ToolbarState {
     pub font: FontId,
     pub font_size: f32,
     pub font_size_input: String,
     pub page_input: String,
+    /// Stable ID for the font-size text_input, used to query its focus
+    /// state when handling ArrowUp/ArrowDown key presses.
+    pub font_size_input_id: iced::widget::Id,
 }
 
 impl ToolbarState {
@@ -46,6 +65,7 @@ impl ToolbarState {
             font_size: 12.0,
             font_size_input: "12".to_string(),
             page_input: "1".to_string(),
+            font_size_input_id: iced::widget::Id::unique(),
         }
     }
 }
@@ -61,6 +81,8 @@ pub enum Message {
     FontSelected(FontOption),
     FontSizeInput(String),
     FontSizeSubmit,
+    FontSizeIncrement,
+    FontSizeDecrement,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -133,15 +155,27 @@ pub fn toolbar_view<'a>(
 
         let size_input: iced::Element<'a, Message> = if has_document {
             text_input("size", &state.font_size_input)
+                .id(state.font_size_input_id.clone())
                 .on_input(Message::FontSizeInput)
                 .on_submit(Message::FontSizeSubmit)
-                .width(48)
+                .width(40)
                 .into()
         } else {
-            text_input("size", &state.font_size_input).width(48).into()
+            text_input("size", &state.font_size_input)
+                .id(state.font_size_input_id.clone())
+                .width(40)
+                .into()
         };
 
-        row![font_pick, size_input].spacing(4)
+        let size_stepper = row![
+            spinner_button('-', Message::FontSizeDecrement, has_document),
+            size_input,
+            spinner_button('+', Message::FontSizeIncrement, has_document),
+        ]
+        .spacing(2)
+        .align_y(iced::Alignment::Center);
+
+        row![font_pick, size_stepper].spacing(4)
     };
 
     let zoom_group = row![
@@ -214,6 +248,20 @@ fn icon_button(icon: char, message: Message, enabled: bool) -> iced::Element<'st
     }
 }
 
+/// A small `+`/`-` button flanking the font size input. Uses a plain glyph
+/// (not the Phosphor icon font) because regenerating the icon subset
+/// requires the original Phosphor.ttf, which isn't available in this repo
+/// (see README.md's "Phosphor Icon Font" section for the regen process).
+fn spinner_button(glyph: char, message: Message, enabled: bool) -> iced::Element<'static, Message> {
+    let label = text(glyph).size(14);
+    let btn = button(label).padding([0, 6]);
+    if enabled {
+        btn.on_press(message).into()
+    } else {
+        btn.into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,10 +307,28 @@ mod tests {
         };
         let _ = Message::FontSelected(opt);
         let _ = Message::FontSizeInput("14".to_string());
+        let _ = Message::FontSizeIncrement;
+        let _ = Message::FontSizeDecrement;
         let _ = Message::ZoomIn;
         let _ = Message::PreviousPage;
         let _ = Message::PageInput("5".to_string());
         let _ = Message::ToggleSidebar;
         let _ = Message::DeleteOverlay;
+    }
+
+    #[test]
+    fn increment_font_size_steps_up_by_one_point() {
+        assert!((increment_font_size(12.0) - 13.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn decrement_font_size_steps_down_by_one_point() {
+        assert!((decrement_font_size(12.0) - 11.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn decrement_font_size_floors_at_minimum() {
+        assert!((decrement_font_size(1.0) - MIN_FONT_SIZE).abs() < f32::EPSILON);
+        assert!((decrement_font_size(0.5) - MIN_FONT_SIZE).abs() < f32::EPSILON);
     }
 }

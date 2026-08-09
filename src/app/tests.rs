@@ -1539,6 +1539,167 @@ fn undo_font_size_change_syncs_toolbar_to_active_overlay() {
 }
 
 #[test]
+fn clicking_font_size_increment_button_steps_up_the_overlay_size() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::ChangeFontSize(12.0));
+
+    let mut simulator = iced_test::Simulator::new(app.view());
+    simulator
+        .click("+")
+        .expect("font size increment button should be present in the toolbar");
+    for message in simulator.into_messages() {
+        app.update(message);
+    }
+
+    assert!((app.toolbar.font_size - 13.0).abs() < f32::EPSILON);
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 13.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn clicking_font_size_decrement_button_steps_down_the_overlay_size() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::ChangeFontSize(12.0));
+
+    let mut simulator = iced_test::Simulator::new(app.view());
+    simulator
+        .click("-")
+        .expect("font size decrement button should be present in the toolbar");
+    for message in simulator.into_messages() {
+        app.update(message);
+    }
+
+    assert!((app.toolbar.font_size - 11.0).abs() < f32::EPSILON);
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 11.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_increment_toolbar_message_steps_up_and_updates_overlay() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::ChangeFontSize(12.0));
+
+    app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
+
+    assert!((app.toolbar.font_size - 13.0).abs() < f32::EPSILON);
+    assert_eq!(app.toolbar.font_size_input, "13");
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 13.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_decrement_toolbar_message_steps_down_and_updates_overlay() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::ChangeFontSize(12.0));
+
+    app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
+
+    assert!((app.toolbar.font_size - 11.0).abs() < f32::EPSILON);
+    assert_eq!(app.toolbar.font_size_input, "11");
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 11.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_decrement_toolbar_message_floors_at_minimum() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::ChangeFontSize(1.0));
+
+    app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
+
+    assert!((app.toolbar.font_size - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_increment_is_undoable() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::ChangeFontSize(12.0));
+
+    app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
+    app.update(Message::Undo);
+
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 12.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_increment_while_editing_returns_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "FontSizeIncrement while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn arrow_up_maps_to_font_size_arrow_pressed_increment() {
+    let msg = key_to_message(
+        keyboard::Key::Named(keyboard::key::Named::ArrowUp),
+        keyboard::Modifiers::empty(),
+    );
+    assert!(matches!(msg, Some(Message::FontSizeArrowPressed(true))));
+}
+
+#[test]
+fn arrow_down_maps_to_font_size_arrow_pressed_decrement() {
+    let msg = key_to_message(
+        keyboard::Key::Named(keyboard::key::Named::ArrowDown),
+        keyboard::Modifiers::empty(),
+    );
+    assert!(matches!(msg, Some(Message::FontSizeArrowPressed(false))));
+}
+
+#[test]
+fn font_size_arrow_pressed_returns_a_focus_query_task() {
+    let (mut app, _) = App::new(false);
+
+    let task = app.update(Message::FontSizeArrowPressed(true));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "FontSizeArrowPressed should query focus via a widget operation Task, got: {debug}"
+    );
+}
+
+#[test]
+fn font_size_arrow_key_result_increments_when_focused() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::ChangeFontSize(12.0));
+
+    app.update(Message::FontSizeArrowKeyResult(true));
+
+    assert!((app.toolbar.font_size - 13.0).abs() < f32::EPSILON);
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 13.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_arrow_key_result_decrements_when_focused() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::ChangeFontSize(12.0));
+
+    app.update(Message::FontSizeArrowKeyResult(false));
+
+    assert!((app.toolbar.font_size - 11.0).abs() < f32::EPSILON);
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 11.0).abs() < f32::EPSILON);
+}
+
+#[test]
 fn redo_font_change_syncs_toolbar_to_active_overlay() {
     let mut app = test_app_with_document();
     app.update(Message::PlaceOverlay {

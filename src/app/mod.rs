@@ -115,6 +115,14 @@ pub enum Message {
     MoveOverlay(usize, PdfPosition),
     ChangeFont(FontId),
     ChangeFontSize(f32),
+    /// An ArrowUp (`true`) or ArrowDown (`false`) key was pressed. Only
+    /// affects the font size when the toolbar's font-size input is
+    /// focused, so this queries that focus state before acting.
+    FontSizeArrowPressed(bool),
+    /// The focus query from [`Message::FontSizeArrowPressed`] resolved with
+    /// the font-size input focused: step the size up (`true`) or down
+    /// (`false`).
+    FontSizeArrowKeyResult(bool),
     DeleteOverlay,
     SelectOverlay(usize),
     EditOverlay(usize),
@@ -334,6 +342,12 @@ impl App {
             } => self.handle_resize_overlay(index, old_width, new_width),
             Message::ChangeFont(font) => return self.handle_change_font(font),
             Message::ChangeFontSize(size) => return self.handle_change_font_size(size),
+            Message::FontSizeArrowPressed(increment) => {
+                return self.handle_font_size_arrow_pressed(increment);
+            }
+            Message::FontSizeArrowKeyResult(increment) => {
+                return self.handle_font_size_arrow_key_result(increment);
+            }
             Message::DeleteOverlay => return self.handle_delete_overlay(),
             Message::SelectOverlay(index) => return self.handle_select_overlay(index),
             Message::EditOverlay(index) => return self.handle_edit_overlay(index),
@@ -552,6 +566,8 @@ fn key_to_message(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<
             (Named::PageUp, false, false) => Some(Message::PreviousPage),
             (Named::PageDown, false, false) => Some(Message::NextPage),
             (Named::F9, false, false) => Some(Message::ToggleSidebar),
+            (Named::ArrowUp, false, false) => Some(Message::FontSizeArrowPressed(true)),
+            (Named::ArrowDown, false, false) => Some(Message::FontSizeArrowPressed(false)),
             _ => None,
         },
         keyboard::Key::Character(ref c) => {

@@ -229,6 +229,42 @@ impl App {
         self.refocus_editing_widget()
     }
 
+    /// An ArrowUp/ArrowDown key was pressed. Iced's `text_input` doesn't
+    /// expose a key-press callback or a way to read its focus state
+    /// synchronously, so this dispatches a widget operation (`is_focused`)
+    /// to ask the runtime whether the font-size input currently has focus;
+    /// the result comes back as [`Message::FontSizeArrowKeyResult`].
+    pub(super) fn handle_font_size_arrow_pressed(
+        &mut self,
+        increment: bool,
+    ) -> iced::Task<Message> {
+        iced::widget::operation::is_focused(self.toolbar.font_size_input_id.clone()).map(
+            move |focused| {
+                if focused {
+                    Message::FontSizeArrowKeyResult(increment)
+                } else {
+                    Message::Noop
+                }
+            },
+        )
+    }
+
+    /// The font-size input was confirmed focused when the arrow key was
+    /// pressed: step the size through the same clamped path the stepper
+    /// buttons use, then flow through `ChangeFontSize` like every other
+    /// font-size change.
+    pub(super) fn handle_font_size_arrow_key_result(
+        &mut self,
+        increment: bool,
+    ) -> iced::Task<Message> {
+        let size = if increment {
+            toolbar::increment_font_size(self.toolbar.font_size)
+        } else {
+            toolbar::decrement_font_size(self.toolbar.font_size)
+        };
+        self.update(Message::ChangeFontSize(size))
+    }
+
     /// Return keyboard focus to the floating text widget while an overlay is
     /// being edited. Clicking a toolbar control unfocuses the floating widget,
     /// so typing must be handed back once the toolbar interaction completes.
@@ -464,6 +500,14 @@ impl App {
                 {
                     return self.update(Message::ChangeFontSize(size));
                 }
+            }
+            toolbar::Message::FontSizeIncrement => {
+                let size = toolbar::increment_font_size(self.toolbar.font_size);
+                return self.update(Message::ChangeFontSize(size));
+            }
+            toolbar::Message::FontSizeDecrement => {
+                let size = toolbar::decrement_font_size(self.toolbar.font_size);
+                return self.update(Message::ChangeFontSize(size));
             }
             toolbar::Message::ZoomIn => return self.update(Message::ZoomIn),
             toolbar::Message::ZoomOut => return self.update(Message::ZoomOut),
