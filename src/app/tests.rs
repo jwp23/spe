@@ -1107,10 +1107,20 @@ fn toast_renders_below_toolbar_and_above_content() {
         .find("Open a PDF to get started")
         .expect("placeholder content text should be present in the view")
         .bounds();
+    let toolbar_bounds = simulator
+        .find("100%")
+        .expect("zoom label in the toolbar should be present in the view")
+        .bounds();
 
     assert!(
         toast_bounds.height > 0.0,
         "toast must occupy nonzero height, got {toast_bounds:?}"
+    );
+    assert!(
+        toast_bounds.y >= toolbar_bounds.y + toolbar_bounds.height,
+        "toast (y={}) must render below the toolbar (bottom={})",
+        toast_bounds.y,
+        toolbar_bounds.y + toolbar_bounds.height
     );
     assert!(
         toast_bounds.y < content_bounds.y,
