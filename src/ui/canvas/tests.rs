@@ -1989,6 +1989,58 @@ fn text_line_height_ratio_matches_the_canvas_text_default() {
     );
 }
 
+/// Courier 12pt advances 7.2pt per character, so a 72pt-wide box holds ten
+/// characters. This text has no explicit line breaks and cannot fit.
+const WRAPPING_TEXT: &str = "mmmm mmmm mmmm mmmm mmmm mmmm";
+const WRAPPING_BOX_WIDTH: f32 = 72.0;
+
+#[test]
+fn a_text_box_spans_the_lines_its_text_wraps_onto() {
+    // spe-0hl: the box counted `\n`s, so text that wrapped inside the box the
+    // user drew was framed as if it were a single line.
+    let overlay = multiline_overlay_at(72.0, 720.0, WRAPPING_BOX_WIDTH, WRAPPING_TEXT);
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        rect.height >= 3.0 * LINE_12PT,
+        "{WRAPPING_TEXT:?} wraps onto at least 3 lines in a {WRAPPING_BOX_WIDTH}pt box, \
+         but the box is {} tall (one line is {LINE_12PT})",
+        rect.height
+    );
+}
+
+#[test]
+fn the_resize_handle_reaches_the_last_wrapped_line() {
+    // spe-0hl: the handle spans the text box's right edge, so it only reaches
+    // every wrapped line once the box itself does.
+    let overlays = vec![multiline_overlay_at(
+        72.0,
+        720.0,
+        WRAPPING_BOX_WIDTH,
+        WRAPPING_TEXT,
+    )];
+    let dims = test_page_dimensions();
+    let registry = FontRegistry::new();
+    let program = OverlayCanvasProgram {
+        active_overlay: Some(0),
+        ..test_program(&overlays, &dims, &registry)
+    };
+    // Baseline is screen (266, 80), so the box starts at y = 68 and the third
+    // wrapped line runs from 96.8 to 111.2.
+    let mut state = ProgramState::default();
+    let cursor = cursor_at(266.0 + WRAPPING_BOX_WIDTH, 68.0 + 2.5 * LINE_12PT);
+
+    program.update(
+        &mut state,
+        &left_press_event(),
+        test_canvas_bounds(),
+        cursor,
+    );
+    assert!(
+        state.resize_drag.is_some(),
+        "pressing beside the last wrapped line should start a resize"
+    );
+}
+
 #[test]
 fn empty_overlay_text_box_is_one_line_tall() {
     let overlay = multiline_overlay_at(72.0, 720.0, 150.0, "");

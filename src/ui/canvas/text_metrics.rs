@@ -28,6 +28,17 @@ const MAX_CACHED_STRINGS: usize = 4096;
 static WIDTHS: LazyLock<RwLock<HashMap<(FontId, String), f32>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
+/// Number of lines a string breaks into, keyed by the font, the string, and
+/// the wrap ratio. The ratio rather than the width because a box twice as wide
+/// holding text twice as large breaks in the same places, so one entry serves
+/// every zoom level. `f32` has no `Hash`, so the ratio is keyed by its bits —
+/// exact equality is what a cache key wants anyway.
+static LINE_COUNTS: LazyLock<RwLock<HashMap<LineCountKey, usize>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Font, string, and wrap ratio bits — see [`LINE_COUNTS`].
+type LineCountKey = (FontId, String, u32);
+
 /// Width in screen pixels of `text` drawn on the canvas at `font_size`.
 pub(crate) fn canvas_text_width(
     text: &str,
@@ -54,29 +65,60 @@ pub(crate) fn canvas_text_width(
     per_point * font_size
 }
 
+/// Number of lines `text` breaks into when drawn in a box `wrap_ratio` times
+/// the font size wide.
+///
+/// The count, not the height, because the caller already knows the line height
+/// it lays out on and multiplying is exact where dividing a shaped height back
+/// out is not.
+pub(crate) fn canvas_line_count(
+    text: &str,
+    font: FontId,
+    wrap_ratio: f32,
+    registry: &FontRegistry,
+) -> usize {
+    let key = (font, text.to_string(), wrap_ratio.to_bits());
+    if let Some(count) = LINE_COUNTS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+    {
+        return *count;
+    }
+
+    let count = shaped_line_count(
+        text,
+        registry.get(font).iced_font,
+        REFERENCE_SIZE,
+        wrap_ratio * REFERENCE_SIZE,
+    );
+    insert_bounded(
+        &mut LINE_COUNTS.write().unwrap_or_else(|e| e.into_inner()),
+        key,
+        count,
+    );
+    count
+}
+
 /// Record a measurement, starting the cache over once it reaches its bound.
 /// Dropping everything is enough: the strings still on screen are re-measured
 /// on the next draw, and no eviction order is worth tracking for a cache this
 /// cheap to refill.
-fn insert_bounded(
-    cache: &mut HashMap<(FontId, String), f32>,
-    key: (FontId, String),
-    per_point: f32,
-) {
+fn insert_bounded<K: Eq + std::hash::Hash, V>(cache: &mut HashMap<K, V>, key: K, value: V) {
     if cache.len() >= MAX_CACHED_STRINGS {
         cache.clear();
     }
-    cache.insert(key, per_point);
+    cache.insert(key, value);
 }
 
-/// Shape `text` at `size` and return its width.
+/// Shape `text` at `size` inside a box `max_width` wide.
 ///
 /// The paragraph mirrors the one `canvas::Text` lays out when it draws, so the
 /// measurement describes the glyphs that actually reach the screen.
-fn shaped_width(text: &str, font: iced::Font, size: f32) -> f32 {
+fn shaped(text: &str, font: iced::Font, size: f32, max_width: f32) -> Paragraph {
     Paragraph::with_text(Text {
         content: text,
-        bounds: iced::Size::new(f32::INFINITY, f32::INFINITY),
+        bounds: iced::Size::new(max_width, f32::INFINITY),
         size: iced::Pixels(size),
         line_height: super::TEXT_LINE_HEIGHT,
         font,
@@ -85,8 +127,23 @@ fn shaped_width(text: &str, font: iced::Font, size: f32) -> f32 {
         shaping: iced::advanced::text::Shaping::default(),
         wrapping: iced::advanced::text::Wrapping::default(),
     })
-    .min_bounds()
-    .width
+}
+
+/// Shape `text` at `size` unconstrained and return its width.
+fn shaped_width(text: &str, font: iced::Font, size: f32) -> f32 {
+    shaped(text, font, size, f32::INFINITY).min_bounds().width
+}
+
+/// Shape `text` at `size` in a box `max_width` wide and return how many lines
+/// it laid out on, counting both wraps and explicit line breaks.
+///
+/// The shaped height divided by the line height is the line count, because the
+/// paragraph lays every line out on the same `TEXT_LINE_HEIGHT`. Empty text
+/// shapes to nothing but still shows a caret on one line, hence the floor.
+fn shaped_line_count(text: &str, font: iced::Font, size: f32, max_width: f32) -> usize {
+    let height = shaped(text, font, size, max_width).min_bounds().height;
+    let line_height = size * super::TEXT_LINE_HEIGHT_RATIO;
+    ((height / line_height).round() as usize).max(1)
 }
 
 #[cfg(test)]
@@ -175,6 +232,69 @@ mod tests {
             1,
             "reaching the bound should clear the cache and keep only the new entry"
         );
+    }
+
+    #[test]
+    fn empty_text_still_occupies_one_line() {
+        let registry = registry();
+        assert_eq!(
+            canvas_line_count("", registry.default_font(), 10.0, &registry),
+            1
+        );
+    }
+
+    #[test]
+    fn text_that_fits_the_wrap_width_occupies_one_line() {
+        let registry = registry();
+        let font = registry.find_by_name("Courier").unwrap();
+        assert_eq!(
+            canvas_line_count("mmmm mmmm mmmm mmmm", font, 100.0, &registry),
+            1
+        );
+    }
+
+    #[test]
+    fn text_wider_than_the_wrap_width_occupies_several_lines() {
+        // The same string the previous test fits on one line, given a box a
+        // few characters wide, has to break across lines.
+        let registry = registry();
+        let font = registry.find_by_name("Courier").unwrap();
+        let lines = canvas_line_count("mmmm mmmm mmmm mmmm", font, 6.0, &registry);
+        assert!(lines > 1, "expected wrapping, got {lines} line(s)");
+    }
+
+    #[test]
+    fn a_narrower_box_wraps_the_same_text_onto_more_lines() {
+        let registry = registry();
+        let font = registry.find_by_name("Courier").unwrap();
+        let text = "mmmm mmmm mmmm mmmm mmmm mmmm";
+        let wide = canvas_line_count(text, font, 12.0, &registry);
+        let narrow = canvas_line_count(text, font, 6.0, &registry);
+        assert!(narrow > wide, "{narrow} should exceed {wide}");
+    }
+
+    #[test]
+    fn explicit_line_breaks_each_start_a_line() {
+        let registry = registry();
+        let font = registry.find_by_name("Courier").unwrap();
+        assert_eq!(canvas_line_count("a\nb\nc", font, 100.0, &registry), 3);
+    }
+
+    #[test]
+    fn the_wrap_ratio_describes_line_breaking_at_every_size() {
+        // The count is cached per ratio rather than per (width, size) pair,
+        // which is only sound because a box twice as wide holding text twice
+        // as large breaks in the same places. Compared against the engine
+        // shaping each size directly, not against another cache read.
+        let registry = registry();
+        let font = registry.find_by_name("Courier").unwrap();
+        let text = "mmmm mmmm mmmm mmmm mmmm";
+        let ratio = 8.0;
+        let expected = canvas_line_count(text, font, ratio, &registry);
+        for size in [8.0_f32, 24.0, 72.0] {
+            let shaped = shaped_line_count(text, registry.get(font).iced_font, size, ratio * size);
+            assert_eq!(shaped, expected, "line breaking drifted at {size}pt");
+        }
     }
 
     #[test]

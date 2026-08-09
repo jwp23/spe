@@ -11,7 +11,7 @@ pub use overlays::*;
 pub use pages::*;
 pub use zoom::*;
 
-pub(crate) use text_metrics::canvas_text_width;
+pub(crate) use text_metrics::{canvas_line_count, canvas_text_width};
 
 use iced::widget::canvas;
 
@@ -266,6 +266,11 @@ pub(crate) fn tint_alpha(hovered: bool) -> f32 {
 /// the user dragged; single-line overlays are as wide as the canvas actually
 /// shapes their text — the PDF's own width tables describe a different face
 /// and leave trailing glyphs outside the box (spe-x2z).
+///
+/// A multi-line overlay's text wraps inside that width, so its lines are
+/// counted by the text engine rather than by counting `\n`s: text the user
+/// never broke still lays out on several lines, and a box that missed them
+/// framed only the first (spe-0hl).
 pub(crate) fn overlay_text_box(
     overlay: &TextOverlay,
     screen_x: f32,
@@ -274,16 +279,37 @@ pub(crate) fn overlay_text_box(
     registry: &FontRegistry,
 ) -> iced::Rectangle {
     let scaled_font_size = overlay.font_size * scale;
-    let width = match overlay.width {
-        Some(width_pts) => width_pts * scale,
-        None => canvas_text_width(&overlay.text, overlay.font, scaled_font_size, registry),
+    let (width, line_count) = match overlay.width {
+        Some(width_pts) => (
+            width_pts * scale,
+            canvas_line_count(
+                &overlay.text,
+                overlay.font,
+                wrap_ratio(width_pts, overlay.font_size),
+                registry,
+            ),
+        ),
+        None => (
+            canvas_text_width(&overlay.text, overlay.font, scaled_font_size, registry),
+            overlay.text.lines().count().max(1),
+        ),
     };
-    let line_count = overlay.text.lines().count().max(1) as f32;
     iced::Rectangle {
         x: screen_x,
         y: text_top(screen_y, scaled_font_size),
         width,
-        height: line_count * scaled_font_size * TEXT_LINE_HEIGHT_RATIO,
+        height: line_count as f32 * scaled_font_size * TEXT_LINE_HEIGHT_RATIO,
+    }
+}
+
+/// A wrap width expressed in font sizes, which is what decides where lines
+/// break. A degenerate font size would make the ratio meaningless, so it
+/// reports a box too narrow to hold anything rather than a NaN.
+fn wrap_ratio(width_pts: f32, font_size: f32) -> f32 {
+    if font_size > 0.0 {
+        width_pts / font_size
+    } else {
+        0.0
     }
 }
 
