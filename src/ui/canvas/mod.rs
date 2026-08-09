@@ -229,6 +229,31 @@ pub(crate) fn overlay_text_box(
     }
 }
 
+/// Whether a PDF-space point falls inside an overlay's rendered text box.
+///
+/// Evaluates [`overlay_text_box`] in an unscaled frame anchored at the
+/// overlay's own baseline (`screen_x = 0`, `screen_y = 0`, `scale = 1`) and
+/// moves the probe into that frame instead of moving the box: PDF y grows
+/// upward while screen y grows downward, so the probe's vertical offset from
+/// the baseline is negated. Because `overlay_text_box` is affine — `scale` a
+/// pure multiplier, the anchor a pure translation — testing here and testing
+/// the screen box against a screen probe are the same inequality multiplied
+/// through by a positive `scale`, half-open bounds included.
+///
+/// Deriving the hit box from the drawing function rather than restating its
+/// geometry is what stops the clickable area drifting away from the tint the
+/// user can see.
+pub(crate) fn overlay_text_box_contains_pdf(
+    overlay: &TextOverlay,
+    pdf_x: f32,
+    pdf_y: f32,
+    registry: &FontRegistry,
+) -> bool {
+    let text_box = overlay_text_box(overlay, 0.0, 0.0, 1.0, registry);
+    let probe = iced::Point::new(pdf_x - overlay.position.x, -(pdf_y - overlay.position.y));
+    text_box.contains(probe)
+}
+
 /// Half-width of the resize handle hit area in screen pixels.
 pub(crate) const RESIZE_HANDLE_HIT_RADIUS: f32 = 4.0;
 

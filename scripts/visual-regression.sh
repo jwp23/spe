@@ -66,6 +66,9 @@ validate_scenario() {
 run_scenario() {
     local name="$1" output="$2"
     validate_scenario "$name"
+    # validate_scenario's copy is local to it, so resolve the function name
+    # here too rather than reaching for a variable that is out of scope.
+    local fn="scenario_$name"
 
     "$SCREENSHOT_SH" start >&2
     trap '"$SCREENSHOT_SH" stop >&2 || true' EXIT

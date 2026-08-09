@@ -561,6 +561,95 @@ fn hit_test_returns_topmost_for_overlapping() {
     assert_eq!(result, Some(1));
 }
 
+// spe-7f1: the screen-space mouse path and the PDF-space automation path must
+// make the same hit-test decision, so `hit_test` is a thin conversion in front
+// of `hit_test_pdf` rather than a second implementation.
+
+#[test]
+fn hit_test_pdf_finds_overlay_at_position() {
+    let registry = FontRegistry::new();
+    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    // Courier at 12pt: "Hello" is 36pt wide and 12pt tall, extending up and
+    // right from the baseline at (72, 720).
+    assert_eq!(hit_test_pdf(80.0, 725.0, &overlays, 1, &registry), Some(0));
+}
+
+#[test]
+fn hit_test_pdf_returns_none_for_miss() {
+    let registry = FontRegistry::new();
+    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    assert!(hit_test_pdf(400.0, 400.0, &overlays, 1, &registry).is_none());
+}
+
+#[test]
+fn hit_test_pdf_returns_topmost_for_overlapping() {
+    let registry = FontRegistry::new();
+    let overlays = vec![
+        overlay_at(72.0, 720.0, "First"),
+        overlay_at(72.0, 720.0, "Second"),
+    ];
+    assert_eq!(hit_test_pdf(80.0, 725.0, &overlays, 1, &registry), Some(1));
+}
+
+#[test]
+fn hit_test_pdf_ignores_overlays_on_other_pages() {
+    let registry = FontRegistry::new();
+    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    assert!(hit_test_pdf(80.0, 725.0, &overlays, 2, &registry).is_none());
+}
+
+#[test]
+fn hit_test_agrees_with_hit_test_pdf_at_every_zoom_and_offset() {
+    let registry = FontRegistry::new();
+    let overlays = vec![
+        overlay_at(72.0, 720.0, "Hello"),
+        overlay_at(200.0, 400.0, "Second overlay"),
+    ];
+    // A grid of PDF points covering both overlays, just inside and just outside
+    // each edge, and empty space.
+    //
+    // Deliberately no point sits exactly on an edge. The hit box is half-open
+    // (`Rectangle::contains` is `x <= p < x + w`), and the screen path reaches
+    // its verdict through a `pdf -> screen -> pdf` round trip that is not
+    // bit-exact: at zoom 2.5/dpi 150 an exact 108.0 comes back as 107.999992,
+    // landing on the other side of the boundary. Any two implementations
+    // related by that round trip disagree within a rounding error of an edge,
+    // so asserting agreement there would be asserting something untrue rather
+    // than catching a real divergence.
+    let probes = [
+        (72.5, 719.5),
+        (80.0, 725.0),
+        (107.5, 731.5),
+        (108.5, 732.5),
+        (110.0, 725.0),
+        (200.5, 400.5),
+        (250.0, 410.0),
+        (400.0, 400.0),
+        (0.0, 0.0),
+    ];
+    for (zoom, dpi, offset_x, offset_y) in [
+        (1.0, 72.0, 0.0, 0.0),
+        (2.5, 150.0, 37.0, 11.0),
+        (0.5, 96.0, -8.0, 4.0),
+    ] {
+        let params = ConversionParams {
+            zoom,
+            dpi,
+            page_height: 792.0,
+            offset_x,
+            offset_y,
+        };
+        for (pdf_x, pdf_y) in probes {
+            let (screen_x, screen_y) = pdf_to_screen(pdf_x, pdf_y, &params);
+            assert_eq!(
+                hit_test(screen_x, screen_y, &overlays, 1, &params, &registry),
+                hit_test_pdf(pdf_x, pdf_y, &overlays, 1, &registry),
+                "paths disagreed at PDF ({pdf_x}, {pdf_y}) with zoom {zoom} dpi {dpi}"
+            );
+        }
+    }
+}
+
 #[test]
 fn hit_test_ignores_overlays_on_other_pages() {
     let params = default_params();

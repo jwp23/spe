@@ -1,6 +1,7 @@
 // IPC protocol: command parsing, command-to-Message translation, subscription.
 
 use std::fmt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,6 +11,7 @@ use serde::Deserialize;
 use crate::app::{DocumentState, Message};
 use crate::fonts::FontRegistry;
 use crate::overlay::PdfPosition;
+use crate::ui::canvas::hit_test_pdf;
 
 /// Errors that can occur when translating an IpcCommand to a Message.
 #[derive(Debug, PartialEq)]
@@ -18,10 +20,20 @@ pub enum IpcError {
     NoDocument,
     /// The overlay index is out of range for the current document.
     IndexOutOfRange,
+    /// The page number is out of range for the current document.
+    PageOutOfRange,
+    /// The command edits the overlay being worked on, but none is active.
+    NoActiveOverlay,
     /// The targeted overlay has no width and cannot be resized.
     NotResizable,
     /// The font name could not be resolved in the registry.
     UnknownFont(String),
+    /// There is no recorded command left to undo.
+    NothingToUndo,
+    /// There is no undone command left to redo.
+    NothingToRedo,
+    /// Redo was asked for while an edit session is open, where it cannot act.
+    RedoWhileEditing,
 }
 
 impl fmt::Display for IpcError {
@@ -29,8 +41,72 @@ impl fmt::Display for IpcError {
         match self {
             IpcError::NoDocument => write!(f, "no document is loaded"),
             IpcError::IndexOutOfRange => write!(f, "overlay index is out of range"),
+            IpcError::PageOutOfRange => write!(f, "page number is out of range"),
+            IpcError::NoActiveOverlay => write!(f, "no overlay is active"),
             IpcError::NotResizable => write!(f, "overlay is not resizable (no width set)"),
             IpcError::UnknownFont(name) => write!(f, "unknown font: {name}"),
+            IpcError::NothingToUndo => write!(f, "nothing to undo"),
+            IpcError::NothingToRedo => write!(f, "nothing to redo"),
+            IpcError::RedoWhileEditing => write!(
+                f,
+                "an edit session is open — commit or deselect first, then redo"
+            ),
+        }
+    }
+}
+
+/// Read-only view of the application state that command translation consults to
+/// check a command's preconditions.
+///
+/// Passing state in as one borrowed struct is what keeps `ipc` decoupled from
+/// `App`: translation can read exactly the state a precondition needs and can
+/// never mutate the application, so preconditions are checked *before* any
+/// message is dispatched rather than reported after the fact.
+#[derive(Default)]
+pub struct CommandContext<'a> {
+    /// The loaded document, if any.
+    pub document: Option<&'a DocumentState>,
+    /// Index of the overlay currently selected or being edited.
+    pub active_overlay: Option<usize>,
+    /// Whether an overlay's text is currently being edited.
+    pub editing: bool,
+    /// Number of commands available to undo.
+    pub undo_depth: usize,
+    /// Number of commands available to redo.
+    pub redo_depth: usize,
+}
+
+impl<'a> CommandContext<'a> {
+    /// The loaded document, or [`IpcError::NoDocument`].
+    fn require_document(&self) -> Result<&'a DocumentState, IpcError> {
+        self.document.ok_or(IpcError::NoDocument)
+    }
+
+    /// The loaded document, checked to actually contain `page`.
+    fn require_page(&self, page: u32) -> Result<&'a DocumentState, IpcError> {
+        let doc = self.require_document()?;
+        if page < 1 || page > doc.page_count {
+            return Err(IpcError::PageOutOfRange);
+        }
+        Ok(doc)
+    }
+
+    /// The loaded document, checked to actually contain overlay `index`.
+    fn require_overlay(&self, index: usize) -> Result<&'a DocumentState, IpcError> {
+        let doc = self.require_document()?;
+        if index >= doc.overlays.len() {
+            return Err(IpcError::IndexOutOfRange);
+        }
+        Ok(doc)
+    }
+
+    /// The index of the overlay an edit would apply to, or
+    /// [`IpcError::NoActiveOverlay`] when nothing editable is selected.
+    fn require_active_overlay(&self) -> Result<usize, IpcError> {
+        let doc = self.require_document()?;
+        match self.active_overlay {
+            Some(index) if index < doc.overlays.len() => Ok(index),
+            _ => Err(IpcError::NoActiveOverlay),
         }
     }
 }
@@ -42,7 +118,23 @@ pub enum IpcCommand {
     Open {
         path: PathBuf,
     },
+    /// Write the document with its overlays to `path`. Uses the same PDF
+    /// writer as the Save As dialog; only the dialog itself is bypassed.
+    Save {
+        path: PathBuf,
+    },
+    /// Place an overlay at a PDF position, unconditionally. Bypasses the
+    /// canvas hit test, so it can never select an existing overlay — use
+    /// `ClickAt` to reproduce what a real mouse click would do.
     Click {
+        page: u32,
+        x: f32,
+        y: f32,
+    },
+    /// Click at a PDF position the way the mouse does: commit an in-progress
+    /// edit, select an overlay under the point, place a new one on empty page,
+    /// or deselect when the point is off the page.
+    ClickAt {
         page: u32,
         x: f32,
         y: f32,
@@ -83,6 +175,8 @@ pub enum IpcCommand {
         x: f32,
         y: f32,
     },
+    Undo,
+    Redo,
     WaitReady,
 }
 
@@ -95,62 +189,122 @@ pub enum IpcCommand {
 /// forever on a command that will never respond (see spe-z6v).
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Returns the IPC socket path.
-pub fn socket_path() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(dir).join("spe-ipc.sock")
-    } else {
-        PathBuf::from("/tmp/spe-ipc.sock")
+/// No per-user runtime directory is available, so no IPC socket can be placed.
+#[derive(Debug, PartialEq)]
+pub struct MissingRuntimeDir;
+
+impl fmt::Display for MissingRuntimeDir {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "XDG_RUNTIME_DIR is not set, so there is no private directory for the IPC socket. \
+             Set XDG_RUNTIME_DIR to a directory only you can write to (a desktop login session \
+             normally provides one) and start the app again."
+        )
+    }
+}
+
+/// Returns the IPC socket path, or refuses when there is nowhere private to
+/// put it.
+///
+/// There is deliberately no `/tmp` fallback. A predictable socket name in a
+/// world-writable directory means the unlink-then-bind in [`ipc_stream`] races
+/// against anyone on the machine: a plain file recreated at the path turns the
+/// bind into a permanent silent failure, and a symlink planted there makes
+/// `bind` create the socket wherever the attacker points it. Chmodding the
+/// socket to 0600 afterwards protects the channel but not the creation step,
+/// so the only sound answer is to require a private directory (spe-85p).
+pub fn socket_path() -> Result<PathBuf, MissingRuntimeDir> {
+    socket_path_in(std::env::var("XDG_RUNTIME_DIR").ok().as_deref())
+}
+
+/// The socket path for a given runtime directory. Split out from
+/// [`socket_path`] so the refusal can be tested without mutating process
+/// environment shared with every other test.
+fn socket_path_in(runtime_dir: Option<&str>) -> Result<PathBuf, MissingRuntimeDir> {
+    match runtime_dir {
+        Some(dir) if !dir.is_empty() => Ok(PathBuf::from(dir).join("spe-ipc.sock")),
+        _ => Err(MissingRuntimeDir),
     }
 }
 
 impl IpcCommand {
     /// Translate this command into the corresponding application [`Message`].
     ///
-    /// `doc` must be `Some` for commands that need to read current overlay state
-    /// (e.g. `Resize`, which reads the old width from the document).
+    /// Every command whose handler would silently do nothing under the current
+    /// state fails here instead, so the IPC reply reports whether the action
+    /// actually happened rather than merely that a message could be built.
     pub fn to_message(
         self,
-        doc: Option<&DocumentState>,
+        ctx: &CommandContext<'_>,
         registry: &FontRegistry,
     ) -> Result<Message, IpcError> {
         match self {
             IpcCommand::Open { path } => Ok(Message::FileOpened(path)),
-            IpcCommand::Click { page, x, y } => Ok(Message::PlaceOverlay {
-                page,
-                position: PdfPosition { x, y },
-                width: None,
-            }),
-            IpcCommand::Type { text } => Ok(Message::UpdateOverlayText(text)),
-            IpcCommand::Select { index } => Ok(Message::SelectOverlay(index)),
-            IpcCommand::Edit { index } => Ok(Message::EditOverlay(index)),
+            IpcCommand::Save { path } => {
+                ctx.require_document()?;
+                Ok(Message::SaveDestinationChosen(path))
+            }
+            IpcCommand::Click { page, x, y } => {
+                ctx.require_page(page)?;
+                Ok(Message::PlaceOverlay {
+                    page,
+                    position: PdfPosition { x, y },
+                    width: None,
+                })
+            }
+            IpcCommand::ClickAt { page, x, y } => {
+                let doc = ctx.require_page(page)?;
+                Ok(click_at_message(doc, ctx.editing, page, x, y, registry))
+            }
+            IpcCommand::Type { text } => {
+                ctx.require_active_overlay()?;
+                Ok(Message::UpdateOverlayText(text))
+            }
+            IpcCommand::Select { index } => {
+                ctx.require_overlay(index)?;
+                Ok(Message::SelectOverlay(index))
+            }
+            IpcCommand::Edit { index } => {
+                ctx.require_overlay(index)?;
+                Ok(Message::EditOverlay(index))
+            }
             IpcCommand::Deselect => Ok(Message::DeselectOverlay),
             IpcCommand::ZoomIn => Ok(Message::ZoomIn),
             IpcCommand::ZoomOut => Ok(Message::ZoomOut),
             IpcCommand::ZoomReset => Ok(Message::ZoomReset),
-            IpcCommand::ZoomFitWidth => Ok(Message::ZoomFitWidth),
+            IpcCommand::ZoomFitWidth => {
+                ctx.require_document()?;
+                Ok(Message::ZoomFitWidth)
+            }
             IpcCommand::Font { family } => {
+                ctx.require_document()?;
                 let id = registry
                     .find_by_name(&family)
                     .ok_or(IpcError::UnknownFont(family))?;
                 Ok(Message::ChangeFont(id))
             }
-            IpcCommand::FontSize { size } => Ok(Message::ChangeFontSize(size)),
+            IpcCommand::FontSize { size } => {
+                ctx.require_document()?;
+                Ok(Message::ChangeFontSize(size))
+            }
             IpcCommand::Drag {
                 page,
                 x1,
                 y1,
                 x2,
                 y2: _,
-            } => Ok(Message::PlaceOverlay {
-                page,
-                position: PdfPosition { x: x1, y: y1 },
-                width: Some((x2 - x1).abs()),
-            }),
+            } => {
+                ctx.require_page(page)?;
+                Ok(Message::PlaceOverlay {
+                    page,
+                    position: PdfPosition { x: x1, y: y1 },
+                    width: Some((x2 - x1).abs()),
+                })
+            }
             IpcCommand::Resize { index, width } => {
-                let doc = doc.ok_or(IpcError::NoDocument)?;
-                let overlay = doc.overlays.get(index).ok_or(IpcError::IndexOutOfRange)?;
-                let old_width = overlay.width.ok_or(IpcError::NotResizable)?;
+                let doc = ctx.require_overlay(index)?;
+                let old_width = doc.overlays[index].width.ok_or(IpcError::NotResizable)?;
                 Ok(Message::ResizeOverlay {
                     index,
                     old_width,
@@ -158,10 +312,77 @@ impl IpcCommand {
                 })
             }
             IpcCommand::Move { index, x, y } => {
+                ctx.require_overlay(index)?;
                 Ok(Message::MoveOverlay(index, PdfPosition { x, y }))
+            }
+            IpcCommand::Undo => {
+                ctx.require_document()?;
+                // An in-progress edit is itself undoable: undo cancels the
+                // session before it reaches the command history.
+                if ctx.undo_depth == 0 && !ctx.editing {
+                    return Err(IpcError::NothingToUndo);
+                }
+                Ok(Message::Undo)
+            }
+            IpcCommand::Redo => {
+                ctx.require_document()?;
+                // The mirror image of Undo's rule above, not an oversight.
+                // Undo cancels an open edit session, so a session is itself
+                // something to undo. Redo instead *commits* the session
+                // first, and committing clears the redo stack — so by the
+                // time the redo would run there is truthfully nothing left to
+                // reapply. Refusing here keeps the reply honest and, unlike
+                // reading a post-commit depth, needs no state the context
+                // cannot see. The GUI's Ctrl+Shift+Z keeps its own behaviour;
+                // this is an IPC precondition only.
+                if ctx.editing {
+                    return Err(IpcError::RedoWhileEditing);
+                }
+                if ctx.redo_depth == 0 {
+                    return Err(IpcError::NothingToRedo);
+                }
+                Ok(Message::Redo)
             }
             IpcCommand::WaitReady => Ok(Message::Noop),
         }
+    }
+}
+
+/// Decide what a left click at a PDF position does, mirroring the canvas
+/// program's own press handling (`OverlayCanvasProgram::handle_left_click`):
+/// a click while editing commits first, a click on an overlay selects it, a
+/// click on blank page area places a new overlay, and a click off the page
+/// deselects. The overlay lookup is the same [`hit_test_pdf`] the mouse path
+/// reaches through `hit_test`, so automation and the mouse cannot diverge.
+///
+/// Pages whose dimensions have not been read yet are treated as unbounded,
+/// since a click cannot be shown to be off a page of unknown size.
+fn click_at_message(
+    doc: &DocumentState,
+    editing: bool,
+    page: u32,
+    x: f32,
+    y: f32,
+    registry: &FontRegistry,
+) -> Message {
+    if editing {
+        return Message::CommitText;
+    }
+    if let Some(index) = hit_test_pdf(x, y, &doc.overlays, page, registry) {
+        return Message::SelectOverlay(index);
+    }
+    let on_page = match doc.page_dimensions.get(&page) {
+        Some((w, h)) => x >= 0.0 && x <= *w && y >= 0.0 && y <= *h,
+        None => true,
+    };
+    if on_page {
+        Message::PlaceOverlay {
+            page,
+            position: PdfPosition { x, y },
+            width: None,
+        }
+    } else {
+        Message::DeselectOverlay
     }
 }
 
@@ -303,16 +524,41 @@ async fn handle_connection(
     true
 }
 
+/// Bind the IPC listener and restrict the socket to its owner.
+///
+/// The socket is a full remote-control channel for the app, so it is chmod'd
+/// to 0600 immediately after bind. A failure to lock it down is fatal to the bind: the socket is
+/// removed and the error propagated rather than left readable by other users.
+/// (The window between `bind` and `set_permissions` is unavoidable with
+/// `UnixListener::bind`; the harness mitigates it by placing the socket in a
+/// 0700 per-instance directory.)
+fn bind_listener(path: &std::path::Path) -> std::io::Result<tokio::net::UnixListener> {
+    let listener = tokio::net::UnixListener::bind(path)?;
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        let _ = std::fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(listener)
+}
+
 fn ipc_stream() -> impl iced::futures::Stream<Item = IpcEvent> {
     iced::stream::channel(32, async |mut output| {
         use iced::futures::SinkExt;
 
-        let path = socket_path();
+        let path = match socket_path() {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("IPC: {e}");
+                // Park forever — subscription produces no events.
+                std::future::pending::<()>().await;
+                unreachable!();
+            }
+        };
 
         // Remove stale socket file if it exists.
         let _ = std::fs::remove_file(&path);
 
-        let listener = match tokio::net::UnixListener::bind(&path) {
+        let listener = match bind_listener(&path) {
             Ok(l) => l,
             Err(e) => {
                 eprintln!("IPC: failed to bind {}: {e}", path.display());
@@ -366,7 +612,7 @@ mod tests {
             page_count: 1,
             current_page: 1,
             page_images: HashMap::new(),
-            page_dimensions: HashMap::new(),
+            page_dimensions: HashMap::from([(1, (612.0, 792.0))]),
             overlays: vec![TextOverlay {
                 page: 1,
                 position: PdfPosition { x: 100.0, y: 700.0 },
@@ -385,18 +631,23 @@ mod tests {
         let cmd = IpcCommand::Open {
             path: PathBuf::from("/tmp/test.pdf"),
         };
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
+        let msg = cmd
+            .to_message(&CommandContext::default(), &test_registry())
+            .unwrap();
         assert!(matches!(msg, Message::FileOpened(p) if p == PathBuf::from("/tmp/test.pdf")));
     }
 
     #[test]
     fn click_produces_place_overlay_without_width() {
+        let doc = test_document_with_overlay();
         let cmd = IpcCommand::Click {
             page: 1,
             x: 100.0,
             y: 700.0,
         };
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
         assert!(matches!(
             msg,
             Message::PlaceOverlay { page: 1, position: PdfPosition { x, y }, width: None }
@@ -405,93 +656,109 @@ mod tests {
     }
 
     #[test]
-    fn type_produces_update_overlay_text() {
-        let cmd = IpcCommand::Type {
-            text: "Hello".to_string(),
-        };
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
-        assert!(matches!(msg, Message::UpdateOverlayText(ref t) if t == "Hello"));
-    }
-
-    #[test]
     fn select_produces_select_overlay() {
-        let cmd = IpcCommand::Select { index: 2 };
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
-        assert!(matches!(msg, Message::SelectOverlay(2)));
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Select { index: 0 };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(msg, Message::SelectOverlay(0)));
     }
 
     #[test]
     fn edit_produces_edit_overlay() {
-        let cmd = IpcCommand::Edit { index: 3 };
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
-        assert!(matches!(msg, Message::EditOverlay(3)));
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Edit { index: 0 };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(msg, Message::EditOverlay(0)));
     }
 
     #[test]
     fn deselect_produces_deselect_overlay() {
         let cmd = IpcCommand::Deselect;
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
+        let msg = cmd
+            .to_message(&CommandContext::default(), &test_registry())
+            .unwrap();
         assert!(matches!(msg, Message::DeselectOverlay));
     }
 
     #[test]
     fn zoom_in_produces_zoom_in() {
         let cmd = IpcCommand::ZoomIn;
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
+        let msg = cmd
+            .to_message(&CommandContext::default(), &test_registry())
+            .unwrap();
         assert!(matches!(msg, Message::ZoomIn));
     }
 
     #[test]
     fn zoom_out_produces_zoom_out() {
         let cmd = IpcCommand::ZoomOut;
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
+        let msg = cmd
+            .to_message(&CommandContext::default(), &test_registry())
+            .unwrap();
         assert!(matches!(msg, Message::ZoomOut));
     }
 
     #[test]
     fn zoom_reset_produces_zoom_reset() {
         let cmd = IpcCommand::ZoomReset;
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
+        let msg = cmd
+            .to_message(&CommandContext::default(), &test_registry())
+            .unwrap();
         assert!(matches!(msg, Message::ZoomReset));
     }
 
     #[test]
     fn zoom_fit_width_produces_zoom_fit_width() {
+        let doc = test_document_with_overlay();
         let cmd = IpcCommand::ZoomFitWidth;
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
         assert!(matches!(msg, Message::ZoomFitWidth));
     }
 
     #[test]
     fn font_produces_change_font() {
+        let doc = test_document_with_overlay();
         let registry = test_registry();
         let courier = registry.find_by_name("Courier").unwrap();
         let cmd = IpcCommand::Font {
             family: "Courier".to_string(),
         };
-        let msg = cmd.to_message(None, &registry).unwrap();
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &registry)
+            .unwrap();
         assert!(matches!(msg, Message::ChangeFont(id) if id == courier));
     }
 
     #[test]
     fn font_unknown_name_returns_error() {
+        let doc = test_document_with_overlay();
         let registry = test_registry();
         let cmd = IpcCommand::Font {
             family: "Comic Sans".to_string(),
         };
-        let result = cmd.to_message(None, &registry);
+        let result = cmd.to_message(&context_with_document(&doc), &registry);
         assert!(matches!(result, Err(IpcError::UnknownFont(ref name)) if name == "Comic Sans"));
     }
 
     #[test]
     fn font_size_produces_change_font_size() {
+        let doc = test_document_with_overlay();
         let cmd = IpcCommand::FontSize { size: 18.0 };
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
         assert!(matches!(msg, Message::ChangeFontSize(s) if (s - 18.0).abs() < f32::EPSILON));
     }
 
     #[test]
     fn drag_produces_place_overlay_with_width() {
+        let doc = test_document_with_overlay();
         let cmd = IpcCommand::Drag {
             page: 1,
             x1: 100.0,
@@ -499,7 +766,9 @@ mod tests {
             x2: 300.0,
             y2: 700.0,
         };
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
         assert!(matches!(
             msg,
             Message::PlaceOverlay { page: 1, position: PdfPosition { x, y }, width: Some(w) }
@@ -516,7 +785,9 @@ mod tests {
             index: 0,
             width: 300.0,
         };
-        let msg = cmd.to_message(Some(&doc), &test_registry()).unwrap();
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
         assert!(matches!(
             msg,
             Message::ResizeOverlay { index: 0, old_width, new_width }
@@ -531,7 +802,7 @@ mod tests {
             index: 0,
             width: 300.0,
         };
-        let result = cmd.to_message(None, &test_registry());
+        let result = cmd.to_message(&CommandContext::default(), &test_registry());
         assert!(matches!(result, Err(IpcError::NoDocument)));
     }
 
@@ -542,7 +813,7 @@ mod tests {
             index: 99,
             width: 300.0,
         };
-        let result = cmd.to_message(Some(&doc), &test_registry());
+        let result = cmd.to_message(&context_with_document(&doc), &test_registry());
         assert!(matches!(result, Err(IpcError::IndexOutOfRange)));
     }
 
@@ -554,21 +825,24 @@ mod tests {
             index: 0,
             width: 300.0,
         };
-        let result = cmd.to_message(Some(&doc), &test_registry());
+        let result = cmd.to_message(&context_with_document(&doc), &test_registry());
         assert!(matches!(result, Err(IpcError::NotResizable)));
     }
 
     #[test]
     fn move_produces_move_overlay() {
+        let doc = test_document_with_overlay();
         let cmd = IpcCommand::Move {
-            index: 1,
+            index: 0,
             x: 150.0,
             y: 650.0,
         };
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
         assert!(matches!(
             msg,
-            Message::MoveOverlay(1, PdfPosition { x, y })
+            Message::MoveOverlay(0, PdfPosition { x, y })
             if (x - 150.0).abs() < f32::EPSILON && (y - 650.0).abs() < f32::EPSILON
         ));
     }
@@ -576,7 +850,9 @@ mod tests {
     #[test]
     fn wait_ready_produces_noop() {
         let cmd = IpcCommand::WaitReady;
-        let msg = cmd.to_message(None, &test_registry()).unwrap();
+        let msg = cmd
+            .to_message(&CommandContext::default(), &test_registry())
+            .unwrap();
         assert!(matches!(msg, Message::Noop));
     }
 
@@ -718,9 +994,428 @@ mod tests {
     }
 
     #[test]
-    fn socket_path_ends_with_expected_filename() {
-        let path = socket_path();
-        assert!(path.to_str().unwrap().ends_with("spe-ipc.sock"));
+    fn socket_path_lives_in_the_runtime_dir() {
+        let path = socket_path_in(Some("/run/user/1000")).expect("a runtime dir is enough");
+        assert_eq!(path, PathBuf::from("/run/user/1000/spe-ipc.sock"));
+    }
+
+    #[test]
+    fn socket_path_is_refused_without_a_runtime_dir() {
+        // There is deliberately no /tmp fallback: a predictable name in a
+        // world-writable directory is a remove-then-bind race.
+        assert_eq!(socket_path_in(None), Err(MissingRuntimeDir));
+    }
+
+    #[test]
+    fn missing_runtime_dir_error_says_how_to_fix_it() {
+        let message = MissingRuntimeDir.to_string();
+        assert!(
+            message.contains("XDG_RUNTIME_DIR"),
+            "the error must name the variable to set, got: {message}"
+        );
+    }
+
+    #[test]
+    fn refused_socket_path_creates_no_socket() {
+        // There is no /tmp fallback path to construct at all: refusal is the
+        // only outcome, so no socket location can be derived.
+        assert_eq!(socket_path_in(None), Err(MissingRuntimeDir));
+        assert_eq!(socket_path_in(Some("")), Err(MissingRuntimeDir));
+    }
+
+    // --- precondition checks: every command reports whether it acted (spe-749) ---
+    //
+    // These commands used to translate unconditionally and reply ok:true while
+    // the handler silently did nothing. Translation now fails fast instead.
+
+    /// A context describing a loaded document with one overlay, nothing selected.
+    fn context_with_document(doc: &DocumentState) -> CommandContext<'_> {
+        CommandContext {
+            document: Some(doc),
+            ..CommandContext::default()
+        }
+    }
+
+    #[test]
+    fn click_without_document_is_rejected() {
+        let cmd = IpcCommand::Click {
+            page: 1,
+            x: 100.0,
+            y: 700.0,
+        };
+        let result = cmd.to_message(&CommandContext::default(), &test_registry());
+        assert!(matches!(result, Err(IpcError::NoDocument)));
+    }
+
+    #[test]
+    fn click_on_page_beyond_document_is_rejected() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Click {
+            page: 9,
+            x: 100.0,
+            y: 700.0,
+        };
+        let result = cmd.to_message(&context_with_document(&doc), &test_registry());
+        assert!(matches!(result, Err(IpcError::PageOutOfRange)));
+    }
+
+    #[test]
+    fn drag_without_document_is_rejected() {
+        let cmd = IpcCommand::Drag {
+            page: 1,
+            x1: 100.0,
+            y1: 700.0,
+            x2: 300.0,
+            y2: 700.0,
+        };
+        let result = cmd.to_message(&CommandContext::default(), &test_registry());
+        assert!(matches!(result, Err(IpcError::NoDocument)));
+    }
+
+    #[test]
+    fn type_without_active_overlay_is_rejected() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Type {
+            text: "Hello".to_string(),
+        };
+        let result = cmd.to_message(&context_with_document(&doc), &test_registry());
+        assert!(matches!(result, Err(IpcError::NoActiveOverlay)));
+    }
+
+    #[test]
+    fn type_with_stale_active_overlay_index_is_rejected() {
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            active_overlay: Some(7),
+            ..CommandContext::default()
+        };
+        let cmd = IpcCommand::Type {
+            text: "Hello".to_string(),
+        };
+        assert!(matches!(
+            cmd.to_message(&ctx, &test_registry()),
+            Err(IpcError::NoActiveOverlay)
+        ));
+    }
+
+    #[test]
+    fn select_with_out_of_range_index_is_rejected() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Select { index: 5 };
+        let result = cmd.to_message(&context_with_document(&doc), &test_registry());
+        assert!(matches!(result, Err(IpcError::IndexOutOfRange)));
+    }
+
+    #[test]
+    fn edit_with_out_of_range_index_is_rejected() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Edit { index: 5 };
+        let result = cmd.to_message(&context_with_document(&doc), &test_registry());
+        assert!(matches!(result, Err(IpcError::IndexOutOfRange)));
+    }
+
+    #[test]
+    fn move_with_out_of_range_index_is_rejected() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Move {
+            index: 5,
+            x: 1.0,
+            y: 2.0,
+        };
+        let result = cmd.to_message(&context_with_document(&doc), &test_registry());
+        assert!(matches!(result, Err(IpcError::IndexOutOfRange)));
+    }
+
+    #[test]
+    fn select_without_document_is_rejected() {
+        let cmd = IpcCommand::Select { index: 0 };
+        let result = cmd.to_message(&CommandContext::default(), &test_registry());
+        assert!(matches!(result, Err(IpcError::NoDocument)));
+    }
+
+    #[test]
+    fn font_without_document_is_rejected() {
+        let cmd = IpcCommand::Font {
+            family: "Courier".to_string(),
+        };
+        let result = cmd.to_message(&CommandContext::default(), &test_registry());
+        assert!(matches!(result, Err(IpcError::NoDocument)));
+    }
+
+    #[test]
+    fn font_size_without_document_is_rejected() {
+        let cmd = IpcCommand::FontSize { size: 18.0 };
+        let result = cmd.to_message(&CommandContext::default(), &test_registry());
+        assert!(matches!(result, Err(IpcError::NoDocument)));
+    }
+
+    #[test]
+    fn zoom_fit_width_without_document_is_rejected() {
+        let cmd = IpcCommand::ZoomFitWidth;
+        let result = cmd.to_message(&CommandContext::default(), &test_registry());
+        assert!(matches!(result, Err(IpcError::NoDocument)));
+    }
+
+    #[test]
+    fn type_with_active_overlay_produces_update_overlay_text() {
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            active_overlay: Some(0),
+            ..CommandContext::default()
+        };
+        let cmd = IpcCommand::Type {
+            text: "Hello".to_string(),
+        };
+        let msg = cmd.to_message(&ctx, &test_registry()).unwrap();
+        assert!(matches!(msg, Message::UpdateOverlayText(ref t) if t == "Hello"));
+    }
+
+    // --- click_at: routed through the canvas hit test (spe-7f1) ---
+
+    #[test]
+    fn click_at_on_empty_space_places_an_overlay() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::ClickAt {
+            page: 1,
+            x: 300.0,
+            y: 300.0,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(
+            msg,
+            Message::PlaceOverlay { page: 1, position: PdfPosition { x, y }, width: None }
+            if (x - 300.0).abs() < f32::EPSILON && (y - 300.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn click_at_on_an_existing_overlay_selects_it() {
+        let doc = test_document_with_overlay();
+        // Just inside the existing overlay's bounding box at (100, 700).
+        let cmd = IpcCommand::ClickAt {
+            page: 1,
+            x: 102.0,
+            y: 705.0,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(msg, Message::SelectOverlay(0)));
+    }
+
+    #[test]
+    fn click_at_outside_the_page_deselects() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::ClickAt {
+            page: 1,
+            x: 900.0,
+            y: 900.0,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(msg, Message::DeselectOverlay));
+    }
+
+    #[test]
+    fn click_at_on_a_page_of_unknown_size_places_instead_of_deselecting() {
+        // Page dimensions are read when a document loads, but a click can
+        // arrive before that; a page of unknown size cannot be shown to have
+        // been missed, so the click still places rather than deselecting.
+        let mut doc = test_document_with_overlay();
+        doc.page_dimensions.clear();
+        let cmd = IpcCommand::ClickAt {
+            page: 1,
+            x: 5000.0,
+            y: 5000.0,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(msg, Message::PlaceOverlay { page: 1, .. }));
+    }
+
+    #[test]
+    fn click_at_while_editing_commits_the_text_first() {
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            active_overlay: Some(0),
+            editing: true,
+            ..CommandContext::default()
+        };
+        let cmd = IpcCommand::ClickAt {
+            page: 1,
+            x: 300.0,
+            y: 300.0,
+        };
+        let msg = cmd.to_message(&ctx, &test_registry()).unwrap();
+        assert!(matches!(msg, Message::CommitText));
+    }
+
+    #[test]
+    fn click_at_without_document_is_rejected() {
+        let cmd = IpcCommand::ClickAt {
+            page: 1,
+            x: 1.0,
+            y: 1.0,
+        };
+        let result = cmd.to_message(&CommandContext::default(), &test_registry());
+        assert!(matches!(result, Err(IpcError::NoDocument)));
+    }
+
+    #[test]
+    fn parse_click_at_command() {
+        let json = r#"{"cmd": "click_at", "page": 1, "x": 100.0, "y": 700.0}"#;
+        let cmd: IpcCommand = serde_json::from_str(json).unwrap();
+        assert!(matches!(cmd, IpcCommand::ClickAt { page: 1, .. }));
+    }
+
+    // --- save (spe-94g) ---
+
+    #[test]
+    fn save_produces_save_destination_chosen() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Save {
+            path: PathBuf::from("/tmp/out.pdf"),
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(
+            msg,
+            Message::SaveDestinationChosen(p) if p == PathBuf::from("/tmp/out.pdf")
+        ));
+    }
+
+    #[test]
+    fn save_without_document_is_rejected() {
+        let cmd = IpcCommand::Save {
+            path: PathBuf::from("/tmp/out.pdf"),
+        };
+        let result = cmd.to_message(&CommandContext::default(), &test_registry());
+        assert!(matches!(result, Err(IpcError::NoDocument)));
+    }
+
+    #[test]
+    fn parse_save_command() {
+        let json = r#"{"cmd": "save", "path": "/tmp/out.pdf"}"#;
+        let cmd: IpcCommand = serde_json::from_str(json).unwrap();
+        assert!(matches!(cmd, IpcCommand::Save { path } if path.to_str() == Some("/tmp/out.pdf")));
+    }
+
+    // --- undo / redo (spe-0nc) ---
+
+    #[test]
+    fn undo_produces_undo() {
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            undo_depth: 1,
+            ..CommandContext::default()
+        };
+        let msg = IpcCommand::Undo.to_message(&ctx, &test_registry()).unwrap();
+        assert!(matches!(msg, Message::Undo));
+    }
+
+    #[test]
+    fn undo_with_empty_stack_is_rejected() {
+        let doc = test_document_with_overlay();
+        let result = IpcCommand::Undo.to_message(&context_with_document(&doc), &test_registry());
+        assert!(matches!(result, Err(IpcError::NothingToUndo)));
+    }
+
+    #[test]
+    fn undo_with_an_edit_session_is_allowed_even_with_an_empty_stack() {
+        // Undo cancels an in-progress edit before it touches the command
+        // history, so an edit session is on its own something to undo.
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            active_overlay: Some(0),
+            editing: true,
+            ..CommandContext::default()
+        };
+        let msg = IpcCommand::Undo.to_message(&ctx, &test_registry()).unwrap();
+        assert!(matches!(msg, Message::Undo));
+    }
+
+    #[test]
+    fn redo_produces_redo() {
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            redo_depth: 1,
+            ..CommandContext::default()
+        };
+        let msg = IpcCommand::Redo.to_message(&ctx, &test_registry()).unwrap();
+        assert!(matches!(msg, Message::Redo));
+    }
+
+    #[test]
+    fn redo_while_editing_is_rejected_even_with_a_banked_entry() {
+        // Contrast with undo, which is allowed to cancel a session.
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            active_overlay: Some(0),
+            editing: true,
+            redo_depth: 1,
+            ..CommandContext::default()
+        };
+        let result = IpcCommand::Redo.to_message(&ctx, &test_registry());
+        assert!(matches!(result, Err(IpcError::RedoWhileEditing)));
+    }
+
+    #[test]
+    fn redo_with_empty_stack_is_rejected() {
+        let doc = test_document_with_overlay();
+        let result = IpcCommand::Redo.to_message(&context_with_document(&doc), &test_registry());
+        assert!(matches!(result, Err(IpcError::NothingToRedo)));
+    }
+
+    #[test]
+    fn parse_undo_command() {
+        let cmd: IpcCommand = serde_json::from_str(r#"{"cmd": "undo"}"#).unwrap();
+        assert!(matches!(cmd, IpcCommand::Undo));
+    }
+
+    #[test]
+    fn parse_redo_command() {
+        let cmd: IpcCommand = serde_json::from_str(r#"{"cmd": "redo"}"#).unwrap();
+        assert!(matches!(cmd, IpcCommand::Redo));
+    }
+
+    // --- socket permissions (spe-85p) ---
+
+    #[test]
+    fn bind_listener_restricts_socket_to_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        run_async(async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("spe-ipc.sock");
+            let _listener = bind_listener(&path).expect("bind should succeed in a writable dir");
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "the IPC control socket must not be reachable by other users"
+            );
+        });
+    }
+
+    #[test]
+    fn bind_listener_reports_error_when_socket_cannot_be_created() {
+        run_async(async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("no-such-subdir").join("spe-ipc.sock");
+            let err = bind_listener(&path).expect_err("bind into a missing directory must fail");
+            assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        });
     }
 
     // --- process_line robustness (async) ---

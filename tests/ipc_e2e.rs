@@ -21,9 +21,11 @@ use std::time::{Duration, Instant};
 type CommandLog = Vec<(&'static str, Result<String, String>)>;
 
 /// Create a unique per-test runtime directory so the socket never collides with
-/// a live app instance or a parallel test run.
-fn make_test_runtime_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("spe-ipc-test-{}", std::process::id()));
+/// a live app instance, a parallel test run, or another test in this binary
+/// (cargo runs test functions concurrently, so the process id alone is not
+/// unique enough — hence the per-test `name`).
+fn make_test_runtime_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("spe-ipc-test-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("failed to create per-test runtime dir");
     dir
 }
@@ -113,7 +115,7 @@ fn ipc_command_sequence_all_receive_responses() {
         return;
     }
 
-    let runtime_dir = make_test_runtime_dir();
+    let runtime_dir = make_test_runtime_dir("sequence");
     let socket = socket_path(&runtime_dir);
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/single-page.pdf");
     let mut child = launch_app(&runtime_dir, &socket);
@@ -123,38 +125,24 @@ fn ipc_command_sequence_all_receive_responses() {
     let outcome = (|| -> Result<CommandLog, String> {
         wait_for_socket(&socket, &mut child, Duration::from_secs(20))?;
 
+        // Cargo runs test binaries concurrently, so this sequence can be
+        // competing with the whole `e2e` suite for the GPU. The bound is
+        // generous for that reason: it is here to stop a wedged command
+        // hanging the suite, not to police latency.
+        let send = |json: &str| send_command(&socket, json, Duration::from_secs(15));
+
         let mut results: CommandLog = Vec::new();
         let open_json = format!(r#"{{"cmd": "open", "path": "{}"}}"#, fixture.display());
-        results.push((
-            "open",
-            send_command(&socket, &open_json, Duration::from_secs(5)),
-        ));
+        results.push(("open", send(&open_json)));
         // wait_ready blocks until rendering completes; it is the command that
         // hangs forever when the render task is discarded.
-        results.push((
-            "wait_ready",
-            send_command(&socket, r#"{"cmd": "wait_ready"}"#, Duration::from_secs(15)),
-        ));
+        results.push(("wait_ready", send(r#"{"cmd": "wait_ready"}"#)));
         results.push((
             "click",
-            send_command(
-                &socket,
-                r#"{"cmd": "click", "page": 1, "x": 100, "y": 700}"#,
-                Duration::from_secs(5),
-            ),
+            send(r#"{"cmd": "click", "page": 1, "x": 100, "y": 700}"#),
         ));
-        results.push((
-            "type",
-            send_command(
-                &socket,
-                r#"{"cmd": "type", "text": "Hello world"}"#,
-                Duration::from_secs(5),
-            ),
-        ));
-        results.push((
-            "deselect",
-            send_command(&socket, r#"{"cmd": "deselect"}"#, Duration::from_secs(5)),
-        ));
+        results.push(("type", send(r#"{"cmd": "type", "text": "Hello world"}"#)));
+        results.push(("deselect", send(r#"{"cmd": "deselect"}"#)));
         Ok(results)
     })();
 
@@ -166,4 +154,128 @@ fn ipc_command_sequence_all_receive_responses() {
     for (label, reply) in &results {
         assert_ok(label, reply);
     }
+}
+
+/// True if any content stream on any page shows `needle` via a `Tj` operator.
+fn pdf_contains_text(path: &Path, needle: &str) -> bool {
+    let doc = lopdf::Document::load(path).expect("saved file must be a loadable PDF");
+    let target = needle.as_bytes().to_vec();
+    for (_, page_id) in doc.get_pages() {
+        for id in doc.get_page_contents(page_id) {
+            let Ok(stream) = doc.get_object(id).and_then(|o| o.as_stream()) else {
+                continue;
+            };
+            let Ok(content) = stream.decode_content() else {
+                continue;
+            };
+            for op in &content.operations {
+                if op.operator == "Tj"
+                    && matches!(op.operands.first(), Some(lopdf::Object::String(b, _)) if *b == target)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn assert_failed(label: &str, reply: &Result<String, String>, expected: &str) {
+    match reply {
+        Ok(body) => {
+            assert!(
+                body.contains("\"ok\":false") || body.contains("\"ok\": false"),
+                "command `{label}` should have been rejected but returned: {body}"
+            );
+            assert!(
+                body.contains(expected),
+                "command `{label}` should explain `{expected}`, got: {body}"
+            );
+        }
+        Err(e) => panic!("command `{label}` produced no reply: {e}"),
+    }
+}
+
+/// spe-94g / spe-749 / spe-0nc: the full automation workflow over IPC —
+/// open, place, type, save — plus proof that a command which cannot act says so
+/// and that `undo` really reverts a placement.
+#[test]
+#[ignore]
+fn ipc_open_place_type_save_round_trip() {
+    if !cage_available() {
+        eprintln!("SKIP ipc_open_place_type_save_round_trip: `cage` not available");
+        return;
+    }
+
+    let runtime_dir = make_test_runtime_dir("save");
+    let socket = socket_path(&runtime_dir);
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/single-page.pdf");
+    let dest = runtime_dir.join("saved.pdf");
+    let mut child = launch_app(&runtime_dir, &socket);
+
+    let outcome = (|| -> Result<CommandLog, String> {
+        wait_for_socket(&socket, &mut child, Duration::from_secs(20))?;
+        let send = |json: &str| send_command(&socket, json, Duration::from_secs(15));
+
+        let mut results: CommandLog = Vec::new();
+        results.push((
+            "type-before-document",
+            send(r#"{"cmd": "type", "text": "nowhere"}"#),
+        ));
+        results.push((
+            "open",
+            send(&format!(
+                r#"{{"cmd": "open", "path": "{}"}}"#,
+                fixture.display()
+            )),
+        ));
+        results.push(("wait_ready", send(r#"{"cmd": "wait_ready"}"#)));
+        // With a document open but nothing selected, these commands cannot act
+        // and must say so rather than replying ok and doing nothing.
+        results.push((
+            "type-before-placement",
+            send(r#"{"cmd": "type", "text": "nowhere"}"#),
+        ));
+        results.push((
+            "select-out-of-range",
+            send(r#"{"cmd": "select", "index": 9}"#),
+        ));
+        results.push(("undo-with-empty-stack", send(r#"{"cmd": "undo"}"#)));
+        results.push((
+            "click",
+            send(r#"{"cmd": "click", "page": 1, "x": 100, "y": 700}"#),
+        ));
+        results.push(("type", send(r#"{"cmd": "type", "text": "RoundTrip"}"#)));
+        results.push(("deselect", send(r#"{"cmd": "deselect"}"#)));
+        results.push((
+            "save",
+            send(&format!(
+                r#"{{"cmd": "save", "path": "{}"}}"#,
+                dest.display()
+            )),
+        ));
+        results.push(("undo", send(r#"{"cmd": "undo"}"#)));
+        Ok(results)
+    })();
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let saved_ok = dest.exists() && pdf_contains_text(&dest, "RoundTrip");
+    let _ = std::fs::remove_dir_all(&runtime_dir);
+
+    let results = outcome.expect("IPC sequence setup failed");
+    for (label, reply) in &results {
+        match *label {
+            "type-before-document" => assert_failed(label, reply, "no document is loaded"),
+            "type-before-placement" => assert_failed(label, reply, "no overlay is active"),
+            "select-out-of-range" => assert_failed(label, reply, "out of range"),
+            "undo-with-empty-stack" => assert_failed(label, reply, "nothing to undo"),
+            _ => assert_ok(label, reply),
+        }
+    }
+    assert!(
+        saved_ok,
+        "the saved PDF must exist and contain the typed overlay text"
+    );
 }

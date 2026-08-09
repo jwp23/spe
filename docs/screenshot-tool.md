@@ -35,6 +35,9 @@ scripts/screenshot.sh send '{"cmd": "deselect"}'
 scripts/screenshot.sh capture screenshots/overlay-test.png
 # Then use the Read tool in Claude Code to inspect the screenshot
 
+# Save the result (same PDF writer as Save As; only the file dialog is bypassed)
+scripts/screenshot.sh send '{"cmd": "save", "path": "/tmp/out.pdf"}'
+
 # Tear down
 scripts/screenshot.sh stop
 ```
@@ -68,7 +71,16 @@ spe --ipc
 
 Without this flag, no socket is created and no subscription runs. The harness script passes `--ipc` automatically. There is no compile-time feature gate — a single binary serves both uses.
 
-The Unix socket is created at `$XDG_RUNTIME_DIR/spe-ipc.sock` (fallback: `/tmp/spe-ipc.sock`).
+The Unix socket is created at `$XDG_RUNTIME_DIR/spe-ipc.sock`, and is chmod'd
+to 0600 so only its owner can drive the app.
+
+There is no `/tmp` fallback: a predictable socket name in a world-writable
+directory lets anyone on the machine race the unlink-then-bind, either wedging
+IPC permanently or redirecting where the socket gets created. If
+`XDG_RUNTIME_DIR` is unset, `--ipc` exits with an error telling you to set it
+rather than starting without a working socket. The harness always supplies its
+own private 0700 runtime directory, so this only affects launching `spe --ipc`
+by hand outside a login session.
 
 ## IPC Command Protocol
 
@@ -78,12 +90,31 @@ Every command returns a JSON response:
 - `{"ok": true}` on success
 - `{"ok": false, "error": "description"}` on failure
 
+`ok: true` means the action actually happened. A command whose preconditions
+are not met is rejected before it runs rather than silently doing nothing, so
+automation can assert on the reply:
+
+| Situation | Reply |
+|-----------|-------|
+| Any command needing a document, with none open | `no document is loaded` |
+| `click` / `drag` on a page the document doesn't have | `page number is out of range` |
+| `type` with no overlay selected or being edited | `no overlay is active` |
+| `select` / `edit` / `move` / `resize` with a bad index | `overlay index is out of range` |
+| `resize` on a single-line overlay | `overlay is not resizable (no width set)` |
+| `font` with an unrecognized family | `unknown font: <name>` |
+| `redo` while an overlay is being edited | `an edit session is open — commit or deselect first, then redo` |
+
+Commands that can only fail while doing their work — `open` and `save` — report
+the real filesystem error the same way.
+
 ### Commands
 
 | Command | JSON |
 |---------|------|
 | Open PDF | `{"cmd": "open", "path": "/path/to.pdf"}` |
-| Click canvas | `{"cmd": "click", "page": 1, "x": 100.0, "y": 700.0}` |
+| Save PDF | `{"cmd": "save", "path": "/path/to-out.pdf"}` |
+| Click canvas (always places) | `{"cmd": "click", "page": 1, "x": 100.0, "y": 700.0}` |
+| Click canvas (like the mouse) | `{"cmd": "click_at", "page": 1, "x": 100.0, "y": 700.0}` |
 | Drag (multiline) | `{"cmd": "drag", "page": 1, "x1": 100.0, "y1": 700.0, "x2": 300.0, "y2": 700.0}` |
 | Type text | `{"cmd": "type", "text": "Hello"}` |
 | Select overlay | `{"cmd": "select", "index": 0}` |
@@ -93,11 +124,46 @@ Every command returns a JSON response:
 | Resize overlay | `{"cmd": "resize", "index": 0, "width": 200.0}` |
 | Change font | `{"cmd": "font", "family": "Helvetica"}` |
 | Change font size | `{"cmd": "font_size", "size": 14.0}` |
+| Undo | `{"cmd": "undo"}` |
+| Redo | `{"cmd": "redo"}` (rejected while an edit session is open) |
 | Zoom in | `{"cmd": "zoom_in"}` |
 | Zoom out | `{"cmd": "zoom_out"}` |
 | Zoom reset | `{"cmd": "zoom_reset"}` |
 | Zoom fit width | `{"cmd": "zoom_fit_width"}` |
 | Wait for idle | `{"cmd": "wait_ready"}` |
+
+### `click` vs `click_at`
+
+`click` places an overlay unconditionally. It is the blunt instrument: useful
+when a test just needs an overlay at a known position, but it can never select
+an existing one, so it cannot exercise click-to-select.
+
+`click_at` reproduces what a left mouse press-and-release at that point does,
+by consulting the same hit test the mouse path uses (`hit_test_pdf`, which
+`hit_test` also delegates to — there is only one hit box):
+
+| Point | Result |
+|-------|--------|
+| Over an existing overlay | selects it (topmost/last-placed wins) |
+| Over blank page area | places a new overlay there |
+| Off the page | deselects |
+| While an overlay is being edited | commits the text and does nothing else; send `click_at` again to act on the point |
+
+Residual differences from a real mouse, which need a pointer device the IPC
+protocol does not model:
+
+- **No double-click.** Two `click_at` commands select twice; they never open an
+  overlay for editing the way a real double-click does. Use `edit` for that.
+- **No press-move-release.** Drag-to-move and drag-to-size are not produced by
+  `click_at`; use `move`, `resize`, and `drag`.
+- **No resize handle.** The handle's hit area is a fixed pixel radius around the
+  overlay's right edge, so it is zoom-dependent and has no PDF-space equivalent.
+  Use `resize`.
+- **No hover.** Hover highlighting is driven by cursor-move events.
+- **Pages of unknown size are treated as unbounded.** Page dimensions are read
+  when the document loads; before that, an off-page point cannot be recognised
+  as off-page, so `click_at` places rather than deselecting. Send `wait_ready`
+  after `open` to avoid the window entirely.
 
 ### Font Family Values
 

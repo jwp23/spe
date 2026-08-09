@@ -109,7 +109,11 @@ do_send() {
         echo "Usage: $0 send '<json>'"
         exit 1
     fi
-    echo "$1" | socat - UNIX-CONNECT:"$SOCKET_PATH"
+    # -t 15: socat half-closes the connection this long after stdin EOF. The
+    # default is 0.5s, which silently drops the app's reply whenever a command
+    # takes longer than that (rendering, wait_ready, or just a loaded machine) —
+    # printing nothing, which reads exactly like a successful no-op.
+    echo "$1" | socat -t 15 - UNIX-CONNECT:"$SOCKET_PATH"
 }
 
 do_capture() {

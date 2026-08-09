@@ -504,7 +504,7 @@ impl App {
     pub(super) fn handle_file_opened(&mut self, path: PathBuf) -> iced::Task<Message> {
         match lopdf::Document::load(&path) {
             Ok(doc) => {
-                self.last_open_error = None;
+                self.last_command_error = None;
                 let page_dims = crate::pdf::page_dimensions(&doc);
                 let page_count = doc.get_pages().len() as u32;
                 self.document = Some(DocumentState {
@@ -557,7 +557,7 @@ impl App {
             Err(e) => {
                 let message = format!("failed to open {}: {e}", path.display());
                 eprintln!("Failed to open PDF: {e}");
-                self.last_open_error = Some(message);
+                self.last_command_error = Some(message);
                 iced::Task::none()
             }
         }
@@ -588,10 +588,13 @@ impl App {
                 let filename = dest.file_name().and_then(|n| n.to_str()).unwrap_or("file");
                 self.status_message =
                     Some((format!("Saved to {filename}"), std::time::Instant::now()));
+                self.last_command_error = None;
             }
             Err(e) => {
                 self.status_message =
                     Some((format!("Save failed: {e}"), std::time::Instant::now()));
+                // Surfaced to an IPC `save` client by App::command_response.
+                self.last_command_error = Some(format!("failed to save {}: {e}", dest.display()));
             }
         }
     }
@@ -616,11 +619,8 @@ impl App {
         if let Some(doc) = &mut self.document {
             // Prevent saving over the source file to avoid data loss on
             // write failure (the source would already be truncated).
-            if path == doc.source_path {
-                self.status_message = Some((
-                    "Save failed: cannot overwrite the source file".to_string(),
-                    std::time::Instant::now(),
-                ));
+            if denotes_same_file(&path, &doc.source_path) {
+                self.set_save_result(Err::<(), _>("cannot overwrite the source file"), &path);
                 return;
             }
             let source = doc.source_path.clone();
@@ -1006,6 +1006,24 @@ impl App {
             },
             Message::ZoomDebounceExpired,
         )
+    }
+}
+
+/// Whether two paths denote the same file on disk.
+///
+/// Compares device and inode numbers rather than the paths themselves. Paths
+/// are an unreliable identity: a relative path, a `..` segment, or a symlink
+/// spell the same file differently, and hard links give one file two names
+/// that stay distinct however thoroughly they are normalized. Any of those
+/// would let a save slip past the guard and truncate the document being
+/// edited. A destination whose metadata cannot be read does not exist yet, so
+/// it cannot be the (existing) source — the literal comparison is only a
+/// fallback for that case.
+fn denotes_same_file(destination: &std::path::Path, source: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(destination), std::fs::metadata(source)) {
+        (Ok(dest), Ok(src)) => dest.dev() == src.dev() && dest.ino() == src.ino(),
+        _ => destination == source,
     }
 }
 

@@ -2,11 +2,11 @@
 
 use iced::widget::image::Handle;
 
-use crate::coordinate::{ConversionParams, pdf_to_screen, render_scale};
+use crate::coordinate::{ConversionParams, render_scale, screen_to_pdf};
 use crate::fonts::FontRegistry;
 use crate::overlay::TextOverlay;
 
-use super::overlay_text_box;
+use super::overlay_text_box_contains_pdf;
 
 /// Gap between pages in continuous scrolling mode (pixels).
 pub const PAGE_GAP: f32 = 16.0;
@@ -169,6 +169,9 @@ pub fn image_to_handle(img: image::DynamicImage) -> Handle {
 
 /// Test whether a screen-space click hits any overlay on the current page.
 /// Returns the index of the topmost (last-placed) overlay hit, or None.
+///
+/// Converts to PDF space and defers to [`hit_test_pdf`]: the mouse and the IPC
+/// automation path must reach the same verdict, so there is only one hit box.
 pub fn hit_test(
     screen_x: f32,
     screen_y: f32,
@@ -177,14 +180,35 @@ pub fn hit_test(
     params: &ConversionParams,
     registry: &FontRegistry,
 ) -> Option<usize> {
+    let (pdf_x, pdf_y) = screen_to_pdf(screen_x, screen_y, params);
+    hit_test_pdf(pdf_x, pdf_y, overlays, current_page, registry)
+}
+
+/// Test whether a PDF-space point hits any overlay on the given page.
+/// Returns the index of the topmost (last-placed) overlay hit, or None.
+///
+/// PDF points are the space the shared decision lives in, because they are the
+/// only space both callers can speak: the IPC automation path has no scroll,
+/// zoom, or viewport to build a screen point from, while the mouse path can
+/// always convert what it has via `screen_to_pdf`. PDF points are also the
+/// document's own coordinates, so the verdict does not shift with zoom or DPI.
+///
+/// The geometry itself still comes from [`overlay_text_box`] — the same
+/// rectangle the tint is drawn in — so what the user can click stays exactly
+/// what the user can see (spe-ner).
+pub fn hit_test_pdf(
+    pdf_x: f32,
+    pdf_y: f32,
+    overlays: &[TextOverlay],
+    current_page: u32,
+    registry: &FontRegistry,
+) -> Option<usize> {
     // Test in reverse order so topmost (last-placed) overlay wins
     for (i, overlay) in overlays.iter().enumerate().rev() {
         if overlay.page != current_page {
             continue;
         }
-        let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
-        let text_box = overlay_text_box(overlay, sx, sy, params.scale(), registry);
-        if text_box.contains(iced::Point::new(screen_x, screen_y)) {
+        if overlay_text_box_contains_pdf(overlay, pdf_x, pdf_y, registry) {
             return Some(i);
         }
     }
