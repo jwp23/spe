@@ -146,7 +146,7 @@ mod tests {
             ..pacifico.clone()
         };
 
-        let own_typeface = picker_screenshot(&[pacifico.clone()], pacifico.id, true);
+        let own_typeface = picker_screenshot(std::slice::from_ref(&pacifico), pacifico.id, true);
         let default_typeface = picker_screenshot(&[unstyled], pacifico.id, true);
 
         let differing = own_typeface.differing_pixels(&default_typeface, LIST_REGION);
