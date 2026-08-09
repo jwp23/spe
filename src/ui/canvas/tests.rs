@@ -3405,3 +3405,69 @@ fn committed_text_wraps_inside_the_box_it_was_given() {
         "text reaches column {rightmost} but its box ends at {box_right}"
     );
 }
+
+#[test]
+fn a_mostly_vertical_placement_drag_still_places_a_grabbable_box() {
+    // A tall, near-zero-width drag clears the 10px threshold on its vertical
+    // extent alone. Left unclamped it committed a box a fraction of a point
+    // wide — one word per line, with a resize handle too narrow to grab.
+    let (_, _, width, height) =
+        text_box_placement_from(cursor_at(300.0, 200.0), cursor_at(301.0, 320.0));
+    assert!(
+        width >= super::MIN_BOX_DIMENSION,
+        "a placed box must be at least {} wide, got {width}",
+        super::MIN_BOX_DIMENSION
+    );
+    assert!(
+        (height - 120.0).abs() < 1.0,
+        "the drag's own height should survive, got {height}"
+    );
+}
+
+#[test]
+fn a_mostly_horizontal_placement_drag_still_places_a_grabbable_box() {
+    let (_, _, width, height) =
+        text_box_placement_from(cursor_at(300.0, 200.0), cursor_at(420.0, 201.0));
+    assert!(
+        height >= super::MIN_BOX_DIMENSION,
+        "a placed box must be at least {} tall, got {height}",
+        super::MIN_BOX_DIMENSION
+    );
+    assert!(
+        (width - 120.0).abs() < 1.0,
+        "the drag's own width should survive, got {width}"
+    );
+}
+
+#[test]
+fn a_placement_preview_stops_at_the_page_edge_like_the_resize_preview() {
+    // The rectangle drawn mid-drag has to promise the box the release will
+    // actually place, and the release clamps to the page.
+    let overlays: Vec<TextOverlay> = vec![];
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let element: iced::Element<Message> =
+        iced::widget::canvas(test_program(&overlays, &dims, &registry))
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
+            .into();
+
+    let mut harness = Harness::new(element, RENDER_SIZE);
+    harness.move_cursor(iced::Point::new(300.0, 200.0));
+    harness.press_left();
+    harness.move_cursor(iced::Point::new(880.0, 690.0));
+    let (_, _, right, bottom) = harness
+        .screenshot()
+        .selection_blue_bounds()
+        .expect("a placement drag in flight must draw its rectangle");
+
+    // The page occupies x 144..756 and y 8..800 on a 900x700 surface.
+    assert!(
+        right <= 757,
+        "the preview reaches column {right} but the page ends at 756"
+    );
+    assert!(
+        bottom <= 699,
+        "the preview reaches row {bottom} but the surface ends at 699"
+    );
+}

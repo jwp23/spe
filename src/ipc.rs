@@ -26,6 +26,9 @@ pub enum IpcError {
     NoActiveOverlay,
     /// The targeted overlay has no width and cannot be resized.
     NotResizable,
+    /// A coordinate or dimension was not a finite, non-negative number, so it
+    /// describes no box the app could draw.
+    NotAUsableSize,
     /// The font name could not be resolved in the registry.
     UnknownFont(String),
     /// There is no recorded command left to undo.
@@ -44,6 +47,10 @@ impl fmt::Display for IpcError {
             IpcError::PageOutOfRange => write!(f, "page number is out of range"),
             IpcError::NoActiveOverlay => write!(f, "no overlay is active"),
             IpcError::NotResizable => write!(f, "overlay is not resizable (no width set)"),
+            IpcError::NotAUsableSize => write!(
+                f,
+                "coordinates and sizes must be finite and non-negative numbers"
+            ),
             IpcError::UnknownFont(name) => write!(f, "unknown font: {name}"),
             IpcError::NothingToUndo => write!(f, "nothing to undo"),
             IpcError::NothingToRedo => write!(f, "nothing to redo"),
@@ -302,17 +309,22 @@ impl IpcCommand {
                 y2,
             } => {
                 ctx.require_page(page)?;
+                require_usable_sizes(&[x1, y1, x2, y2])?;
                 // The same rectangle the mouse path reports: both corners,
                 // not just the horizontal extent, so automation places the
                 // box a user dragging the same two points would get.
+                let (width, height) = crate::ui::canvas::box_size_between(
+                    PdfPosition { x: x1, y: y1 },
+                    PdfPosition { x: x2, y: y2 },
+                );
                 Ok(Message::PlaceTextBox {
                     page,
                     top_left: PdfPosition {
                         x: x1.min(x2),
                         y: y1.max(y2),
                     },
-                    width: (x2 - x1).abs(),
-                    height: (y2 - y1).abs(),
+                    width,
+                    height,
                 })
             }
             IpcCommand::Resize {
@@ -321,13 +333,22 @@ impl IpcCommand {
                 height,
             } => {
                 let doc = ctx.require_overlay(index)?;
+                // Before any flooring: `f32::max` prefers its other operand
+                // over a NaN, so clamping first would swallow exactly the
+                // value this refuses.
+                require_usable_sizes(&[width])?;
+                require_usable_sizes(height.as_slice())?;
                 let old_box = OverlayBox::of(&doc.overlays[index]).ok_or(IpcError::NotResizable)?;
                 Ok(Message::ResizeOverlay {
                     index,
                     old_box,
+                    // Floored the same way a handle drag is, so the two paths
+                    // cannot produce boxes of different shapes.
                     new_box: OverlayBox {
-                        width,
-                        min_height: height.unwrap_or(old_box.min_height),
+                        width: width.max(crate::ui::canvas::MIN_BOX_DIMENSION),
+                        min_height: height
+                            .unwrap_or(old_box.min_height)
+                            .max(crate::ui::canvas::MIN_BOX_DIMENSION),
                     },
                 })
             }
@@ -366,6 +387,21 @@ impl IpcCommand {
             IpcCommand::WaitReady => Ok(Message::Noop),
             IpcCommand::WaitFrame => Ok(Message::Noop),
         }
+    }
+}
+
+/// Refuse any value that is not a finite, non-negative number.
+///
+/// A NaN or negative dimension is not merely useless: it flows into the wrap
+/// ratio the canvas measures line breaking with, and that ratio is a cache key
+/// held by its bits — so one bad command would keep answering for every later
+/// measurement of the same string. The reply says no rather than letting the
+/// app take a shape it cannot draw.
+fn require_usable_sizes(values: &[f32]) -> Result<(), IpcError> {
+    if values.iter().all(|v| v.is_finite() && *v >= 0.0) {
+        Ok(())
+    } else {
+        Err(IpcError::NotAUsableSize)
     }
 }
 
@@ -858,6 +894,105 @@ mod tests {
             Message::ResizeOverlay { new_box, .. }
             if (new_box.width - 300.0).abs() < f32::EPSILON
                 && (new_box.min_height - 150.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn resize_rejects_a_width_that_is_not_a_usable_size() {
+        // A NaN or negative width would poison the wrap ratio the canvas
+        // measures line breaking with — and, being bit-keyed, would poison
+        // its cache for every later measurement of the same string.
+        let doc = test_document_with_overlay();
+        for width in [f32::NAN, -50.0, f32::INFINITY] {
+            let cmd = IpcCommand::Resize {
+                index: 0,
+                width,
+                height: None,
+            };
+            let result = cmd.to_message(&context_with_document(&doc), &test_registry());
+            assert!(
+                matches!(result, Err(IpcError::NotAUsableSize)),
+                "width {width} should be refused, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resize_clamps_a_degenerate_size_the_way_the_mouse_does() {
+        // Dragging the handle to nothing floors the box rather than refusing,
+        // so automation asking for the same must land in the same place.
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Resize {
+            index: 0,
+            width: 0.0,
+            height: Some(1.0),
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        let floor = crate::ui::canvas::MIN_BOX_DIMENSION;
+        assert!(matches!(
+            msg,
+            Message::ResizeOverlay { new_box, .. }
+            if (new_box.width - floor).abs() < f32::EPSILON
+                && (new_box.min_height - floor).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn resize_rejects_a_height_that_is_not_a_usable_size() {
+        let doc = test_document_with_overlay();
+        for height in [f32::NAN, -1.0, f32::INFINITY] {
+            let cmd = IpcCommand::Resize {
+                index: 0,
+                width: 200.0,
+                height: Some(height),
+            };
+            let result = cmd.to_message(&context_with_document(&doc), &test_registry());
+            assert!(
+                matches!(result, Err(IpcError::NotAUsableSize)),
+                "height {height} should be refused, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn drag_rejects_corners_that_are_not_usable_numbers() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Drag {
+            page: 1,
+            x1: 100.0,
+            y1: f32::NAN,
+            x2: 300.0,
+            y2: 500.0,
+        };
+        let result = cmd.to_message(&context_with_document(&doc), &test_registry());
+        assert!(
+            matches!(result, Err(IpcError::NotAUsableSize)),
+            "a NaN corner should be refused, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn drag_clamps_a_degenerate_box_to_a_grabbable_size() {
+        // The same floor the mouse path applies, so automation cannot create
+        // a box a user could not have dragged out.
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Drag {
+            page: 1,
+            x1: 100.0,
+            y1: 700.0,
+            x2: 100.0,
+            y2: 500.0,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(
+            msg,
+            Message::PlaceTextBox { width, height, .. }
+            if (width - crate::ui::canvas::MIN_BOX_DIMENSION).abs() < f32::EPSILON
+                && (height - 200.0).abs() < f32::EPSILON
         ));
     }
 

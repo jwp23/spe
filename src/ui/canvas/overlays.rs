@@ -11,10 +11,10 @@ use crate::overlay::{OverlayBox, PdfPosition, TextOverlay};
 use super::{
     DOUBLE_CLICK_DISTANCE_PX, DOUBLE_CLICK_TIMEOUT_MS, LocalDragState, MIN_DRAG_DISTANCE,
     OVERLAY_TINT_HOVER_BORDER_ALPHA, OverlayAnchor, PageLayout, PlacementDragState, ProgramState,
-    ResizeDragState, ResizeEdge, SELECTION_BORDER_WIDTH, SELECTION_COLOR, clamp_to_rect,
-    draw_overlay_text, hit_test, overlay_text_box, page_rect_in_canvas, resize_handle_hit,
-    resized_box, selection_box_rect, should_draw_overlay_text, should_draw_selection_box,
-    tint_alpha, to_screen_rect, visible_pages,
+    ResizeDragState, ResizeEdge, SELECTION_BORDER_WIDTH, SELECTION_COLOR, box_size_between,
+    clamp_to_rect, draw_overlay_text, hit_test, overlay_text_box, page_rect_in_canvas,
+    resize_handle_hit, resized_box, selection_box_rect, should_draw_overlay_text,
+    should_draw_selection_box, tint_alpha, to_screen_rect, visible_pages,
 };
 
 /// Canvas program that renders text overlays using native Iced drawing primitives.
@@ -307,15 +307,24 @@ impl OverlayCanvasProgram<'_> {
                 screen_to_pdf(placement.start_screen.x, placement.start_screen.y, &params);
             let end = clamp_to_rect(cursor_pos, &placement.page_screen_rect);
             let (end_pdf_x, end_pdf_y) = screen_to_pdf(end.x, end.y, &params);
+            let start = PdfPosition {
+                x: start_pdf_x,
+                y: start_pdf_y,
+            };
+            let finish = PdfPosition {
+                x: end_pdf_x,
+                y: end_pdf_y,
+            };
+            let (width, height) = box_size_between(start, finish);
             Some(
                 canvas::Action::publish(Message::PlaceTextBox {
                     page: placement.page,
                     top_left: PdfPosition {
-                        x: start_pdf_x.min(end_pdf_x),
-                        y: start_pdf_y.max(end_pdf_y),
+                        x: start.x.min(finish.x),
+                        y: start.y.max(finish.y),
                     },
-                    width: (end_pdf_x - start_pdf_x).abs(),
-                    height: (end_pdf_y - start_pdf_y).abs(),
+                    width,
+                    height,
                 })
                 .and_capture(),
             )
@@ -529,11 +538,14 @@ impl OverlayCanvasProgram<'_> {
             return true;
         }
 
+        // Held to the page the same way the release is, so the rectangle
+        // drawn here is the box that will actually be placed.
+        let end_screen = clamp_to_rect(cursor_pos, &placement.page_screen_rect);
         let start_canvas = iced::Point::new(
             placement.start_screen.x - bounds.x,
             placement.start_screen.y - bounds.y,
         );
-        let end_canvas = iced::Point::new(cursor_pos.x - bounds.x, cursor_pos.y - bounds.y);
+        let end_canvas = iced::Point::new(end_screen.x - bounds.x, end_screen.y - bounds.y);
         let rect_x = start_canvas.x.min(end_canvas.x);
         let rect_y = start_canvas.y.min(end_canvas.y);
         let rect_w = (end_canvas.x - start_canvas.x).abs();

@@ -441,9 +441,22 @@ pub(crate) fn resize_handle_hit(
     }
 }
 
-/// Smallest box either resize handle can produce, in PDF points. A box dragged
-/// to nothing would be impossible to grab again.
-pub(crate) const MIN_BOX_DIMENSION: f32 = 20.0;
+/// Smallest box a placement or resize drag can produce, in PDF points. A box
+/// dragged to nothing would wrap one word per line and leave a handle too
+/// narrow to grab again, so every gesture that sizes a box floors it here.
+pub const MIN_BOX_DIMENSION: f32 = 20.0;
+
+/// The size of a box drawn between two PDF-space corners, floored so a gesture
+/// that barely moved on one axis still yields a box the user can work with.
+///
+/// A drag can clear the placement threshold on its vertical extent alone, so
+/// the floor belongs on the box rather than on the gesture.
+pub fn box_size_between(from: PdfPosition, to: PdfPosition) -> (f32, f32) {
+    (
+        (to.x - from.x).abs().max(MIN_BOX_DIMENSION),
+        (to.y - from.y).abs().max(MIN_BOX_DIMENSION),
+    )
+}
 
 /// The box `overlay` would occupy if a resize of `edge` finished with the
 /// cursor at the PDF-space point (`pdf_x`, `pdf_y`).

@@ -52,9 +52,14 @@ impl OverlayBox {
     }
 
     /// Resize `overlay` to these dimensions.
+    ///
+    /// A zero minimum is stored as `None`, the other spelling of the same
+    /// thing, so undoing a resize back to a box that never had a minimum
+    /// restores that overlay exactly rather than an equal-looking twin that
+    /// `PartialEq` — and so `OverlayAnchor` — would call different.
     pub fn apply_to(&self, overlay: &mut TextOverlay) {
         overlay.width = Some(self.width);
-        overlay.min_height = Some(self.min_height);
+        overlay.min_height = (self.min_height > 0.0).then_some(self.min_height);
     }
 }
 
@@ -109,6 +114,38 @@ mod tests {
 
         original.apply_to(&mut overlay);
         assert_eq!(OverlayBox::of(&overlay), Some(original));
+    }
+
+    #[test]
+    fn applying_a_zero_minimum_height_leaves_the_overlay_without_one() {
+        // `None` and `Some(0.0)` mean the same thing to the geometry, so
+        // undoing a resize back to a box that never had a minimum must
+        // restore the overlay it started from rather than an equivalent-but-
+        // different one — otherwise `OverlayAnchor` and `PartialEq` see a
+        // change that isn't there.
+        let registry = FontRegistry::new();
+        let mut overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: Some(200.0),
+            min_height: None,
+        };
+        let original = overlay.clone();
+
+        OverlayBox {
+            width: 300.0,
+            min_height: 90.0,
+        }
+        .apply_to(&mut overlay);
+        OverlayBox::of(&original).unwrap().apply_to(&mut overlay);
+
+        assert_eq!(
+            overlay, original,
+            "undoing back to a box with no minimum must restore it exactly"
+        );
     }
 
     #[test]

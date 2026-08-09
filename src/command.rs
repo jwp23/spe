@@ -340,7 +340,10 @@ mod tests {
         assert_eq!(overlays[0].min_height, Some(120.0));
         cmd.reverse(&mut overlays);
         assert_eq!(overlays[0].width, Some(200.0));
-        assert_eq!(overlays[0].min_height, Some(0.0));
+        assert_eq!(
+            overlays[0].min_height, None,
+            "a zero minimum is stored as the absence of one"
+        );
     }
 
     #[test]
