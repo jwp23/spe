@@ -216,6 +216,8 @@ fn embedded_font_program_fingerprint(
     doc: &Document,
     font_dict: &lopdf::Dictionary,
 ) -> Option<FontProgramFingerprint> {
+    const MAX_FONT_FILE_SIZE: usize = 50 * 1024 * 1024; // 50 MB
+
     let descriptor = match font_dict.get(b"FontDescriptor").ok()? {
         Object::Reference(id) => doc.get_dictionary(*id).ok()?,
         Object::Dictionary(dict) => dict,
@@ -227,6 +229,12 @@ fn embedded_font_program_fingerprint(
         _ => return None,
     };
     let content = font_file.decompressed_content().ok()?;
+
+    // Enforce maximum decompressed size to prevent denial of service.
+    if content.len() > MAX_FONT_FILE_SIZE {
+        return None;
+    }
+
     Some(FontProgramFingerprint::of(&content))
 }
 
