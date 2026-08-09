@@ -320,7 +320,11 @@ impl IpcCommand {
                 // not have dragged out. Measured downward from the page top,
                 // the direction `drag_box_within` grows a floored box, then
                 // converted back to PDF's upward y.
-                let (page_w, page_h) = doc.page_dimensions.get(&page).copied().unwrap_or_default();
+                let (page_w, page_h) = doc
+                    .page_dimensions
+                    .get(&page)
+                    .copied()
+                    .ok_or(IpcError::PageOutOfRange)?;
                 let placed = crate::ui::canvas::drag_box_within(
                     iced::Point::new(x1, page_h - y1),
                     iced::Point::new(x2, page_h - y2),
@@ -1543,6 +1547,21 @@ mod tests {
             .to_message(&context_with_document(&doc), &test_registry())
             .unwrap();
         assert!(matches!(msg, Message::PlaceOverlay { page: 1, .. }));
+    }
+
+    #[test]
+    fn drag_on_a_page_of_unknown_size_is_rejected() {
+        let mut doc = test_document_with_overlay();
+        doc.page_dimensions.clear();
+        let cmd = IpcCommand::Drag {
+            page: 1,
+            x1: 100.0,
+            y1: 100.0,
+            x2: 200.0,
+            y2: 200.0,
+        };
+        let result = cmd.to_message(&context_with_document(&doc), &test_registry());
+        assert!(matches!(result, Err(IpcError::PageOutOfRange)));
     }
 
     #[test]
