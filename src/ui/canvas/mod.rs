@@ -153,6 +153,15 @@ pub(crate) fn should_draw_selection_box(
     active_overlay == Some(index) && !editing
 }
 
+/// Screen-space top edge of text sitting on the baseline `screen_y`.
+///
+/// Canvas text is anchored by its top edge, so text rendering and the tint
+/// geometry behind it must both derive their position from here — computing
+/// the anchor separately is how the tint drifted off the text (spe-ner).
+pub(crate) fn text_top(screen_y: f32, scaled_font_size: f32) -> f32 {
+    screen_y - scaled_font_size
+}
+
 /// Draw overlay text at a screen position on the canvas frame.
 pub(crate) fn draw_overlay_text(
     frame: &mut canvas::Frame,
@@ -165,7 +174,7 @@ pub(crate) fn draw_overlay_text(
 ) {
     let text = canvas::Text {
         content: content.to_string(),
-        position: iced::Point::new(screen_x, screen_y - scaled_font_size),
+        position: iced::Point::new(screen_x, text_top(screen_y, scaled_font_size)),
         color,
         size: iced::Pixels(scaled_font_size),
         font,
@@ -213,7 +222,7 @@ pub(crate) fn overlay_text_box(
     let line_count = overlay.text.lines().count().max(1) as f32;
     iced::Rectangle {
         x: screen_x,
-        y: screen_y - scaled_font_size,
+        y: text_top(screen_y, scaled_font_size),
         width,
         height: line_count * scaled_font_size * TEXT_LINE_HEIGHT_RATIO,
     }

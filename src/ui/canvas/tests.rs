@@ -1911,6 +1911,25 @@ fn text_box_scales_with_the_render_scale() {
 }
 
 #[test]
+fn text_line_height_ratio_matches_the_canvas_text_default() {
+    // TEXT_LINE_HEIGHT_RATIO mirrors iced's own default. If an iced upgrade
+    // changes it, the tint silently stops matching the text again (spe-ner).
+    // Compares the *resolved* line height for a known font size rather than the
+    // LineHeight variant, so it also catches a switch to an absolute default.
+    let font_size = 100.0;
+    let resolved: f32 = canvas::Text::default()
+        .line_height
+        .to_absolute(iced::Pixels(font_size))
+        .into();
+    let expected = font_size * super::TEXT_LINE_HEIGHT_RATIO;
+    assert!(
+        (resolved - expected).abs() < 0.01,
+        "iced lays out {font_size}pt canvas text on {resolved}px lines, but \
+         TEXT_LINE_HEIGHT_RATIO expects {expected}px"
+    );
+}
+
+#[test]
 fn empty_overlay_text_box_is_one_line_tall() {
     let overlay = multiline_overlay_at(72.0, 720.0, 150.0, "");
     let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
@@ -1925,16 +1944,25 @@ fn empty_overlay_text_box_is_one_line_tall() {
 // spe-ceg.3 / spe-i4e: tint opacity
 // =====================================================================
 
-/// How much darker than a white page a tint appears, in 0-255 luminance units,
-/// after compositing `color` at `alpha` over white. Uses relative luminance
-/// because a light blue tint is told apart from paper by brightness, not hue.
+/// Roughly how much darker than a white page a tint reads, in 0-255 units,
+/// after compositing `color` at `alpha` over white.
+///
+/// This is a guardrail, not a colorimetric model: it weights the stored
+/// sRGB-encoded channels with the BT.709 luma coefficients without linearizing
+/// them, while wgpu composites in linear space. The absolute number is
+/// therefore optimistic — the real on-screen drop for the default tint is
+/// nearer 27 than the 38 computed here. What it does reliably capture is
+/// ordering: brighter tints score higher, so it catches an opacity regression.
 fn tint_luminance_drop_over_white_page(color: [f32; 4], alpha: f32) -> f32 {
-    let luminance = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
-    255.0 * (1.0 - luminance) * alpha
+    let luma = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
+    255.0 * (1.0 - luma) * alpha
 }
 
-/// Luminance drop a tint needs to read as a highlight rather than as blank
-/// paper on a typical display.
+/// Score a tint must reach to read as a highlight rather than as blank paper.
+/// Calibrated against observed renders: the old 0.15 alpha scored 19 and was
+/// reported invisible (spe-i4e); the current 0.30 alpha scores 38 and is
+/// clearly visible in screenshots. 30 sits between them, closer to the value
+/// that was confirmed good.
 const PERCEPTIBLE_LUMINANCE_DROP: f32 = 30.0;
 
 #[test]
