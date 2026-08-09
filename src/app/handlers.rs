@@ -266,17 +266,23 @@ impl App {
             return;
         };
         let mut overlay = doc.overlays.remove(index);
-        if matches!(
-            self.undo_stack.last(),
-            Some(UndoCommand::PlaceOverlay { .. })
-        ) {
+        // A placement always appends, so only the last overlay can be the one
+        // the PlaceOverlay on top of the undo stack created.
+        let was_fresh_placement = index == doc.overlays.len()
+            && matches!(
+                self.undo_stack.last(),
+                Some(UndoCommand::PlaceOverlay { .. })
+            );
+        if was_fresh_placement {
             self.undo_stack.pop();
         } else {
             overlay.text = text_at_edit_start;
             self.undo_stack
                 .push(UndoCommand::DeleteOverlay { overlay, index });
-            self.redo_stack.clear();
         }
+        // Redo entries address overlays by index, so none of them can survive
+        // the list shrinking.
+        self.redo_stack.clear();
         self.canvas.active_overlay = None;
     }
 

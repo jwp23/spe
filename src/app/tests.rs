@@ -1847,3 +1847,70 @@ fn escape_while_editing_commits_text_then_clears_selection() {
         "Escape dismisses the selection as well as the edit session"
     );
 }
+
+#[test]
+fn discarding_an_empty_overlay_clears_the_redo_stack() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    app.update(Message::CommitText);
+
+    // Undo the text edit mid-session, leaving a redo entry for the overlay.
+    app.update(Message::EditOverlay(0));
+    app.update(Message::Undo);
+    assert_eq!(app.redo_stack.len(), 1);
+
+    // The overlay is now empty, so deselecting discards it.
+    app.update(Message::DeselectOverlay);
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+    assert!(
+        app.redo_stack.is_empty(),
+        "redo entries referencing a discarded overlay must not survive"
+    );
+
+    // Redo must not index into the emptied overlay list.
+    app.update(Message::Redo);
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+}
+
+#[test]
+fn discarding_an_earlier_overlay_keeps_a_later_placement_in_history() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("one".to_string()));
+    app.update(Message::DeselectOverlay);
+
+    // Place a second overlay, then switch the edit session to the first one.
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 200.0, y: 600.0 },
+        width: None,
+    });
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText(String::new()));
+    app.update(Message::DeselectOverlay);
+
+    // Only the erased overlay is gone; the second placement survives.
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
+    assert!(
+        matches!(
+            app.undo_stack.last(),
+            Some(UndoCommand::DeleteOverlay { index: 0, .. })
+        ),
+        "erasing an established overlay records a deletion, got {:?}",
+        app.undo_stack.last()
+    );
+
+    app.update(Message::Undo);
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 2);
+    assert_eq!(overlays[0].text, "one", "undo restores the erased overlay");
+}
