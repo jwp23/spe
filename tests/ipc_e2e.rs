@@ -280,9 +280,6 @@ fn ipc_open_place_type_save_round_trip() {
     );
 }
 
-/// spe-47n: Save must always produce a file, even with no overlays placed —
-/// open then save with nothing typed must still write a loadable PDF with
-/// the same page count as the source, not silently do nothing.
 /// spe-9gt.7.1: the full user workflow with a bundled cursive font — open, pick
 /// the font, place, type, save — must produce a PDF whose text a reader can
 /// extract, which is what the ToUnicode CMap on the embedded TrueType font buys.
@@ -356,6 +353,9 @@ fn ipc_cursive_overlay_text_is_extractable_by_pdftotext() {
     );
 }
 
+/// spe-47n: Save must always produce a file, even with no overlays placed —
+/// open then save with nothing typed must still write a loadable PDF with
+/// the same page count as the source, not silently do nothing.
 #[test]
 #[ignore]
 fn ipc_open_save_with_no_overlays_still_writes_file() {

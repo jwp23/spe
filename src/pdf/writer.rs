@@ -1450,6 +1450,26 @@ mod tests {
         None
     }
 
+    /// The entry count a `N begin<kind>` header declares, paired with the number
+    /// of entry lines actually present before the matching `end<kind>`.
+    fn section_entry_counts(cmap: &str, kind: &str) -> (usize, usize) {
+        let mut declared = 0;
+        let mut actual = 0;
+        let mut in_section = false;
+        for line in cmap.lines() {
+            let line = line.trim();
+            if line == format!("end{kind}") {
+                in_section = false;
+            } else if let Some(count) = line.strip_suffix(&format!(" begin{kind}")) {
+                declared = count.parse().expect("section header must declare a count");
+                in_section = true;
+            } else if in_section {
+                actual += 1;
+            }
+        }
+        (declared, actual)
+    }
+
     #[test]
     fn tounicode_cmap_has_required_cmap_structure() {
         let cmap = win_ansi_to_unicode_cmap();
@@ -1463,11 +1483,24 @@ mod tests {
             "<20> <FF>",
             "endcodespacerange",
             "endcmap",
-            "end",
         ] {
             assert!(
                 cmap.contains(required),
                 "ToUnicode CMap must contain `{required}`, got:\n{cmap}"
+            );
+        }
+
+        // A declared count that disagrees with the entries present is the mistake a
+        // hand-formatted CMap is most likely to make, and readers trust the header.
+        for (kind, expected) in [("codespacerange", 1), ("bfrange", 2), ("bfchar", 27)] {
+            let (declared, actual) = section_entry_counts(&cmap, kind);
+            assert_eq!(
+                declared, expected,
+                "`{kind}` header should declare {expected} entries"
+            );
+            assert_eq!(
+                actual, expected,
+                "`{kind}` section should contain {expected} entry lines"
             );
         }
     }
