@@ -10,10 +10,10 @@ use crate::overlay::{PdfPosition, TextOverlay};
 
 use super::{
     DOUBLE_CLICK_DISTANCE_PX, DOUBLE_CLICK_TIMEOUT_MS, LocalDragState, MIN_DRAG_DISTANCE,
-    OVERLAY_TINT_HOVER_BORDER_ALPHA, PageLayout, PlacementDragState, ProgramState, ResizeDragState,
-    SELECTION_BORDER_WIDTH, SELECTION_COLOR, draw_overlay_text, hit_test, overlay_text_box,
-    page_rect_in_canvas, resize_handle_hit, selection_box_rect, should_draw_overlay_text,
-    should_draw_selection_box, tint_alpha, to_screen_rect, visible_pages,
+    OVERLAY_TINT_HOVER_BORDER_ALPHA, OverlayAnchor, PageLayout, PlacementDragState, ProgramState,
+    ResizeDragState, SELECTION_BORDER_WIDTH, SELECTION_COLOR, draw_overlay_text, hit_test,
+    overlay_text_box, page_rect_in_canvas, resize_handle_hit, selection_box_rect,
+    should_draw_overlay_text, should_draw_selection_box, tint_alpha, to_screen_rect, visible_pages,
 };
 
 /// Canvas program that renders text overlays using native Iced drawing primitives.
@@ -136,6 +136,7 @@ impl OverlayCanvasProgram<'_> {
         }
         state.resize_drag = Some(ResizeDragState {
             overlay_index: active_idx,
+            anchor: OverlayAnchor::of(overlay),
             initial_width: width_pts,
         });
         Some(canvas::Action::capture())
@@ -176,7 +177,7 @@ impl OverlayCanvasProgram<'_> {
         );
         state.drag = Some(LocalDragState {
             overlay_index: idx,
-            initial_pdf_position: self.overlays[idx].position,
+            anchor: OverlayAnchor::of(&self.overlays[idx]),
             grab_offset_x: cursor_pos.x - overlay_sx,
             grab_offset_y: cursor_pos.y - overlay_sy,
         });
@@ -301,7 +302,8 @@ impl OverlayCanvasProgram<'_> {
         cursor_pos: iced::Point,
     ) -> Option<canvas::Action<Message>> {
         let resize = state.resize_drag.take()?;
-        let overlay = self.overlays.get(resize.overlay_index)?;
+        let index = resize.anchor.resolve(self.overlays, resize.overlay_index)?;
+        let overlay = &self.overlays[index];
         let page_rect = page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
         let page_screen_rect = to_screen_rect(page_rect, &bounds);
         let params = self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
@@ -310,7 +312,7 @@ impl OverlayCanvasProgram<'_> {
         if (new_width - resize.initial_width).abs() > 0.1 {
             Some(
                 canvas::Action::publish(Message::ResizeOverlay {
-                    index: resize.overlay_index,
+                    index,
                     old_width: resize.initial_width,
                     new_width,
                 })
@@ -329,8 +331,8 @@ impl OverlayCanvasProgram<'_> {
         cursor_pos: iced::Point,
     ) -> Option<canvas::Action<Message>> {
         let drag = state.drag.take()?;
-
-        let overlay = self.overlays.get(drag.overlay_index)?;
+        let index = drag.anchor.resolve(self.overlays, drag.overlay_index)?;
+        let overlay = &self.overlays[index];
         let page_rect = page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
         let page_screen_rect = to_screen_rect(page_rect, &bounds);
         let params = self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
@@ -339,13 +341,13 @@ impl OverlayCanvasProgram<'_> {
         let overlay_screen_y = cursor_pos.y - drag.grab_offset_y;
         let (new_pdf_x, new_pdf_y) = screen_to_pdf(overlay_screen_x, overlay_screen_y, &params);
 
-        let moved = (new_pdf_x - drag.initial_pdf_position.x).abs() > 0.1
-            || (new_pdf_y - drag.initial_pdf_position.y).abs() > 0.1;
+        let moved = (new_pdf_x - drag.anchor.position.x).abs() > 0.1
+            || (new_pdf_y - drag.anchor.position.y).abs() > 0.1;
 
         if moved {
             Some(
                 canvas::Action::publish(Message::MoveOverlay(
-                    drag.overlay_index,
+                    index,
                     PdfPosition {
                         x: new_pdf_x,
                         y: new_pdf_y,
@@ -408,8 +410,9 @@ impl OverlayCanvasProgram<'_> {
         scale: f32,
     ) {
         if let (Some(drag), Some(cursor_pos)) = (&state.drag, state.cursor_position)
-            && let Some(overlay) = self.overlays.get(drag.overlay_index)
+            && let Some(index) = drag.anchor.resolve(self.overlays, drag.overlay_index)
         {
+            let overlay = &self.overlays[index];
             let preview_screen_x = cursor_pos.x - drag.grab_offset_x - bounds.x;
             let preview_screen_y = cursor_pos.y - drag.grab_offset_y - bounds.y;
             let scaled_size = overlay.font_size * scale;
@@ -565,7 +568,9 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                 if overlay.page != page {
                     continue;
                 }
-                let is_dragging = state.drag.as_ref().is_some_and(|d| d.overlay_index == i);
+                let is_dragging = state.drag.as_ref().is_some_and(|drag| {
+                    drag.anchor.resolve(self.overlays, drag.overlay_index) == Some(i)
+                });
                 if is_dragging {
                     continue;
                 }

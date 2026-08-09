@@ -293,7 +293,10 @@ fn state_with_drag() -> ProgramState {
     ProgramState {
         drag: Some(LocalDragState {
             overlay_index: 0,
-            initial_pdf_position: PdfPosition { x: 72.0, y: 720.0 },
+            anchor: OverlayAnchor {
+                page: 1,
+                position: PdfPosition { x: 72.0, y: 720.0 },
+            },
             grab_offset_x: 4.0,
             grab_offset_y: 6.0,
         }),
@@ -351,13 +354,16 @@ fn placement_drag_state_construction() {
 fn local_drag_state_construction() {
     let drag = LocalDragState {
         overlay_index: 3,
-        initial_pdf_position: PdfPosition { x: 100.0, y: 500.0 },
+        anchor: OverlayAnchor {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 500.0 },
+        },
         grab_offset_x: 5.0,
         grab_offset_y: 10.0,
     };
     assert_eq!(drag.overlay_index, 3);
-    assert!((drag.initial_pdf_position.x - 100.0).abs() < f32::EPSILON);
-    assert!((drag.initial_pdf_position.y - 500.0).abs() < f32::EPSILON);
+    assert!((drag.anchor.position.x - 100.0).abs() < f32::EPSILON);
+    assert!((drag.anchor.position.y - 500.0).abs() < f32::EPSILON);
     assert!((drag.grab_offset_x - 5.0).abs() < f32::EPSILON);
     assert!((drag.grab_offset_y - 10.0).abs() < f32::EPSILON);
 }
@@ -854,8 +860,8 @@ fn update_click_on_overlay_starts_drag() {
     assert!(state.drag.is_some());
     let drag = state.drag.as_ref().unwrap();
     assert_eq!(drag.overlay_index, 0);
-    assert!((drag.initial_pdf_position.x - 72.0).abs() < 0.01);
-    assert!((drag.initial_pdf_position.y - 720.0).abs() < 0.01);
+    assert!((drag.anchor.position.x - 72.0).abs() < 0.01);
+    assert!((drag.anchor.position.y - 720.0).abs() < 0.01);
 }
 
 #[test]
@@ -1456,6 +1462,10 @@ fn multiline_overlay_at(x: f32, y: f32, width: f32, text: &str) -> TextOverlay {
 fn resize_drag_state_construction() {
     let state = ResizeDragState {
         overlay_index: 2,
+        anchor: OverlayAnchor {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+        },
         initial_width: 150.0,
     };
     assert_eq!(state.overlay_index, 2);
@@ -1672,6 +1682,7 @@ fn cursor_move_requests_redraw_during_resize_drag() {
     let mut state = ProgramState::default();
     state.resize_drag = Some(ResizeDragState {
         overlay_index: 0,
+        anchor: OverlayAnchor::of(&overlays[0]),
         initial_width: 150.0,
     });
     let bounds = test_canvas_bounds();
@@ -2634,4 +2645,189 @@ fn the_editor_lays_lines_out_on_the_canvas_line_height() {
         "editor lines are {spacing}px apart, but the canvas lays {font_size}px \
          text out on {expected}px lines"
     );
+}
+
+// =====================================================================
+// spe-01a: widget-local drag state addresses overlays by index, and the
+// canvas program has no way to observe an IPC delete/undo mid-drag
+// =====================================================================
+
+#[test]
+fn drag_release_after_the_dragged_overlay_is_deleted_publishes_no_move() {
+    // Deleting the dragged overlay leaves index 0 addressing a *different*
+    // overlay, so releasing would silently drag the survivor to the cursor.
+    let registry = FontRegistry::new();
+    let dims = test_page_dimensions();
+    let before = vec![
+        overlay_at(72.0, 720.0, "first"),
+        overlay_at(72.0, 600.0, "second"),
+    ];
+    let program = test_program(&before, &dims, &registry);
+    let mut state = ProgramState::default();
+    let bounds = test_canvas_bounds();
+
+    program.update(
+        &mut state,
+        &left_press_event(),
+        bounds,
+        cursor_at(270.0, 75.0),
+    );
+    assert_eq!(
+        state
+            .drag
+            .as_ref()
+            .expect("press should start a drag")
+            .overlay_index,
+        0
+    );
+
+    let after = vec![overlay_at(72.0, 600.0, "second")];
+    let program = test_program(&after, &dims, &registry);
+    let action = program.update(
+        &mut state,
+        &left_release_event(),
+        bounds,
+        cursor_at(400.0, 300.0),
+    );
+
+    let (msg, _) = decompose(action);
+    assert!(
+        !matches!(msg, Some(Message::MoveOverlay(..))),
+        "a drag whose overlay is gone must not move whatever took its index, got {msg:?}"
+    );
+    assert!(state.drag.is_none(), "the stale drag must be cleared");
+}
+
+#[test]
+fn resize_release_after_the_resized_overlay_is_deleted_publishes_no_resize() {
+    let registry = FontRegistry::new();
+    let dims = test_page_dimensions();
+    let before = vec![
+        multiline_overlay_at(72.0, 720.0, 150.0, "first"),
+        multiline_overlay_at(72.0, 600.0, 150.0, "second"),
+    ];
+    let program = OverlayCanvasProgram {
+        active_overlay: Some(0),
+        ..test_program(&before, &dims, &registry)
+    };
+    let mut state = ProgramState::default();
+    let bounds = test_canvas_bounds();
+
+    program.update(
+        &mut state,
+        &left_press_event(),
+        bounds,
+        cursor_at(416.0, 75.0),
+    );
+    assert!(
+        state.resize_drag.is_some(),
+        "press on the handle should start a resize"
+    );
+
+    let after = vec![multiline_overlay_at(72.0, 600.0, 150.0, "second")];
+    let program = OverlayCanvasProgram {
+        active_overlay: Some(0),
+        ..test_program(&after, &dims, &registry)
+    };
+    let action = program.update(
+        &mut state,
+        &left_release_event(),
+        bounds,
+        cursor_at(516.0, 75.0),
+    );
+
+    let (msg, _) = decompose(action);
+    assert!(
+        !matches!(msg, Some(Message::ResizeOverlay { .. })),
+        "a resize whose overlay is gone must not resize whatever took its index, got {msg:?}"
+    );
+    assert!(
+        state.resize_drag.is_none(),
+        "the stale resize must be cleared"
+    );
+}
+
+#[test]
+fn drag_release_still_moves_an_overlay_that_only_shifted_index() {
+    // Deleting an *earlier* overlay shifts the dragged one down a slot. The
+    // drag anchors on where the overlay actually is, so it must follow it
+    // rather than give up.
+    let registry = FontRegistry::new();
+    let dims = test_page_dimensions();
+    let before = vec![
+        overlay_at(72.0, 600.0, "first"),
+        overlay_at(72.0, 720.0, "dragged"),
+    ];
+    let program = test_program(&before, &dims, &registry);
+    let mut state = ProgramState::default();
+    let bounds = test_canvas_bounds();
+
+    program.update(
+        &mut state,
+        &left_press_event(),
+        bounds,
+        cursor_at(270.0, 75.0),
+    );
+    assert_eq!(
+        state
+            .drag
+            .as_ref()
+            .expect("press should start a drag")
+            .overlay_index,
+        1
+    );
+
+    let after = vec![overlay_at(72.0, 720.0, "dragged")];
+    let program = test_program(&after, &dims, &registry);
+    let action = program.update(
+        &mut state,
+        &left_release_event(),
+        bounds,
+        cursor_at(400.0, 300.0),
+    );
+
+    let (msg, _) = decompose(action);
+    assert!(
+        matches!(msg, Some(Message::MoveOverlay(0, _))),
+        "the dragged overlay moved to index 0 and should still be the one moved, got {msg:?}"
+    );
+}
+
+#[test]
+fn overlay_anchor_resolves_to_the_unchanged_index() {
+    let overlays = vec![overlay_at(72.0, 720.0, "a"), overlay_at(72.0, 600.0, "b")];
+    let anchor = OverlayAnchor::of(&overlays[1]);
+    assert_eq!(anchor.resolve(&overlays, 1), Some(1));
+}
+
+#[test]
+fn overlay_anchor_follows_its_overlay_to_a_new_index() {
+    let overlays = vec![overlay_at(72.0, 600.0, "b")];
+    let anchor = OverlayAnchor {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 600.0 },
+    };
+    assert_eq!(anchor.resolve(&overlays, 1), Some(0));
+}
+
+#[test]
+fn overlay_anchor_does_not_resolve_once_its_overlay_is_gone() {
+    let overlays = vec![overlay_at(72.0, 600.0, "b")];
+    let anchor = OverlayAnchor {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 720.0 },
+    };
+    assert!(anchor.resolve(&overlays, 0).is_none());
+}
+
+#[test]
+fn overlay_anchor_distinguishes_overlays_on_different_pages() {
+    let mut on_page_two = overlay_at(72.0, 720.0, "a");
+    on_page_two.page = 2;
+    let overlays = vec![on_page_two];
+    let anchor = OverlayAnchor {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 720.0 },
+    };
+    assert!(anchor.resolve(&overlays, 0).is_none());
 }

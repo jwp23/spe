@@ -101,9 +101,50 @@ impl Default for ProgramState {
     }
 }
 
+/// Identifies the overlay a drag grabbed, independently of its list index.
+///
+/// Widget-local drag state lives in the canvas program and survives view
+/// rebuilds, so nothing tells it when an IPC delete or an undo reorders or
+/// shortens the overlay list mid-drag (spe-01a). The page and position the
+/// drag grabbed are what the grab offsets were measured against, so they —
+/// not the index — identify the overlay for the rest of the drag.
+#[derive(Clone, Copy, PartialEq)]
+pub struct OverlayAnchor {
+    pub page: u32,
+    pub position: PdfPosition,
+}
+
+impl OverlayAnchor {
+    pub fn of(overlay: &TextOverlay) -> Self {
+        Self {
+            page: overlay.page,
+            position: overlay.position,
+        }
+    }
+
+    /// The anchored overlay's current index, or `None` if it is no longer in
+    /// the list. `last_known` is checked first so the common case — nothing
+    /// changed — costs one comparison.
+    ///
+    /// Two overlays anchored identically are drawn on top of each other, so
+    /// picking either one is indistinguishable to the user.
+    pub fn resolve(&self, overlays: &[TextOverlay], last_known: usize) -> Option<usize> {
+        if overlays
+            .get(last_known)
+            .is_some_and(|overlay| Self::of(overlay) == *self)
+        {
+            return Some(last_known);
+        }
+        overlays
+            .iter()
+            .position(|overlay| Self::of(overlay) == *self)
+    }
+}
+
 /// Tracks an in-progress resize drag on a multi-line overlay.
 pub struct ResizeDragState {
     pub overlay_index: usize,
+    pub anchor: OverlayAnchor,
     pub initial_width: f32,
 }
 
@@ -117,7 +158,7 @@ pub struct PlacementDragState {
 /// Tracks an in-progress overlay drag within the canvas widget.
 pub struct LocalDragState {
     pub overlay_index: usize,
-    pub initial_pdf_position: PdfPosition,
+    pub anchor: OverlayAnchor,
     pub grab_offset_x: f32,
     pub grab_offset_y: f32,
 }
