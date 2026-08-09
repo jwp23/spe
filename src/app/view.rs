@@ -188,6 +188,17 @@ impl App {
             .unwrap_or_else(|| iced::widget::Space::new().into())
     }
 
+    /// Iced font the floating editor should preview text in: the font of the
+    /// overlay being edited. Returns None when no overlay is being edited.
+    pub(super) fn editing_font(&self) -> Option<iced::Font> {
+        let idx = self.canvas.active_overlay?;
+        if !self.canvas.editing {
+            return None;
+        }
+        let overlay = self.document.as_ref()?.overlays.get(idx)?;
+        Some(self.font_registry.get(overlay.font).iced_font)
+    }
+
     /// Build the positioned floating text widget if currently editing an overlay.
     /// Returns None when not editing or when required state is unavailable.
     fn build_editing_widget<'a>(
@@ -230,12 +241,15 @@ impl App {
         let top_offset = (screen_y - self.canvas.scroll_y - scaled_font_size).max(0.0);
         let left_offset = screen_x.max(0.0);
 
+        let iced_font = self.editing_font()?;
+
         let widget: iced::Element<Message> = if let Some(pdf_width) = overlay.width {
             let content = self.editor_content.as_ref()?;
             let screen_width = pdf_width * scale;
             iced::widget::text_editor(content)
                 .on_action(Message::TextEditorAction)
                 .id(self.text_input_id.clone())
+                .font(iced_font)
                 .size(iced::Pixels(scaled_font_size))
                 .padding(iced::Padding::ZERO)
                 .width(screen_width)
@@ -253,6 +267,7 @@ impl App {
                 .id(self.text_input_id.clone())
                 .on_input(Message::UpdateOverlayText)
                 .on_submit(Message::CommitText)
+                .font(iced_font)
                 .size(iced::Pixels(scaled_font_size))
                 .padding(iced::Padding::ZERO)
                 .width(input_width)

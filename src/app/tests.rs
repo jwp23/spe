@@ -1726,3 +1726,67 @@ fn deliver_ipc_response_writes_to_channel() {
         .expect("a response should have been delivered");
     assert!(received.ok);
 }
+
+// =====================================================================
+// spe-rto: floating editor previews text in the selected font
+// =====================================================================
+
+#[test]
+fn editing_font_is_none_when_not_editing() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::CommitText);
+    assert!(!app.canvas.editing);
+    assert!(app.editing_font().is_none());
+}
+
+#[test]
+fn editing_font_matches_selected_bundled_font() {
+    let mut app = test_app_with_document();
+    let great_vibes = app.font_registry.find_by_name("Great Vibes").unwrap();
+    app.update(Message::ChangeFont(great_vibes));
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    assert!(app.canvas.editing);
+    let expected = app.font_registry.get(great_vibes).iced_font;
+    assert_eq!(app.editing_font(), Some(expected));
+    assert_eq!(expected.family, iced::font::Family::Name("Great Vibes"));
+}
+
+#[test]
+fn editing_font_follows_font_change_during_edit() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::ChangeFont(courier));
+    let expected = app.font_registry.get(courier).iced_font;
+    assert_eq!(app.editing_font(), Some(expected));
+    assert_eq!(expected.family, iced::font::Family::Monospace);
+}
+
+#[test]
+fn editing_font_for_multiline_overlay_matches_selected_font() {
+    let mut app = test_app_with_document();
+    let times = app.font_registry.find_by_name("Times Bold").unwrap();
+    app.update(Message::ChangeFont(times));
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: Some(200.0),
+    });
+    assert!(app.editor_content.is_some());
+    let expected = app.font_registry.get(times).iced_font;
+    assert_eq!(app.editing_font(), Some(expected));
+    assert_eq!(expected.weight, iced::font::Weight::Bold);
+}
