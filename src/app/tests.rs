@@ -2437,6 +2437,44 @@ fn ipc_redo_restores_an_undone_edit() {
 }
 
 #[test]
+fn ipc_redo_while_editing_is_rejected() {
+    // handle_redo commits an open edit session first, and that commit clears
+    // the redo stack, so the pop that follows finds nothing. The precondition
+    // reads redo_depth from before the commit, so it cannot see that coming —
+    // the command must be refused up front rather than reporting success for
+    // a redo that never happens.
+    let mut app = app_with_committed_overlay();
+    // Bank a redo entry: change the text, commit it, then undo.
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Edit { index: 0 });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Hello again".to_string(),
+    });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Deselect);
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Undo);
+    assert_eq!(app.redo_stack.len(), 1, "a redo entry must be banked");
+
+    // Now open a fresh edit session with modified, uncommitted text.
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Edit { index: 0 });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Changed".to_string(),
+    });
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Redo);
+
+    assert!(!response.ok, "a redo that cannot happen must not report ok");
+    assert!(response.error.unwrap().contains("edit session"));
+    // Rejected before any side effect: the session is still open and its
+    // banked redo entry survives.
+    assert!(app.canvas.editing, "the edit session must still be open");
+    assert_eq!(
+        app.redo_stack.len(),
+        1,
+        "the redo entry must not have been cleared by a commit"
+    );
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Changed");
+}
+
+#[test]
 fn ipc_undo_with_nothing_to_undo_reports_failure() {
     let mut app = test_app_with_document();
     let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Undo);

@@ -102,6 +102,7 @@ automation can assert on the reply:
 | `select` / `edit` / `move` / `resize` with a bad index | `overlay index is out of range` |
 | `resize` on a single-line overlay | `overlay is not resizable (no width set)` |
 | `font` with an unrecognized family | `unknown font: <name>` |
+| `redo` while an overlay is being edited | `an edit session is open — commit or deselect first, then redo` |
 
 Commands that can only fail while doing their work — `open` and `save` — report
 the real filesystem error the same way.
@@ -124,7 +125,7 @@ the real filesystem error the same way.
 | Change font | `{"cmd": "font", "family": "Helvetica"}` |
 | Change font size | `{"cmd": "font_size", "size": 14.0}` |
 | Undo | `{"cmd": "undo"}` |
-| Redo | `{"cmd": "redo"}` |
+| Redo | `{"cmd": "redo"}` (rejected while an edit session is open) |
 | Zoom in | `{"cmd": "zoom_in"}` |
 | Zoom out | `{"cmd": "zoom_out"}` |
 | Zoom reset | `{"cmd": "zoom_reset"}` |

@@ -32,6 +32,8 @@ pub enum IpcError {
     NothingToUndo,
     /// There is no undone command left to redo.
     NothingToRedo,
+    /// Redo was asked for while an edit session is open, where it cannot act.
+    RedoWhileEditing,
 }
 
 impl fmt::Display for IpcError {
@@ -45,6 +47,10 @@ impl fmt::Display for IpcError {
             IpcError::UnknownFont(name) => write!(f, "unknown font: {name}"),
             IpcError::NothingToUndo => write!(f, "nothing to undo"),
             IpcError::NothingToRedo => write!(f, "nothing to redo"),
+            IpcError::RedoWhileEditing => write!(
+                f,
+                "an edit session is open — commit or deselect first, then redo"
+            ),
         }
     }
 }
@@ -320,6 +326,18 @@ impl IpcCommand {
             }
             IpcCommand::Redo => {
                 ctx.require_document()?;
+                // The mirror image of Undo's rule above, not an oversight.
+                // Undo cancels an open edit session, so a session is itself
+                // something to undo. Redo instead *commits* the session
+                // first, and committing clears the redo stack — so by the
+                // time the redo would run there is truthfully nothing left to
+                // reapply. Refusing here keeps the reply honest and, unlike
+                // reading a post-commit depth, needs no state the context
+                // cannot see. The GUI's Ctrl+Shift+Z keeps its own behaviour;
+                // this is an IPC precondition only.
+                if ctx.editing {
+                    return Err(IpcError::RedoWhileEditing);
+                }
                 if ctx.redo_depth == 0 {
                     return Err(IpcError::NothingToRedo);
                 }
@@ -1336,6 +1354,21 @@ mod tests {
         };
         let msg = IpcCommand::Redo.to_message(&ctx, &test_registry()).unwrap();
         assert!(matches!(msg, Message::Redo));
+    }
+
+    #[test]
+    fn redo_while_editing_is_rejected_even_with_a_banked_entry() {
+        // Contrast with undo, which is allowed to cancel a session.
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            active_overlay: Some(0),
+            editing: true,
+            redo_depth: 1,
+            ..CommandContext::default()
+        };
+        let result = IpcCommand::Redo.to_message(&ctx, &test_registry());
+        assert!(matches!(result, Err(IpcError::RedoWhileEditing)));
     }
 
     #[test]
