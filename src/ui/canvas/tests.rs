@@ -2100,12 +2100,22 @@ fn multiline_box_height_floors_to_the_writer_line_count_when_it_exceeds_the_canv
     let writer_lines = registry
         .word_wrap(&overlay.text, font, overlay.font_size, 60.0)
         .len();
+    let canvas_lines = canvas_line_count(
+        &overlay.text,
+        font,
+        wrap_ratio(60.0, overlay.font_size),
+        &registry,
+    );
     let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &registry);
     let box_lines = (rect.height / LINE_12PT).round() as usize;
 
     assert!(
         writer_lines > 1,
         "test font must actually force wrapping, got {writer_lines} line(s)"
+    );
+    assert!(
+        writer_lines > canvas_lines,
+        "writer should need more lines ({writer_lines}) than canvas ({canvas_lines}) to exercise the floor"
     );
     assert_eq!(
         box_lines, writer_lines,

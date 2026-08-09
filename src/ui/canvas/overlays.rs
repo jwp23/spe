@@ -895,6 +895,46 @@ mod tests {
     }
 
     #[test]
+    fn page_hit_in_right_margin_returns_none() {
+        // Page is 100x200 at scale 1.0, centered in a 400-wide canvas: page
+        // spans x in [150, 250). A cursor at x=350 sits in the right margin
+        // but at a y that falls within the page's vertical range.
+        let dims = HashMap::from([(1, (100.0, 200.0))]);
+        let registry = FontRegistry::new();
+        let program = narrow_page_program(&dims, &registry);
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 800.0,
+        };
+        let cursor_in_margin = iced::Point::new(350.0, 50.0);
+
+        assert_eq!(program.page_hit(cursor_in_margin, bounds), None);
+    }
+
+    #[test]
+    fn page_hit_with_offset_bounds_and_offset_cursor() {
+        // Bounds offset by (50.0, 100.0). Page is 100x200 at scale 1.0,
+        // centered in a 400-wide canvas: page spans x in [200, 300) within
+        // the bounds. A cursor at absolute (250.0, 150.0) maps to
+        // canvas (200.0, 50.0), which is on the page.
+        let dims = HashMap::from([(1, (100.0, 200.0))]);
+        let registry = FontRegistry::new();
+        let program = narrow_page_program(&dims, &registry);
+        let bounds = iced::Rectangle {
+            x: 50.0,
+            y: 100.0,
+            width: 400.0,
+            height: 800.0,
+        };
+        let cursor = iced::Point::new(250.0, 150.0);
+
+        let hit = program.page_hit(cursor, bounds);
+        assert_eq!(hit.map(|(page, _)| page), Some(1));
+    }
+
+    #[test]
     fn overlay_program_can_be_constructed() {
         let dims = HashMap::from([(1, (612.0, 792.0))]);
         let layout = super::super::page_layout(&dims, 1, 1.0, 72.0);
