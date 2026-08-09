@@ -1959,6 +1959,9 @@ fn tint_luminance_drop_over_white_page(color: [f32; 4], alpha: f32) -> f32 {
 }
 
 /// Score a tint must reach to read as a highlight rather than as blank paper.
+/// `committed_overlay_paints_a_visible_tint_without_hover` measures the real
+/// composited output and is the authoritative check; this one is a cheap
+/// arithmetic guard on the constant itself.
 /// Calibrated against observed renders: the old 0.15 alpha scored 19 and was
 /// reported invisible (spe-i4e); the current 0.30 alpha scores 38 and is
 /// clearly visible in screenshots. 30 sits between them, closer to the value
@@ -2139,5 +2142,250 @@ fn should_draw_selection_box_false_when_nothing_selected() {
     assert!(
         !super::should_draw_selection_box(false, None, 0),
         "no selection means no selection box"
+    );
+}
+
+// =====================================================================
+// spe-i4e / spe-ner: headless rendering of the overlay canvas
+//
+// These render the real canvas Program through iced's software renderer so
+// the drawing code itself runs under plain `cargo test` — no GPU, display or
+// compositor required. The pure geometry tests above pin down the tint rect;
+// these prove it actually reaches the screen.
+// =====================================================================
+
+/// Size of the headless render surface, in logical pixels.
+const RENDER_SIZE: iced::Size = iced::Size {
+    width: 900.0,
+    height: 700.0,
+};
+
+/// A headlessly rendered frame, as RGBA pixels over a white page.
+struct RenderedCanvas {
+    width: u32,
+    rgba: Vec<u8>,
+}
+
+impl RenderedCanvas {
+    fn pixel(&self, x: u32, y: u32) -> (u8, u8, u8) {
+        let i = ((y * self.width + x) * 4) as usize;
+        (self.rgba[i], self.rgba[i + 1], self.rgba[i + 2])
+    }
+
+    /// How much darker than white the pixel at (x, y) is, averaged over RGB.
+    /// Measured on the real composited output, so it accounts for whatever
+    /// blending the renderer actually performs.
+    fn darkening(&self, x: u32, y: u32) -> f32 {
+        let (r, g, b) = self.pixel(x, y);
+        (3.0 * 255.0 - r as f32 - g as f32 - b as f32) / 3.0
+    }
+
+    /// Rows in `x`'s column that are darker than white by at least `threshold`.
+    fn darkened_rows(&self, x: u32, threshold: f32, height: u32) -> Vec<u32> {
+        (0..height)
+            .filter(|y| self.darkening(x, *y) >= threshold)
+            .collect()
+    }
+}
+
+/// Render an overlay canvas program over a white page, headlessly.
+///
+/// When `cursor` is given it is delivered as a real cursor-moved event first,
+/// so hover state is established through the same path the app uses.
+fn render_overlay_canvas(
+    program: OverlayCanvasProgram<'_>,
+    cursor: Option<iced::Point>,
+) -> RenderedCanvas {
+    use iced_test::core::renderer::Headless;
+    use iced_test::runtime::{UserInterface, user_interface};
+
+    let element: iced::Element<Message> = iced::widget::canvas(program)
+        .width(iced::Length::Fill)
+        .height(iced::Length::Fill)
+        .into();
+
+    let mut renderer = iced_test::futures::futures::executor::block_on(
+        // Pinned to the software backend so the rendered pixels these tests
+        // assert on do not depend on whether a GPU is present.
+        <iced::Renderer as Headless>::new(
+            iced::Font::DEFAULT,
+            iced::Pixels(16.0),
+            Some("tiny-skia"),
+        ),
+    )
+    .expect("software renderer should be available without a GPU or display");
+
+    let mut ui = UserInterface::build(
+        element,
+        RENDER_SIZE,
+        user_interface::Cache::default(),
+        &mut renderer,
+    );
+
+    let pointer = match cursor {
+        Some(position) => mouse::Cursor::Available(position),
+        None => mouse::Cursor::Unavailable,
+    };
+    if let Some(position) = cursor {
+        let _ = ui.update(
+            &[iced::Event::Mouse(mouse::Event::CursorMoved { position })],
+            pointer,
+            &mut renderer,
+            &mut iced_test::core::clipboard::Null,
+            &mut Vec::new(),
+        );
+    }
+
+    ui.draw(
+        &mut renderer,
+        &iced::Theme::Light,
+        &iced_test::core::renderer::Style {
+            text_color: iced::Color::BLACK,
+        },
+        pointer,
+    );
+
+    let width = RENDER_SIZE.width as u32;
+    let height = RENDER_SIZE.height as u32;
+    let rgba = renderer.screenshot(iced::Size::new(width, height), 1.0, iced::Color::WHITE);
+    RenderedCanvas { width, rgba }
+}
+
+/// Screen-space baseline of an overlay inside the rendered canvas.
+fn rendered_baseline(overlay: &TextOverlay, page_dims: &HashMap<u32, (f32, f32)>) -> (f32, f32) {
+    let layout = page_layout(page_dims, 1, TEST_ZOOM, TEST_DPI);
+    let page_rect = page_rect_in_canvas(&layout, overlay.page, RENDER_SIZE.width);
+    let (_, page_h) = page_dims[&overlay.page];
+    let params = ConversionParams {
+        zoom: TEST_ZOOM,
+        dpi: TEST_DPI,
+        page_height: page_h,
+        offset_x: page_rect.x,
+        offset_y: page_rect.y,
+    };
+    crate::coordinate::pdf_to_screen(overlay.position.x, overlay.position.y, &params)
+}
+
+#[test]
+fn committed_overlay_paints_a_visible_tint_without_hover() {
+    // spe-i4e: with nothing hovered the tint must still read as a highlight
+    // against white paper. Measured on the real composited pixels.
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    let canvas = render_overlay_canvas(test_program(&overlays, &dims, &registry), None);
+
+    let (sx, sy) = rendered_baseline(&overlays[0], &dims);
+    // Sample just inside the top-left of the tint, clear of the glyphs.
+    let x = sx as u32 + 2;
+    let y = (sy - 12.0 * TEST_ZOOM) as u32 + 2;
+    let darkening = canvas.darkening(x, y);
+
+    // Calibrated on real composited output: the old 0.15 alpha that was
+    // reported invisible measures ~25 here, the current 0.30 alpha ~51.
+    assert!(
+        darkening >= 40.0,
+        "resting tint at ({x}, {y}) is only {darkening} darker than white paper"
+    );
+}
+
+#[test]
+fn hovered_overlay_paints_a_deeper_tint_than_a_resting_one() {
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    let (sx, sy) = rendered_baseline(&overlays[0], &dims);
+    let x = sx as u32 + 2;
+    let y = (sy - 12.0 * TEST_ZOOM) as u32 + 2;
+
+    let resting =
+        render_overlay_canvas(test_program(&overlays, &dims, &registry), None).darkening(x, y);
+    // Park the cursor over the overlay so the canvas hit-tests it as hovered.
+    let hovered = render_overlay_canvas(
+        test_program(&overlays, &dims, &registry),
+        Some(iced::Point::new(sx + 4.0, sy - 4.0)),
+    )
+    .darkening(x, y);
+
+    assert!(
+        hovered > resting,
+        "hovered tint ({hovered}) should be deeper than resting tint ({resting})"
+    );
+}
+
+#[test]
+fn multiline_tint_covers_the_rows_its_text_occupies() {
+    // spe-ner: the tint band must start at the top of the first line and run
+    // downward over every line, not float above the text.
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![multiline_overlay_at(72.0, 600.0, 150.0, "one\ntwo\nthree")];
+    let canvas = render_overlay_canvas(test_program(&overlays, &dims, &registry), None);
+
+    let (sx, sy) = rendered_baseline(&overlays[0], &dims);
+    // Sample a column near the right edge of the box, past the short glyphs,
+    // so only the tint contributes.
+    let column = (sx + 140.0 * TEST_ZOOM) as u32;
+    let rows = canvas.darkened_rows(column, 10.0, RENDER_SIZE.height as u32);
+    assert!(!rows.is_empty(), "no tint band found in column {column}");
+
+    let scaled_font_size = 12.0 * TEST_ZOOM;
+    let expected_top = sy - scaled_font_size;
+    let expected_bottom = expected_top + 3.0 * scaled_font_size * super::TEXT_LINE_HEIGHT_RATIO;
+    let top = *rows.first().unwrap() as f32;
+    let bottom = *rows.last().unwrap() as f32;
+
+    assert!(
+        (top - expected_top).abs() <= 1.5,
+        "tint starts at row {top}, expected the first line's top {expected_top}"
+    );
+    assert!(
+        (bottom - expected_bottom).abs() <= 1.5,
+        "tint ends at row {bottom}, expected the third line's bottom {expected_bottom}"
+    );
+}
+
+impl RenderedCanvas {
+    /// Pixels painted in a strong, saturated blue — the selection border and
+    /// resize handle, which are opaque, unlike the pale overlay tint.
+    fn selection_blue_pixels(&self) -> usize {
+        self.rgba
+            .chunks_exact(4)
+            .filter(|p| p[2] as i32 - p[0] as i32 > 120)
+            .count()
+    }
+}
+
+#[test]
+fn selected_overlay_paints_a_selection_border() {
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![multiline_overlay_at(72.0, 600.0, 150.0, "one\ntwo")];
+    let mut program = test_program(&overlays, &dims, &registry);
+    program.active_overlay = Some(0);
+
+    let canvas = render_overlay_canvas(program, None);
+    assert!(
+        canvas.selection_blue_pixels() > 0,
+        "a selected overlay should paint a selection border and resize handle"
+    );
+}
+
+#[test]
+fn overlay_being_edited_paints_no_selection_border() {
+    // The floating text widget draws its own border while editing, so the
+    // canvas must stay out of the way (#113).
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![multiline_overlay_at(72.0, 600.0, 150.0, "one\ntwo")];
+    let mut program = test_program(&overlays, &dims, &registry);
+    program.active_overlay = Some(0);
+    program.editing = true;
+
+    let canvas = render_overlay_canvas(program, None);
+    assert_eq!(
+        canvas.selection_blue_pixels(),
+        0,
+        "the canvas must not draw a second selection border while editing"
     );
 }
