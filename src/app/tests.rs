@@ -2134,6 +2134,56 @@ fn ipc_command_error_does_not_leak_into_the_next_command() {
     );
 }
 
+// =====================================================================
+// spe-0nc: undo / redo over IPC
+// =====================================================================
+
+#[test]
+fn ipc_undo_reverts_a_placement() {
+    let mut app = test_app_with_document();
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 100.0,
+        y: 700.0,
+    });
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Undo);
+    assert!(response.ok);
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+}
+
+#[test]
+fn ipc_redo_restores_an_undone_placement() {
+    let mut app = test_app_with_document();
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 100.0,
+        y: 700.0,
+    });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Undo);
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Redo);
+    assert!(response.ok);
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
+}
+
+#[test]
+fn ipc_undo_with_nothing_to_undo_reports_failure() {
+    let mut app = test_app_with_document();
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Undo);
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("nothing to undo"));
+}
+
+#[test]
+fn ipc_redo_with_nothing_to_redo_reports_failure() {
+    let mut app = test_app_with_document();
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Redo);
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("nothing to redo"));
+}
+
 #[test]
 fn ipc_wait_ready_when_idle_does_not_set_pending() {
     let (mut app, _) = App::new(true);

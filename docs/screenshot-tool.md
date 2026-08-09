@@ -107,6 +107,8 @@ the real filesystem error the same way.
 | Resize overlay | `{"cmd": "resize", "index": 0, "width": 200.0}` |
 | Change font | `{"cmd": "font", "family": "Helvetica"}` |
 | Change font size | `{"cmd": "font_size", "size": 14.0}` |
+| Undo | `{"cmd": "undo"}` |
+| Redo | `{"cmd": "redo"}` |
 | Zoom in | `{"cmd": "zoom_in"}` |
 | Zoom out | `{"cmd": "zoom_out"}` |
 | Zoom reset | `{"cmd": "zoom_reset"}` |

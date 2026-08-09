@@ -27,6 +27,10 @@ pub enum IpcError {
     NotResizable,
     /// The font name could not be resolved in the registry.
     UnknownFont(String),
+    /// There is no recorded command left to undo.
+    NothingToUndo,
+    /// There is no undone command left to redo.
+    NothingToRedo,
 }
 
 impl fmt::Display for IpcError {
@@ -38,6 +42,8 @@ impl fmt::Display for IpcError {
             IpcError::NoActiveOverlay => write!(f, "no overlay is active"),
             IpcError::NotResizable => write!(f, "overlay is not resizable (no width set)"),
             IpcError::UnknownFont(name) => write!(f, "unknown font: {name}"),
+            IpcError::NothingToUndo => write!(f, "nothing to undo"),
+            IpcError::NothingToRedo => write!(f, "nothing to redo"),
         }
     }
 }
@@ -146,6 +152,8 @@ pub enum IpcCommand {
         x: f32,
         y: f32,
     },
+    Undo,
+    Redo,
     WaitReady,
 }
 
@@ -245,6 +253,20 @@ impl IpcCommand {
             IpcCommand::Move { index, x, y } => {
                 ctx.require_overlay(index)?;
                 Ok(Message::MoveOverlay(index, PdfPosition { x, y }))
+            }
+            IpcCommand::Undo => {
+                ctx.require_document()?;
+                if ctx.undo_depth == 0 {
+                    return Err(IpcError::NothingToUndo);
+                }
+                Ok(Message::Undo)
+            }
+            IpcCommand::Redo => {
+                ctx.require_document()?;
+                if ctx.redo_depth == 0 {
+                    return Err(IpcError::NothingToRedo);
+                }
+                Ok(Message::Redo)
             }
             IpcCommand::WaitReady => Ok(Message::Noop),
         }
@@ -1004,6 +1026,58 @@ mod tests {
         };
         let msg = cmd.to_message(&ctx, &test_registry()).unwrap();
         assert!(matches!(msg, Message::UpdateOverlayText(ref t) if t == "Hello"));
+    }
+
+    // --- undo / redo (spe-0nc) ---
+
+    #[test]
+    fn undo_produces_undo() {
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            undo_depth: 1,
+            ..CommandContext::default()
+        };
+        let msg = IpcCommand::Undo.to_message(&ctx, &test_registry()).unwrap();
+        assert!(matches!(msg, Message::Undo));
+    }
+
+    #[test]
+    fn undo_with_empty_stack_is_rejected() {
+        let doc = test_document_with_overlay();
+        let result = IpcCommand::Undo.to_message(&context_with_document(&doc), &test_registry());
+        assert!(matches!(result, Err(IpcError::NothingToUndo)));
+    }
+
+    #[test]
+    fn redo_produces_redo() {
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            redo_depth: 1,
+            ..CommandContext::default()
+        };
+        let msg = IpcCommand::Redo.to_message(&ctx, &test_registry()).unwrap();
+        assert!(matches!(msg, Message::Redo));
+    }
+
+    #[test]
+    fn redo_with_empty_stack_is_rejected() {
+        let doc = test_document_with_overlay();
+        let result = IpcCommand::Redo.to_message(&context_with_document(&doc), &test_registry());
+        assert!(matches!(result, Err(IpcError::NothingToRedo)));
+    }
+
+    #[test]
+    fn parse_undo_command() {
+        let cmd: IpcCommand = serde_json::from_str(r#"{"cmd": "undo"}"#).unwrap();
+        assert!(matches!(cmd, IpcCommand::Undo));
+    }
+
+    #[test]
+    fn parse_redo_command() {
+        let cmd: IpcCommand = serde_json::from_str(r#"{"cmd": "redo"}"#).unwrap();
+        assert!(matches!(cmd, IpcCommand::Redo));
     }
 
     // --- socket permissions (spe-85p) ---
