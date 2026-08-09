@@ -305,6 +305,17 @@ pub(crate) fn tint_alpha(hovered: bool) -> f32 {
 /// own [`TextOverlay::min_height`], so a box dragged taller than its text keeps
 /// the whitespace the user asked for (spe-x9e), and never below its text
 /// either, so typing past the bottom grows it (spe-b2h).
+///
+/// The line count also floors to what [`FontRegistry::word_wrap`] — the same
+/// wrap the PDF writer uses — would need at this width (spe-y63). The canvas
+/// and the writer wrap with different per-character widths (system-font
+/// shaping vs. AFM/embedded-font metrics), so they can break a line in
+/// different places; deliberately so, since making the canvas *wrap* by the
+/// writer's metrics risks text overflowing its own box on screen (measured
+/// up to ~25% wider for a Standard 14 serif face — see the investigation
+/// recorded against spe-y63). But whichever wraps to *more* lines is the one
+/// the box must fit, or a box sized only for the canvas's shorter wrap would
+/// undersell the vertical space the saved artifact actually uses.
 pub(crate) fn overlay_text_box(
     overlay: &TextOverlay,
     screen_x: f32,
@@ -314,15 +325,18 @@ pub(crate) fn overlay_text_box(
 ) -> iced::Rectangle {
     let scaled_font_size = overlay.font_size * scale;
     let (width, line_count) = match overlay.width {
-        Some(width_pts) => (
-            width_pts * scale,
-            canvas_line_count(
+        Some(width_pts) => {
+            let canvas_lines = canvas_line_count(
                 &overlay.text,
                 overlay.font,
                 wrap_ratio(width_pts, overlay.font_size),
                 registry,
-            ),
-        ),
+            );
+            let writer_lines = registry
+                .word_wrap(&overlay.text, overlay.font, overlay.font_size, width_pts)
+                .len();
+            (width_pts * scale, canvas_lines.max(writer_lines))
+        }
         None => (
             canvas_text_width(&overlay.text, overlay.font, scaled_font_size, registry),
             overlay.text.lines().count().max(1),

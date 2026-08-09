@@ -2055,6 +2055,74 @@ fn multiline_text_box_width_comes_from_the_overlay_width() {
     );
 }
 
+/// Register a font whose AFM/writer width (what `word_wrap` and the PDF
+/// writer use) is far wider per character than what the canvas's system-font
+/// shaper measures for the same text. Lets a test force the writer to need
+/// more lines than the canvas would on its own (spe-y63).
+fn register_afm_wider_than_canvas_font(registry: &mut FontRegistry) -> crate::fonts::FontId {
+    use crate::fonts::{FontEntry, FontId, PdfEmbedding, WidthTable};
+    registry.add_entry(FontEntry {
+        id: FontId::default(),
+        display_name: "AFM-wide test font",
+        pdf_name: "AFMWideTestFont",
+        iced_font: iced::Font {
+            family: iced::font::Family::SansSerif,
+            ..iced::Font::DEFAULT
+        },
+        embedding: PdfEmbedding::BuiltIn,
+        // Every character claims a 1500/1000em advance — far wider than any
+        // canvas-shaped face — so word_wrap breaks after almost every word.
+        widths: WidthTable::Monospaced(1500.0),
+        descriptor: None,
+    })
+}
+
+#[test]
+fn multiline_box_height_floors_to_the_writer_line_count_when_it_exceeds_the_canvas_count() {
+    // The canvas shapes this font's generic SansSerif substitute far
+    // narrower than the AFM width word_wrap (and the PDF writer) uses, so
+    // the writer needs more lines than the canvas would show on its own.
+    // The editable box must be tall enough for the saved artifact's line
+    // count, not just the canvas's, so typed text is never invisibly
+    // truncated relative to what gets written to the PDF.
+    let mut registry = FontRegistry::new();
+    let font = register_afm_wider_than_canvas_font(&mut registry);
+    let overlay = TextOverlay {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 720.0 },
+        text: "one two three four five six seven eight".to_string(),
+        font,
+        font_size: 12.0,
+        width: Some(60.0),
+        min_height: None,
+    };
+
+    let writer_lines = registry
+        .word_wrap(&overlay.text, font, overlay.font_size, 60.0)
+        .len();
+    let canvas_lines = canvas_line_count(
+        &overlay.text,
+        font,
+        wrap_ratio(60.0, overlay.font_size),
+        &registry,
+    );
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &registry);
+    let box_lines = (rect.height / LINE_12PT).round() as usize;
+
+    assert!(
+        writer_lines > 1,
+        "test font must actually force wrapping, got {writer_lines} line(s)"
+    );
+    assert!(
+        writer_lines > canvas_lines,
+        "writer should need more lines ({writer_lines}) than canvas ({canvas_lines}) to exercise the floor"
+    );
+    assert_eq!(
+        box_lines, writer_lines,
+        "box height should floor to the writer's {writer_lines} lines, got {box_lines}"
+    );
+}
+
 #[test]
 fn text_box_scales_with_the_render_scale() {
     let overlay = overlay_at(72.0, 720.0, "Hello");
