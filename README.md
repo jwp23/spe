@@ -52,7 +52,7 @@ These are only needed for visual debugging with the screenshot tool — not for 
 
 ```bash
 cargo fmt --check            # check formatting
-cargo clippy -- -D warnings  # lint
+cargo clippy --all-targets -- -D warnings  # lint
 cargo test                   # unit + integration tests
 cargo test -- --ignored      # E2E tests (requires GPU context)
 ```

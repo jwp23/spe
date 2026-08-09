@@ -12,7 +12,7 @@ fn app_default_has_no_document() {
 #[test]
 fn next_page_without_document_is_noop() {
     let (mut app, _) = App::new(false);
-    app.update(Message::NextPage);
+    let _ = app.update(Message::NextPage);
     assert!(app.document.is_none());
 }
 
@@ -34,7 +34,7 @@ fn test_app_with_document() -> App {
 fn next_page_does_not_change_current_page_directly() {
     // Page navigation now scrolls; current_page updates via CanvasScrolled
     let mut app = test_app_with_document();
-    app.update(Message::NextPage);
+    let _ = app.update(Message::NextPage);
     // current_page hasn't changed yet (scroll is async)
     assert_eq!(app.document.as_ref().unwrap().current_page, 1);
 }
@@ -43,21 +43,21 @@ fn next_page_does_not_change_current_page_directly() {
 fn next_page_is_noop_at_last_page() {
     let mut app = test_app_with_document();
     app.document.as_mut().unwrap().current_page = 3;
-    app.update(Message::NextPage);
+    let _ = app.update(Message::NextPage);
     assert_eq!(app.document.as_ref().unwrap().current_page, 3);
 }
 
 #[test]
 fn previous_page_is_noop_at_first_page() {
     let mut app = test_app_with_document();
-    app.update(Message::PreviousPage);
+    let _ = app.update(Message::PreviousPage);
     assert_eq!(app.document.as_ref().unwrap().current_page, 1);
 }
 
 #[test]
 fn go_to_page_ignores_out_of_range() {
     let mut app = test_app_with_document();
-    app.update(Message::GoToPage(99));
+    let _ = app.update(Message::GoToPage(99));
     assert_eq!(app.document.as_ref().unwrap().current_page, 1);
 }
 
@@ -79,7 +79,7 @@ fn canvas_scrolled_updates_current_page() {
         dpi,
     );
     let scroll_y = layout.page_tops[1]; // top of page 2
-    app.update(Message::CanvasScrolled(scroll_y, 800.0));
+    let _ = app.update(Message::CanvasScrolled(scroll_y, 800.0));
     assert_eq!(app.document.as_ref().unwrap().current_page, 2);
     assert_eq!(app.toolbar.page_input, "2");
 }
@@ -87,7 +87,7 @@ fn canvas_scrolled_updates_current_page() {
 #[test]
 fn place_overlay_adds_to_overlays() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
@@ -101,21 +101,21 @@ fn place_overlay_adds_to_overlays() {
 fn undo_redo_through_update() {
     let mut app = test_app_with_document();
 
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hi".to_string()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::UpdateOverlayText("Hi".to_string()));
+    let _ = app.update(Message::CommitText);
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
 
-    app.update(Message::Undo); // reverse the text edit
-    app.update(Message::Undo); // reverse the placement
+    let _ = app.update(Message::Undo); // reverse the text edit
+    let _ = app.update(Message::Undo); // reverse the placement
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 0);
     assert_eq!(app.redo_stack.len(), 2);
 
-    app.update(Message::Redo);
-    app.update(Message::Redo);
+    let _ = app.update(Message::Redo);
+    let _ = app.update(Message::Redo);
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
     assert!(app.redo_stack.is_empty());
 }
@@ -123,16 +123,16 @@ fn undo_redo_through_update() {
 #[test]
 fn new_action_clears_redo_stack() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hi".to_string()));
-    app.update(Message::CommitText);
-    app.update(Message::Undo);
+    let _ = app.update(Message::UpdateOverlayText("Hi".to_string()));
+    let _ = app.update(Message::CommitText);
+    let _ = app.update(Message::Undo);
     assert_eq!(app.redo_stack.len(), 1);
 
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 200.0, y: 600.0 },
     });
@@ -142,12 +142,12 @@ fn new_action_clears_redo_stack() {
 #[test]
 fn delete_overlay_removes_selected() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
     // PlaceOverlay sets active_overlay
-    app.update(Message::DeleteOverlay);
+    let _ = app.update(Message::DeleteOverlay);
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 0);
     assert!(app.canvas.active_overlay.is_none());
 }
@@ -155,12 +155,12 @@ fn delete_overlay_removes_selected() {
 #[test]
 fn change_font_updates_overlay_and_toolbar() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
     let courier = app.font_registry.find_by_name("Courier").unwrap();
-    app.update(Message::ChangeFont(courier));
+    let _ = app.update(Message::ChangeFont(courier));
     assert_eq!(app.document.as_ref().unwrap().overlays[0].font, courier);
     assert_eq!(app.toolbar.font, courier);
 }
@@ -169,15 +169,15 @@ fn change_font_updates_overlay_and_toolbar() {
 fn zoom_in_increases_zoom() {
     let (mut app, _) = App::new(false);
     let initial = app.canvas.zoom;
-    app.update(Message::ZoomIn);
+    let _ = app.update(Message::ZoomIn);
     assert!(app.canvas.zoom > initial);
 }
 
 #[test]
 fn zoom_reset_returns_to_one() {
     let (mut app, _) = App::new(false);
-    app.update(Message::ZoomIn);
-    app.update(Message::ZoomReset);
+    let _ = app.update(Message::ZoomIn);
+    let _ = app.update(Message::ZoomReset);
     assert!((app.canvas.zoom - 1.0).abs() < f32::EPSILON);
 }
 
@@ -185,27 +185,27 @@ fn zoom_reset_returns_to_one() {
 fn zoom_in_increments_generation() {
     let (mut app, _) = App::new(false);
     assert_eq!(app.canvas.zoom_generation, 0);
-    app.update(Message::ZoomIn);
+    let _ = app.update(Message::ZoomIn);
     assert_eq!(app.canvas.zoom_generation, 1);
-    app.update(Message::ZoomIn);
+    let _ = app.update(Message::ZoomIn);
     assert_eq!(app.canvas.zoom_generation, 2);
 }
 
 #[test]
 fn zoom_out_increments_generation() {
     let (mut app, _) = App::new(false);
-    app.update(Message::ZoomIn); // go above 1.0 so ZoomOut has room
+    let _ = app.update(Message::ZoomIn); // go above 1.0 so ZoomOut has room
     let gen_before = app.canvas.zoom_generation;
-    app.update(Message::ZoomOut);
+    let _ = app.update(Message::ZoomOut);
     assert_eq!(app.canvas.zoom_generation, gen_before + 1);
 }
 
 #[test]
 fn zoom_reset_increments_generation() {
     let (mut app, _) = App::new(false);
-    app.update(Message::ZoomIn);
+    let _ = app.update(Message::ZoomIn);
     let gen_before = app.canvas.zoom_generation;
-    app.update(Message::ZoomReset);
+    let _ = app.update(Message::ZoomReset);
     assert_eq!(app.canvas.zoom_generation, gen_before + 1);
 }
 
@@ -214,7 +214,7 @@ fn zoom_keeps_stale_image_for_visual_feedback() {
     let mut app = test_app_with_document();
     let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
     app.document.as_mut().unwrap().page_images.insert(1, handle);
-    app.update(Message::ZoomIn);
+    let _ = app.update(Message::ZoomIn);
     // Stale image stays in cache for instant visual feedback during debounce
     assert!(!app.document.as_ref().unwrap().page_images.is_empty());
 }
@@ -224,24 +224,24 @@ fn zoom_debounce_expired_clears_cache() {
     let mut app = test_app_with_document();
     let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
     app.document.as_mut().unwrap().page_images.insert(1, handle);
-    app.update(Message::ZoomIn);
+    let _ = app.update(Message::ZoomIn);
     let generation = app.canvas.zoom_generation;
     // Matching debounce expiry clears cache and triggers re-render
-    app.update(Message::ZoomDebounceExpired(generation));
+    let _ = app.update(Message::ZoomDebounceExpired(generation));
     assert!(app.document.as_ref().unwrap().page_images.is_empty());
 }
 
 #[test]
 fn zoom_debounce_expired_stale_generation_is_noop() {
     let mut app = test_app_with_document();
-    app.update(Message::ZoomIn);
+    let _ = app.update(Message::ZoomIn);
     let stale_gen = app.canvas.zoom_generation;
-    app.update(Message::ZoomIn); // generation advances
+    let _ = app.update(Message::ZoomIn); // generation advances
     assert_ne!(stale_gen, app.canvas.zoom_generation);
     // Stale generation should be a no-op
     let handle = Handle::from_rgba(1, 1, vec![0u8; 4]);
     app.document.as_mut().unwrap().page_images.insert(1, handle);
-    app.update(Message::ZoomDebounceExpired(stale_gen));
+    let _ = app.update(Message::ZoomDebounceExpired(stale_gen));
     // Page cache should still be intact (no re-render triggered)
     assert!(!app.document.as_ref().unwrap().page_images.is_empty());
 }
@@ -250,30 +250,30 @@ fn zoom_debounce_expired_stale_generation_is_noop() {
 fn toggle_sidebar_flips_visibility() {
     let (mut app, _) = App::new(false);
     assert!(app.sidebar.visible);
-    app.update(Message::ToggleSidebar);
+    let _ = app.update(Message::ToggleSidebar);
     assert!(!app.sidebar.visible);
-    app.update(Message::ToggleSidebar);
+    let _ = app.update(Message::ToggleSidebar);
     assert!(app.sidebar.visible);
 }
 
 #[test]
 fn select_overlay_updates_toolbar() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
     let courier_bold = app.font_registry.find_by_name("Courier Bold").unwrap();
-    app.update(Message::ChangeFont(courier_bold));
-    app.update(Message::DeselectOverlay);
+    let _ = app.update(Message::ChangeFont(courier_bold));
+    let _ = app.update(Message::DeselectOverlay);
     // Now select it again
-    app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
     assert_eq!(app.toolbar.font, courier_bold);
 }
 
 #[test]
 fn save_destination_sets_save_path() {
-    let mut app = test_app_with_document();
+    let app = test_app_with_document();
     // Simulate save destination (won't actually write since test.pdf doesn't exist,
     // but we can test the path assignment logic)
     let doc = app.document.as_ref().unwrap();
@@ -1151,13 +1151,13 @@ fn schedule_thumbnail_backfill_increments_active_batch_tasks_when_below_limit() 
 #[test]
 fn noop_preserves_active_overlay() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
     assert!(app.canvas.active_overlay.is_some());
     assert!(app.canvas.editing);
-    app.update(Message::Noop);
+    let _ = app.update(Message::Noop);
     assert!(app.canvas.active_overlay.is_some());
     assert!(app.canvas.editing);
 }
@@ -1168,7 +1168,7 @@ fn save_destination_sets_status_message_on_success() {
     let tmp_source = make_temp_pdf();
     let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
     let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
-    app.update(Message::SaveDestinationChosen(
+    let _ = app.update(Message::SaveDestinationChosen(
         tmp_dest.path().to_path_buf(),
     ));
     assert!(app.status_message.is_some());
@@ -1182,17 +1182,17 @@ fn save_app_with_text(text: &str) -> App {
     let mut app = test_app_with_document();
     let tmp_source = make_temp_pdf();
     let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
         // No wrap width, so the text reaches the writer exactly as typed —
         // embedded newlines included.
     });
-    app.update(Message::UpdateOverlayText(text.to_string()));
-    app.update(Message::DeselectOverlay);
+    let _ = app.update(Message::UpdateOverlayText(text.to_string()));
+    let _ = app.update(Message::DeselectOverlay);
 
     let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
-    app.update(Message::SaveDestinationChosen(
+    let _ = app.update(Message::SaveDestinationChosen(
         tmp_dest.path().to_path_buf(),
     ));
     app
@@ -1295,7 +1295,7 @@ fn save_destination_sets_status_message_on_failure() {
     let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
     // Try to save to source path — this should fail (same-file guard)
     let source_path = app.document.as_ref().unwrap().source_path.clone();
-    app.update(Message::SaveDestinationChosen(source_path));
+    let _ = app.update(Message::SaveDestinationChosen(source_path));
     assert!(app.status_message.is_some());
     let (msg, _) = app.status_message.as_ref().unwrap();
     assert!(
@@ -1312,7 +1312,7 @@ fn handle_save_with_existing_path_sets_status_message() {
     let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
     // Set save_path so handle_save takes the quick-save branch.
     app.document.as_mut().unwrap().save_path = Some(tmp_dest.path().to_path_buf());
-    app.update(Message::Save);
+    let _ = app.update(Message::Save);
     assert!(app.status_message.is_some());
     let (msg, _) = app.status_message.as_ref().unwrap();
     assert!(msg.contains("Saved to"), "expected 'Saved to' in '{msg}'");
@@ -1326,7 +1326,7 @@ fn dismiss_toast_clears_message_after_five_seconds() {
         .checked_sub(std::time::Duration::from_secs(6))
         .unwrap();
     app.status_message = Some(("test".to_string(), old_time));
-    app.update(Message::DismissToast);
+    let _ = app.update(Message::DismissToast);
     assert!(app.status_message.is_none());
 }
 
@@ -1335,7 +1335,7 @@ fn dismiss_toast_keeps_message_before_five_seconds() {
     let (mut app, _) = App::new(false);
     // Plant a message that is only 1 second old
     app.status_message = Some(("test".to_string(), std::time::Instant::now()));
-    app.update(Message::DismissToast);
+    let _ = app.update(Message::DismissToast);
     assert!(app.status_message.is_some());
 }
 
@@ -1400,7 +1400,7 @@ fn canvas_state_edit_start_text_defaults_to_none() {
 #[test]
 fn place_overlay_sets_edit_start_text_to_empty_string() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
@@ -1410,25 +1410,25 @@ fn place_overlay_sets_edit_start_text_to_empty_string() {
 #[test]
 fn commit_text_clears_edit_start_text() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::CommitText);
+    let _ = app.update(Message::CommitText);
     assert!(app.canvas.edit_start_text.is_none());
 }
 
 #[test]
 fn deselect_overlay_while_editing_records_the_text_edit() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
     assert!(app.canvas.editing);
 
-    app.update(Message::DeselectOverlay);
+    let _ = app.update(Message::DeselectOverlay);
 
     // Deselecting commits first, so the edit is undoable.
     assert!(matches!(
@@ -1440,13 +1440,13 @@ fn deselect_overlay_while_editing_records_the_text_edit() {
 #[test]
 fn deselect_overlay_when_not_editing_clears_selection() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::CommitText); // exit edit mode
+    let _ = app.update(Message::CommitText); // exit edit mode
     assert!(!app.canvas.editing);
-    app.update(Message::DeselectOverlay);
+    let _ = app.update(Message::DeselectOverlay);
     assert!(app.canvas.active_overlay.is_none());
 }
 
@@ -1455,7 +1455,7 @@ fn view_with_editing_overlay_does_not_panic() {
     let mut app = test_app_with_document();
     let doc = app.document.as_mut().unwrap();
     doc.page_dimensions.insert(1, (612.0, 792.0));
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
@@ -1468,7 +1468,7 @@ fn view_with_editing_overlay_does_not_panic() {
 #[test]
 fn place_multiline_overlay_initializes_editor_content() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 100.0, y: 500.0 },
         width: 200.0,
@@ -1480,7 +1480,7 @@ fn place_multiline_overlay_initializes_editor_content() {
 #[test]
 fn place_singleline_overlay_does_not_initialize_editor_content() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 500.0 },
     });
@@ -1490,14 +1490,14 @@ fn place_singleline_overlay_does_not_initialize_editor_content() {
 #[test]
 fn text_editor_action_syncs_text_to_overlay() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 100.0, y: 500.0 },
         width: 200.0,
         height: 60.0,
     });
     // Insert the character 'H' into the editor
-    app.update(Message::TextEditorAction(
+    let _ = app.update(Message::TextEditorAction(
         iced::widget::text_editor::Action::Edit(iced::widget::text_editor::Edit::Insert('H')),
     ));
     let text = app.document.as_ref().unwrap().overlays[0].text.clone();
@@ -1510,14 +1510,14 @@ fn text_editor_action_syncs_text_to_overlay() {
 #[test]
 fn commit_text_clears_editor_content() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 100.0, y: 500.0 },
         width: 200.0,
         height: 60.0,
     });
     assert!(app.editor_content.is_some());
-    app.update(Message::CommitText);
+    let _ = app.update(Message::CommitText);
     assert!(app.editor_content.is_none());
 }
 
@@ -1528,13 +1528,13 @@ fn update_overlay_text_syncs_editor_content_for_multiline_overlay() {
     // renders from editor_content, so editor_content must converge on the
     // same text real typing would have produced.
     let mut app = test_app_with_document();
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 100.0, y: 500.0 },
         width: 200.0,
         height: 60.0,
     });
-    app.update(Message::UpdateOverlayText("Hello\nWorld".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("Hello\nWorld".to_string()));
     let editor_text = app
         .editor_content
         .as_ref()
@@ -1549,11 +1549,11 @@ fn update_overlay_text_syncs_editor_content_for_multiline_overlay() {
 #[test]
 fn update_overlay_text_leaves_editor_content_none_for_singleline_overlay() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 500.0 },
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
     assert!(app.editor_content.is_none());
 }
 
@@ -1596,7 +1596,7 @@ fn update_overlay_text_does_not_clobber_editor_content_for_unrelated_singleline_
     app.canvas.editing = true;
     app.editor_content = Some(iced::widget::text_editor::Content::with_text(""));
 
-    app.update(Message::UpdateOverlayText("AAA".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("AAA".to_string()));
     assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "AAA");
 
     // Retarget the live session at overlay 1 (single-line) directly. Going via
@@ -1607,7 +1607,7 @@ fn update_overlay_text_does_not_clobber_editor_content_for_unrelated_singleline_
     app.canvas.active_overlay = Some(1);
 
     // IPC `type` now targets overlay 1.
-    app.update(Message::UpdateOverlayText("BBB".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("BBB".to_string()));
     assert_eq!(app.document.as_ref().unwrap().overlays[1].text, "BBB");
 
     let editor_text = app
@@ -1628,13 +1628,13 @@ fn update_overlay_text_does_not_clobber_editor_content_for_unrelated_singleline_
 
 fn test_app_with_overlay() -> App {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
     // Give the overlay text so it survives the commit, then leave editing state.
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::CommitText);
     app
 }
 
@@ -1648,8 +1648,8 @@ fn font_option_named(app: &App, name: &str) -> toolbar::FontOption {
 /// which otherwise only differ in which message they dispatch next.
 fn selected_overlay_at_font_size(size: f32) -> App {
     let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
-    app.update(Message::ChangeFontSize(size));
+    let _ = app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::ChangeFontSize(size));
     app
 }
 
@@ -1663,7 +1663,7 @@ fn step_via_toolbar_message(increment: bool) -> App {
     } else {
         toolbar::Message::FontSizeDecrement
     };
-    app.update(Message::Toolbar(message));
+    let _ = app.update(Message::Toolbar(message));
     app
 }
 
@@ -1672,7 +1672,7 @@ fn step_via_toolbar_message(increment: bool) -> App {
 /// confirmed the font-size input was focused.
 fn step_via_arrow_key_result(increment: bool) -> App {
     let mut app = selected_overlay_at_font_size(12.0);
-    app.update(Message::FontSizeArrowKeyResult(increment));
+    let _ = app.update(Message::FontSizeArrowKeyResult(increment));
     app
 }
 
@@ -1686,17 +1686,17 @@ fn click_font_size_stepper(app: &mut App, glyph: &str) {
     });
     let messages: Vec<Message> = simulator.into_messages().collect();
     for message in messages {
-        app.update(message);
+        let _ = app.update(message);
     }
 }
 
 #[test]
 fn edit_overlay_sets_active_and_editing() {
     let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
     assert!(!app.canvas.editing);
 
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     assert_eq!(app.canvas.active_overlay, Some(0));
     assert!(app.canvas.editing);
 }
@@ -1705,23 +1705,23 @@ fn edit_overlay_sets_active_and_editing() {
 fn edit_overlay_syncs_toolbar_font_and_size() {
     let mut app = test_app_with_document();
     // Place an overlay with a specific font configuration
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     let helvetica = app.font_registry.default_font();
-    app.update(Message::ChangeFont(courier));
-    app.update(Message::ChangeFontSize(18.0));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::ChangeFont(courier));
+    let _ = app.update(Message::ChangeFontSize(18.0));
+    let _ = app.update(Message::CommitText);
 
     // Change toolbar to something different
     app.toolbar.font = helvetica;
     app.toolbar.font_size = 12.0;
     app.toolbar.font_size_input = "12".to_string();
 
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     assert_eq!(app.toolbar.font, courier);
     assert!((app.toolbar.font_size - 18.0).abs() < f32::EPSILON);
     assert_eq!(app.toolbar.font_size_input, "18");
@@ -1733,7 +1733,7 @@ fn app_with_a_font_change_to_undo() -> App {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "Hello");
     let courier = app.font_registry.find_by_name("Courier").unwrap();
-    app.update(Message::ChangeFont(courier));
+    let _ = app.update(Message::ChangeFont(courier));
     app
 }
 
@@ -1741,7 +1741,7 @@ fn app_with_a_font_change_to_undo() -> App {
 fn undo_font_change_syncs_toolbar_to_active_overlay() {
     let mut app = app_with_a_font_change_to_undo();
 
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
 
     let doc = app.document.as_ref().unwrap();
     assert_eq!(app.toolbar.font, doc.overlays[0].font);
@@ -1750,15 +1750,15 @@ fn undo_font_change_syncs_toolbar_to_active_overlay() {
 #[test]
 fn undo_font_size_change_syncs_toolbar_to_active_overlay() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
-    app.update(Message::ChangeFontSize(30.0));
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::CommitText);
+    let _ = app.update(Message::ChangeFontSize(30.0));
 
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
 
     let doc = app.document.as_ref().unwrap();
     assert!((app.toolbar.font_size - doc.overlays[0].font_size).abs() < f32::EPSILON);
@@ -1814,7 +1814,7 @@ fn font_size_decrement_toolbar_message_steps_down_and_updates_overlay() {
 fn font_size_decrement_toolbar_message_floors_at_minimum() {
     let mut app = selected_overlay_at_font_size(1.0);
 
-    app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
 
     assert!((app.toolbar.font_size - 1.0).abs() < f32::EPSILON);
 }
@@ -1822,10 +1822,10 @@ fn font_size_decrement_toolbar_message_floors_at_minimum() {
 #[test]
 fn font_size_submit_clamps_below_minimum_value_to_floor() {
     let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
     app.toolbar.font_size_input = "0.5".to_string();
 
-    app.update(Message::Toolbar(toolbar::Message::FontSizeSubmit));
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontSizeSubmit));
 
     assert!((app.toolbar.font_size - 1.0).abs() < f32::EPSILON);
     assert_eq!(app.toolbar.font_size_input, "1");
@@ -1836,14 +1836,14 @@ fn font_size_submit_clamps_below_minimum_value_to_floor() {
 #[test]
 fn font_size_decrement_after_clamped_submit_stays_at_floor_then_steps_cleanly() {
     let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
     app.toolbar.font_size_input = "0.5".to_string();
-    app.update(Message::Toolbar(toolbar::Message::FontSizeSubmit));
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontSizeSubmit));
 
-    app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
     assert!((app.toolbar.font_size - 1.0).abs() < f32::EPSILON);
 
-    app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
     assert!((app.toolbar.font_size - 2.0).abs() < f32::EPSILON);
 }
 
@@ -1851,8 +1851,8 @@ fn font_size_decrement_after_clamped_submit_stays_at_floor_then_steps_cleanly() 
 fn font_size_increment_is_undoable() {
     let mut app = selected_overlay_at_font_size(12.0);
 
-    app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
-    app.update(Message::Undo);
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
+    let _ = app.update(Message::Undo);
 
     let doc = app.document.as_ref().unwrap();
     assert!((doc.overlays[0].font_size - 12.0).abs() < f32::EPSILON);
@@ -1861,7 +1861,7 @@ fn font_size_increment_is_undoable() {
 #[test]
 fn font_size_increment_while_editing_returns_focus_task() {
     let mut app = test_app_with_overlay();
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
 
     let task = app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
 
@@ -1966,8 +1966,8 @@ fn font_size_arrow_key_result_refocuses_font_size_input_while_editing() {
     // operations: the editor refocus baked into ChangeFontSize, plus the
     // corrective one this handler chains on top.
     let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
 
     let task = app.update(Message::FontSizeArrowKeyResult(true));
 
@@ -1992,13 +1992,13 @@ fn font_size_arrow_key_result_decrements_when_focused() {
 #[test]
 fn redo_font_change_syncs_toolbar_to_active_overlay() {
     let mut app = app_with_a_font_change_to_undo();
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     // Toolbar drifts away from the overlay's (reverted) font between the
     // undo and the redo, so the redo assertion can't pass by coincidence.
     let times = app.font_registry.find_by_name("Times Bold").unwrap();
     app.toolbar.font = times;
 
-    app.update(Message::Redo);
+    let _ = app.update(Message::Redo);
 
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     let doc = app.document.as_ref().unwrap();
@@ -2009,31 +2009,31 @@ fn redo_font_change_syncs_toolbar_to_active_overlay() {
 #[test]
 fn undo_does_not_panic_when_undo_stack_is_empty() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
 
     // Undoing the placement itself removes overlay 0, so active_overlay
     // (still Some(0)) would be out of bounds — the toolbar sync must guard
     // against that rather than panic on an out-of-range index.
-    app.update(Message::Undo);
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
 }
 
 #[test]
 fn edit_overlay_snapshots_text_to_edit_start_text() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
     // Type some text
-    app.update(Message::UpdateOverlayText("original text".to_string()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::UpdateOverlayText("original text".to_string()));
+    let _ = app.update(Message::CommitText);
 
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     assert_eq!(
         app.canvas.edit_start_text,
         Some("original text".to_string())
@@ -2043,19 +2043,19 @@ fn edit_overlay_snapshots_text_to_edit_start_text() {
 #[test]
 fn edit_overlay_initializes_editor_content_for_multiline() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 100.0, y: 700.0 },
         width: 200.0,
         height: 60.0,
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::CommitText);
 
     // Before EditOverlay, editor_content is None
     assert!(app.editor_content.is_none());
 
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     // Multi-line overlay (width.is_some()) should initialize editor_content
     assert!(app.editor_content.is_some());
 }
@@ -2064,7 +2064,7 @@ fn edit_overlay_initializes_editor_content_for_multiline() {
 fn edit_overlay_does_not_initialize_editor_content_for_single_line() {
     let mut app = test_app_with_overlay();
     // Single-line overlay (width is None)
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     assert!(app.editor_content.is_none());
 }
 
@@ -2074,7 +2074,7 @@ fn edit_overlay_out_of_range_is_noop() {
     app.canvas.active_overlay = None;
     app.canvas.editing = false;
 
-    app.update(Message::EditOverlay(99));
+    let _ = app.update(Message::EditOverlay(99));
     assert!(app.canvas.active_overlay.is_none());
     assert!(!app.canvas.editing);
 }
@@ -2083,7 +2083,7 @@ fn edit_overlay_out_of_range_is_noop() {
 fn edit_overlay_without_document_is_noop() {
     let (mut app, _) = App::new(false);
     // No document — should not panic
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     assert!(app.canvas.active_overlay.is_none());
     assert!(!app.canvas.editing);
 }
@@ -2091,7 +2091,7 @@ fn edit_overlay_without_document_is_noop() {
 #[test]
 fn commit_text_pushes_edit_text_command_when_text_changed() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
@@ -2103,7 +2103,7 @@ fn commit_text_pushes_edit_text_command_when_text_changed() {
     overlay.text = "Hello".to_string();
 
     // Commit the text change
-    app.update(Message::CommitText);
+    let _ = app.update(Message::CommitText);
 
     // Should have pushed EditText command
     assert_eq!(app.undo_stack.len(), 2);
@@ -2124,8 +2124,8 @@ fn commit_text_no_command_when_text_unchanged() {
     let commands_before = app.undo_stack.len();
 
     // Re-enter and leave the edit session without changing the text.
-    app.update(Message::EditOverlay(0));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::CommitText);
 
     // Should NOT push EditText command
     assert_eq!(app.undo_stack.len(), commands_before);
@@ -2175,11 +2175,11 @@ fn stack_overlay_element_returns_placeholder_when_not_editing() {
     let mut app = test_app_with_document();
     let doc = app.document.as_mut().unwrap();
     doc.page_dimensions.insert(1, (612.0, 792.0));
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::CommitText);
+    let _ = app.update(Message::CommitText);
     // After commit: editing=false, active_overlay=Some(0)
     assert!(!app.canvas.editing);
 
@@ -2199,7 +2199,7 @@ fn stack_overlay_element_returns_widget_when_editing() {
     let mut app = test_app_with_document();
     let doc = app.document.as_mut().unwrap();
     doc.page_dimensions.insert(1, (612.0, 792.0));
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
@@ -2262,14 +2262,14 @@ fn edit_overlay_returns_focus_task() {
 #[test]
 fn edit_multiline_overlay_returns_focus_task() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 100.0, y: 700.0 },
         width: 200.0,
         height: 60.0,
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::CommitText);
     let task = app.update(Message::EditOverlay(0));
     let debug = format!("{task:?}");
     assert!(
@@ -2286,7 +2286,7 @@ fn edit_multiline_overlay_returns_focus_task() {
 fn change_font_while_editing_returns_focus_task() {
     let mut app = test_app_with_overlay();
     let courier = app.font_registry.find_by_name("Courier").unwrap();
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
 
     let task = app.update(Message::ChangeFont(courier));
 
@@ -2300,7 +2300,7 @@ fn change_font_while_editing_returns_focus_task() {
 #[test]
 fn change_font_via_toolbar_message_returns_focus_task() {
     let mut app = test_app_with_overlay();
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     let courier = font_option_named(&app, "Courier");
 
     let task = app.update(Message::Toolbar(toolbar::Message::FontSelected(courier)));
@@ -2316,7 +2316,7 @@ fn change_font_via_toolbar_message_returns_focus_task() {
 fn change_font_when_not_editing_returns_no_focus_task() {
     let mut app = test_app_with_overlay();
     let courier = app.font_registry.find_by_name("Courier").unwrap();
-    app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
 
     let task = app.update(Message::ChangeFont(courier));
 
@@ -2344,7 +2344,7 @@ fn change_font_without_document_returns_no_focus_task() {
 #[test]
 fn change_font_size_while_editing_returns_focus_task() {
     let mut app = test_app_with_overlay();
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
 
     let task = app.update(Message::ChangeFontSize(18.0));
 
@@ -2358,7 +2358,7 @@ fn change_font_size_while_editing_returns_focus_task() {
 #[test]
 fn change_font_size_when_not_editing_returns_no_focus_task() {
     let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
 
     let task = app.update(Message::ChangeFontSize(18.0));
 
@@ -2378,11 +2378,11 @@ fn change_font_size_when_not_editing_returns_no_focus_task() {
 #[test]
 fn zoom_in_while_editing_returns_more_task_units_than_not_editing() {
     let mut editing_app = test_app_with_overlay();
-    editing_app.update(Message::EditOverlay(0));
+    let _ = editing_app.update(Message::EditOverlay(0));
     let editing_task = editing_app.update(Message::ZoomIn);
 
     let mut selected_app = test_app_with_overlay();
-    selected_app.update(Message::SelectOverlay(0));
+    let _ = selected_app.update(Message::SelectOverlay(0));
     let selected_task = selected_app.update(Message::ZoomIn);
 
     assert!(
@@ -2394,11 +2394,11 @@ fn zoom_in_while_editing_returns_more_task_units_than_not_editing() {
 #[test]
 fn zoom_out_while_editing_returns_more_task_units_than_not_editing() {
     let mut editing_app = test_app_with_overlay();
-    editing_app.update(Message::EditOverlay(0));
+    let _ = editing_app.update(Message::EditOverlay(0));
     let editing_task = editing_app.update(Message::ZoomOut);
 
     let mut selected_app = test_app_with_overlay();
-    selected_app.update(Message::SelectOverlay(0));
+    let _ = selected_app.update(Message::SelectOverlay(0));
     let selected_task = selected_app.update(Message::ZoomOut);
 
     assert!(
@@ -2410,11 +2410,11 @@ fn zoom_out_while_editing_returns_more_task_units_than_not_editing() {
 #[test]
 fn zoom_reset_while_editing_returns_more_task_units_than_not_editing() {
     let mut editing_app = test_app_with_overlay();
-    editing_app.update(Message::EditOverlay(0));
+    let _ = editing_app.update(Message::EditOverlay(0));
     let editing_task = editing_app.update(Message::ZoomReset);
 
     let mut selected_app = test_app_with_overlay();
-    selected_app.update(Message::SelectOverlay(0));
+    let _ = selected_app.update(Message::SelectOverlay(0));
     let selected_task = selected_app.update(Message::ZoomReset);
 
     assert!(
@@ -2435,7 +2435,7 @@ fn zoom_fit_width_while_editing_returns_more_task_units_than_not_editing() {
         .page_dimensions
         .insert(1, (612.0, 792.0));
     editing_app.window_size = Some(window);
-    editing_app.update(Message::EditOverlay(0));
+    let _ = editing_app.update(Message::EditOverlay(0));
     let editing_task = editing_app.update(Message::ZoomFitWidth);
 
     let mut selected_app = test_app_with_overlay();
@@ -2446,7 +2446,7 @@ fn zoom_fit_width_while_editing_returns_more_task_units_than_not_editing() {
         .page_dimensions
         .insert(1, (612.0, 792.0));
     selected_app.window_size = Some(window);
-    selected_app.update(Message::SelectOverlay(0));
+    let _ = selected_app.update(Message::SelectOverlay(0));
     let selected_task = selected_app.update(Message::ZoomFitWidth);
 
     assert!(
@@ -2458,7 +2458,7 @@ fn zoom_fit_width_while_editing_returns_more_task_units_than_not_editing() {
 #[test]
 fn toggle_sidebar_while_editing_returns_focus_task() {
     let mut app = test_app_with_overlay();
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
 
     let task = app.update(Message::ToggleSidebar);
 
@@ -2472,7 +2472,7 @@ fn toggle_sidebar_while_editing_returns_focus_task() {
 #[test]
 fn toggle_sidebar_when_not_editing_returns_no_focus_task() {
     let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
 
     let task = app.update(Message::ToggleSidebar);
 
@@ -2486,12 +2486,12 @@ fn toggle_sidebar_when_not_editing_returns_no_focus_task() {
 #[test]
 fn page_input_submit_while_editing_returns_more_task_units_than_not_editing() {
     let mut editing_app = test_app_with_overlay();
-    editing_app.update(Message::EditOverlay(0));
+    let _ = editing_app.update(Message::EditOverlay(0));
     editing_app.toolbar.page_input = "1".to_string();
     let editing_task = editing_app.update(Message::Toolbar(toolbar::Message::PageInputSubmit));
 
     let mut selected_app = test_app_with_overlay();
-    selected_app.update(Message::SelectOverlay(0));
+    let _ = selected_app.update(Message::SelectOverlay(0));
     selected_app.toolbar.page_input = "1".to_string();
     let selected_task = selected_app.update(Message::Toolbar(toolbar::Message::PageInputSubmit));
 
@@ -2504,11 +2504,11 @@ fn page_input_submit_while_editing_returns_more_task_units_than_not_editing() {
 #[test]
 fn next_page_while_editing_returns_more_task_units_than_not_editing() {
     let mut editing_app = test_app_with_overlay();
-    editing_app.update(Message::EditOverlay(0));
+    let _ = editing_app.update(Message::EditOverlay(0));
     let editing_task = editing_app.update(Message::NextPage);
 
     let mut selected_app = test_app_with_overlay();
-    selected_app.update(Message::SelectOverlay(0));
+    let _ = selected_app.update(Message::SelectOverlay(0));
     let selected_task = selected_app.update(Message::NextPage);
 
     assert!(
@@ -2521,12 +2521,12 @@ fn next_page_while_editing_returns_more_task_units_than_not_editing() {
 fn previous_page_while_editing_returns_more_task_units_than_not_editing() {
     let mut editing_app = test_app_with_overlay();
     editing_app.document.as_mut().unwrap().current_page = 2;
-    editing_app.update(Message::EditOverlay(0));
+    let _ = editing_app.update(Message::EditOverlay(0));
     let editing_task = editing_app.update(Message::PreviousPage);
 
     let mut selected_app = test_app_with_overlay();
     selected_app.document.as_mut().unwrap().current_page = 2;
-    selected_app.update(Message::SelectOverlay(0));
+    let _ = selected_app.update(Message::SelectOverlay(0));
     let selected_task = selected_app.update(Message::PreviousPage);
 
     assert!(
@@ -2542,11 +2542,11 @@ fn save_with_existing_path_while_editing_returns_focus_task() {
     let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
     let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
     app.document.as_mut().unwrap().save_path = Some(tmp_dest.path().to_path_buf());
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
     assert!(app.canvas.editing);
 
     let task = app.update(Message::Save);
@@ -2580,11 +2580,11 @@ fn save_destination_chosen_while_editing_returns_focus_task() {
     let mut app = test_app_with_document();
     let tmp_source = make_temp_pdf();
     let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
     assert!(app.canvas.editing);
     let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
 
@@ -2623,7 +2623,7 @@ fn dialog_dismissed_while_editing_returns_focus_task() {
     // strand the floating overlay editor unfocused, same as every other
     // toolbar interaction that doesn't end the edit.
     let mut app = test_app_with_overlay();
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
 
     let task = app.update(Message::DialogDismissed);
 
@@ -2637,7 +2637,7 @@ fn dialog_dismissed_while_editing_returns_focus_task() {
 #[test]
 fn dialog_dismissed_when_not_editing_returns_no_focus_task() {
     let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
 
     let task = app.update(Message::DialogDismissed);
 
@@ -2651,7 +2651,7 @@ fn dialog_dismissed_when_not_editing_returns_no_focus_task() {
 #[test]
 fn font_size_decrement_while_editing_returns_focus_task() {
     let mut app = test_app_with_overlay();
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
 
     let task = app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
 
@@ -2670,8 +2670,8 @@ fn font_size_submit_refocuses_font_size_input_while_editing() {
     // chain a corrective refocus back onto that field afterward, or the
     // user's next keystroke silently lands in the overlay editor instead.
     let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     app.toolbar.font_size_input = "18".to_string();
 
     let task = app.update(Message::Toolbar(toolbar::Message::FontSizeSubmit));
@@ -2693,7 +2693,7 @@ fn page_input_submit_refocuses_page_input_while_editing() {
     // chain a corrective refocus back onto that field afterward, or the
     // user's next digits silently corrupt the overlay text instead.
     let mut app = test_app_with_overlay();
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     app.toolbar.page_input = "1".to_string();
 
     let task = app.update(Message::Toolbar(toolbar::Message::PageInputSubmit));
@@ -2754,7 +2754,7 @@ fn is_render_idle_false_with_active_tasks() {
 
 #[test]
 fn is_render_idle_false_when_page_not_yet_rendered() {
-    let mut app = test_app_with_document();
+    let app = test_app_with_document();
     // Document has 3 pages but no page_images — not idle
     assert!(!app.is_render_idle());
 }
@@ -2787,7 +2787,7 @@ fn is_render_idle_false_after_zoom_before_debounce_fires() {
     }
     assert!(app.is_render_idle());
 
-    app.update(Message::ZoomIn);
+    let _ = app.update(Message::ZoomIn);
     // page_images is still fully populated (stale, pre-zoom) — key presence
     // alone says idle, but the debounced re-render for the new zoom hasn't
     // run yet.
@@ -2807,11 +2807,11 @@ fn is_render_idle_true_once_rerender_catches_up_to_zoom_generation() {
         doc.page_images.insert(page, handle.clone());
     }
 
-    app.update(Message::ZoomIn);
+    let _ = app.update(Message::ZoomIn);
     assert!(!app.is_render_idle());
 
     let generation = app.canvas.zoom_generation;
-    app.update(Message::ZoomDebounceExpired(generation));
+    let _ = app.update(Message::ZoomDebounceExpired(generation));
     // Debounce fired: cache cleared for the fresh generation, but the
     // re-render task hasn't delivered images yet.
     assert!(!app.is_render_idle());
@@ -3327,11 +3327,11 @@ fn deliver_ipc_response_writes_to_channel() {
 #[test]
 fn commit_text_removes_overlay_left_empty() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::CommitText);
+    let _ = app.update(Message::CommitText);
     assert!(
         app.document.as_ref().unwrap().overlays.is_empty(),
         "an overlay committed with no text should be removed"
@@ -3341,11 +3341,11 @@ fn commit_text_removes_overlay_left_empty() {
 #[test]
 fn commit_text_clears_selection_when_empty_overlay_removed() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::CommitText);
+    let _ = app.update(Message::CommitText);
     assert!(
         app.canvas.active_overlay.is_none(),
         "the removed overlay must not stay selected"
@@ -3355,12 +3355,12 @@ fn commit_text_clears_selection_when_empty_overlay_removed() {
 #[test]
 fn commit_text_keeps_overlay_that_has_text() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::CommitText);
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
     assert_eq!(app.canvas.active_overlay, Some(0));
 }
@@ -3368,11 +3368,11 @@ fn commit_text_keeps_overlay_that_has_text() {
 #[test]
 fn abandoned_empty_placement_leaves_no_undo_history() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::CommitText);
+    let _ = app.update(Message::CommitText);
     assert!(
         app.undo_stack.is_empty(),
         "placing and abandoning an empty overlay should leave no trace"
@@ -3382,13 +3382,13 @@ fn abandoned_empty_placement_leaves_no_undo_history() {
 #[test]
 fn abandoned_empty_placement_leaves_no_undo_history_after_style_change() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
     let courier = app.font_registry.find_by_name("Courier").unwrap();
-    app.update(Message::ChangeFont(courier));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::ChangeFont(courier));
+    let _ = app.update(Message::CommitText);
     assert!(
         app.undo_stack.is_empty(),
         "placing and abandoning an empty overlay should leave no trace, even if \
@@ -3400,19 +3400,19 @@ fn abandoned_empty_placement_leaves_no_undo_history_after_style_change() {
 #[test]
 fn erasing_an_existing_overlay_records_a_deletion_for_undo() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::CommitText);
 
-    app.update(Message::EditOverlay(0));
-    app.update(Message::UpdateOverlayText(String::new()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::UpdateOverlayText(String::new()));
+    let _ = app.update(Message::CommitText);
 
     assert!(app.document.as_ref().unwrap().overlays.is_empty());
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     let overlays = &app.document.as_ref().unwrap().overlays;
     assert_eq!(overlays.len(), 1, "undo restores the erased overlay");
     assert_eq!(overlays[0].text, "Hello");
@@ -3421,11 +3421,11 @@ fn erasing_an_existing_overlay_records_a_deletion_for_undo() {
 #[test]
 fn escape_while_editing_empty_overlay_removes_it() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::DeselectOverlay);
+    let _ = app.update(Message::DeselectOverlay);
     assert!(app.document.as_ref().unwrap().overlays.is_empty());
     assert!(app.canvas.active_overlay.is_none());
     assert!(!app.canvas.editing);
@@ -3434,12 +3434,12 @@ fn escape_while_editing_empty_overlay_removes_it() {
 #[test]
 fn escape_while_editing_commits_text_then_clears_selection() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::DeselectOverlay);
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::DeselectOverlay);
     assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
     assert!(!app.canvas.editing);
     assert!(
@@ -3451,27 +3451,27 @@ fn escape_while_editing_commits_text_then_clears_selection() {
 #[test]
 fn discarding_an_empty_overlay_clears_the_redo_stack() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::CommitText);
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 200.0, y: 600.0 },
     });
-    app.update(Message::UpdateOverlayText("World".to_string()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::UpdateOverlayText("World".to_string()));
+    let _ = app.update(Message::CommitText);
 
     // Undo the second overlay's text edit, leaving a redo entry behind.
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert_eq!(app.redo_stack.len(), 1);
 
     // Erasing the first overlay's text discards it, shrinking the list.
-    app.update(Message::EditOverlay(0));
-    app.update(Message::UpdateOverlayText(String::new()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::UpdateOverlayText(String::new()));
+    let _ = app.update(Message::CommitText);
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
     assert!(
         app.redo_stack.is_empty(),
@@ -3479,29 +3479,29 @@ fn discarding_an_empty_overlay_clears_the_redo_stack() {
     );
 
     // Redo must not index into the shrunken overlay list.
-    app.update(Message::Redo);
+    let _ = app.update(Message::Redo);
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
 }
 
 #[test]
 fn discarding_an_earlier_overlay_keeps_a_later_placement_in_history() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("one".to_string()));
-    app.update(Message::DeselectOverlay);
+    let _ = app.update(Message::UpdateOverlayText("one".to_string()));
+    let _ = app.update(Message::DeselectOverlay);
 
     // Place a second overlay, then switch the edit session to the first one.
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 200.0, y: 600.0 },
     });
-    app.update(Message::UpdateOverlayText("two".to_string()));
-    app.update(Message::EditOverlay(0));
-    app.update(Message::UpdateOverlayText(String::new()));
-    app.update(Message::DeselectOverlay);
+    let _ = app.update(Message::UpdateOverlayText("two".to_string()));
+    let _ = app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::UpdateOverlayText(String::new()));
+    let _ = app.update(Message::DeselectOverlay);
 
     // Only the erased overlay is gone; the second placement survives.
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
@@ -3514,7 +3514,7 @@ fn discarding_an_earlier_overlay_keeps_a_later_placement_in_history() {
         app.undo_stack.last()
     );
 
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     let overlays = &app.document.as_ref().unwrap().overlays;
     assert_eq!(overlays.len(), 2);
     assert_eq!(overlays[0].text, "one", "undo restores the erased overlay");
@@ -3523,12 +3523,12 @@ fn discarding_an_earlier_overlay_keeps_a_later_placement_in_history() {
 #[test]
 fn commit_text_removes_overlay_left_with_only_whitespace() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("   ".to_string()));
-    app.update(Message::DeselectOverlay);
+    let _ = app.update(Message::UpdateOverlayText("   ".to_string()));
+    let _ = app.update(Message::DeselectOverlay);
 
     assert!(
         app.document.as_ref().unwrap().overlays.is_empty(),
@@ -3544,19 +3544,19 @@ fn commit_text_removes_overlay_left_with_only_whitespace() {
 #[test]
 fn erasing_an_existing_overlay_to_whitespace_records_a_deletion_for_undo() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::CommitText);
 
-    app.update(Message::EditOverlay(0));
-    app.update(Message::UpdateOverlayText("  \t ".to_string()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::UpdateOverlayText("  \t ".to_string()));
+    let _ = app.update(Message::CommitText);
 
     assert!(app.document.as_ref().unwrap().overlays.is_empty());
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     let overlays = &app.document.as_ref().unwrap().overlays;
     assert_eq!(overlays.len(), 1);
     assert_eq!(
@@ -3572,11 +3572,11 @@ fn erasing_an_existing_overlay_to_whitespace_records_a_deletion_for_undo() {
 #[test]
 fn editing_font_is_none_when_not_editing() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::CommitText);
+    let _ = app.update(Message::CommitText);
     assert!(!app.canvas.editing);
     assert!(app.editing_font().is_none());
 }
@@ -3585,8 +3585,8 @@ fn editing_font_is_none_when_not_editing() {
 fn editing_font_matches_selected_bundled_font() {
     let mut app = test_app_with_document();
     let great_vibes = app.font_registry.find_by_name("Great Vibes").unwrap();
-    app.update(Message::ChangeFont(great_vibes));
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::ChangeFont(great_vibes));
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
@@ -3599,12 +3599,12 @@ fn editing_font_matches_selected_bundled_font() {
 #[test]
 fn editing_font_follows_font_change_during_edit() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
     let courier = app.font_registry.find_by_name("Courier").unwrap();
-    app.update(Message::ChangeFont(courier));
+    let _ = app.update(Message::ChangeFont(courier));
     let expected = app.font_registry.get(courier).iced_font;
     assert_eq!(app.editing_font(), Some(expected));
     assert_eq!(expected.family, iced::font::Family::Monospace);
@@ -3614,8 +3614,8 @@ fn editing_font_follows_font_change_during_edit() {
 fn editing_font_for_multiline_overlay_matches_selected_font() {
     let mut app = test_app_with_document();
     let times = app.font_registry.find_by_name("Times Bold").unwrap();
-    app.update(Message::ChangeFont(times));
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::ChangeFont(times));
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 100.0, y: 700.0 },
         width: 200.0,
@@ -3636,7 +3636,7 @@ fn editing_font_for_multiline_overlay_matches_selected_font() {
 /// directly, bypassing `UpdateOverlayText` so that the commit path alone is
 /// what records the edit in the history.
 fn place_and_commit_raw_text(app: &mut App, text: &str) {
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
@@ -3646,12 +3646,12 @@ fn place_and_commit_raw_text(app: &mut App, text: &str) {
 }
 
 fn place_committed_overlay(app: &mut App, x: f32, text: &str) {
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText(text.to_string()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::UpdateOverlayText(text.to_string()));
+    let _ = app.update(Message::CommitText);
 }
 
 /// Rebuild the overlay list by applying every undo-stack command in order.
@@ -3777,7 +3777,7 @@ fn assert_history_tracks_document(
         for step in 0..30u64 {
             let msg = pick(&app, &mut rng, step);
             log.push(format!("{msg:?}"));
-            app.update(msg);
+            let _ = app.update(msg);
 
             let live: Vec<String> = app
                 .document
@@ -3829,11 +3829,11 @@ fn undo_during_fresh_placement_removes_the_overlay_being_placed() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "kept");
 
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 200.0, y: 700.0 },
     });
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
 
     let overlays = &app.document.as_ref().unwrap().overlays;
     assert_eq!(overlays.len(), 1, "the fresh placement must be gone");
@@ -3843,11 +3843,11 @@ fn undo_during_fresh_placement_removes_the_overlay_being_placed() {
 #[test]
 fn undo_during_fresh_placement_ends_the_edit_session() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
 
     assert!(
         !app.canvas.editing,
@@ -3861,13 +3861,13 @@ fn undo_during_fresh_placement_ends_the_edit_session() {
 #[test]
 fn redo_after_undoing_a_fresh_placement_does_not_resurrect_a_ghost() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::Undo);
-    app.update(Message::CommitText);
-    app.update(Message::Redo);
+    let _ = app.update(Message::Undo);
+    let _ = app.update(Message::CommitText);
+    let _ = app.update(Message::Redo);
 
     assert!(
         app.document.as_ref().unwrap().overlays.is_empty(),
@@ -3880,9 +3880,9 @@ fn undo_while_editing_an_existing_overlay_restores_its_pre_edit_text() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "original");
 
-    app.update(Message::EditOverlay(0));
-    app.update(Message::UpdateOverlayText("scribble".to_string()));
-    app.update(Message::Undo);
+    let _ = app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::UpdateOverlayText("scribble".to_string()));
+    let _ = app.update(Message::Undo);
 
     let overlays = &app.document.as_ref().unwrap().overlays;
     assert_eq!(overlays.len(), 1);
@@ -3892,18 +3892,18 @@ fn undo_while_editing_an_existing_overlay_restores_its_pre_edit_text() {
         "the typing is undone as a session step, which leaves the box open; \
          closing the session is the next undo down the gradient"
     );
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert!(!app.canvas.editing);
 }
 
 #[test]
 fn deleting_the_overlay_being_placed_ends_the_edit_session() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::DeleteOverlay);
+    let _ = app.update(Message::DeleteOverlay);
 
     assert!(app.canvas.fresh_placement.is_none());
     assert!(app.canvas.edit_start_text.is_none());
@@ -3916,10 +3916,10 @@ fn undoing_a_placement_clears_the_selection_it_could_strand() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "first");
     place_committed_overlay(&mut app, 200.0, "second");
-    app.update(Message::SelectOverlay(1));
+    let _ = app.update(Message::SelectOverlay(1));
 
-    app.update(Message::Undo); // the text edit: in place
-    app.update(Message::Undo); // the placement: removes an overlay
+    let _ = app.update(Message::Undo); // the text edit: in place
+    let _ = app.update(Message::Undo); // the placement: removes an overlay
 
     assert!(
         app.canvas.active_overlay.is_none(),
@@ -3932,9 +3932,9 @@ fn undoing_an_in_place_command_keeps_the_selection() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "first");
     place_committed_overlay(&mut app, 200.0, "second");
-    app.update(Message::SelectOverlay(1));
+    let _ = app.update(Message::SelectOverlay(1));
 
-    app.update(Message::Undo); // reverses the text edit only
+    let _ = app.update(Message::Undo); // reverses the text edit only
 
     assert_eq!(
         app.canvas.active_overlay,
@@ -3948,20 +3948,20 @@ fn undoing_an_in_place_command_keeps_the_selection() {
 #[test]
 fn stale_edit_session_cannot_discard_an_unrelated_overlay() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::DeleteOverlay);
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::DeleteOverlay);
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 200.0, y: 700.0 },
     });
-    app.update(Message::Undo);
-    app.update(Message::Undo);
-    app.update(Message::Undo);
-    app.update(Message::Redo);
-    app.update(Message::CommitText);
+    let _ = app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
+    let _ = app.update(Message::Redo);
+    let _ = app.update(Message::CommitText);
 
     assert_history_matches_document(&app, "after stale-session commit");
 }
@@ -3985,8 +3985,8 @@ fn undo_while_editing_without_changes_closes_the_session_before_the_history() {
 
     // Open an edit session but change nothing, so closing it is the only
     // change the keystroke makes.
-    app.update(Message::EditOverlay(1));
-    app.update(Message::Undo);
+    let _ = app.update(Message::EditOverlay(1));
+    let _ = app.update(Message::Undo);
 
     assert!(!app.canvas.editing, "the keystroke closes the box");
     assert_eq!(
@@ -3995,7 +3995,7 @@ fn undo_while_editing_without_changes_closes_the_session_before_the_history() {
         "closing the box is change enough; the history waits for the next keystroke"
     );
 
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert_eq!(app.document.as_ref().unwrap().overlays[1].text, "");
 }
 
@@ -4004,10 +4004,10 @@ fn selecting_an_overlay_while_editing_commits_the_pending_text() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "original");
 
-    app.update(Message::EditOverlay(0));
-    app.update(Message::UpdateOverlayText("typed".to_string()));
+    let _ = app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::UpdateOverlayText("typed".to_string()));
     // The canvas commits before selecting, but IPC `select` does not.
-    app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
 
     assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "typed");
     assert_history_matches_document(&app, "after selecting mid-edit");
@@ -4021,9 +4021,9 @@ fn selecting_a_later_overlay_while_a_blank_one_is_discarded_selects_the_same_ove
     place_committed_overlay(&mut app, 300.0, "third");
 
     // Blanking the middle overlay discards it on commit, shifting "third" down.
-    app.update(Message::EditOverlay(1));
-    app.update(Message::UpdateOverlayText(String::new()));
-    app.update(Message::SelectOverlay(2));
+    let _ = app.update(Message::EditOverlay(1));
+    let _ = app.update(Message::UpdateOverlayText(String::new()));
+    let _ = app.update(Message::SelectOverlay(2));
 
     let overlays = &app.document.as_ref().unwrap().overlays;
     assert_eq!(overlays.len(), 2);
@@ -4040,9 +4040,9 @@ fn re_entering_edit_on_the_same_overlay_commits_the_pending_text() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "original");
 
-    app.update(Message::EditOverlay(0));
-    app.update(Message::UpdateOverlayText("typed".to_string()));
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::UpdateOverlayText("typed".to_string()));
+    let _ = app.update(Message::EditOverlay(0));
 
     assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "typed");
     assert_history_matches_document(&app, "after re-entering edit mid-edit");
@@ -4051,12 +4051,12 @@ fn re_entering_edit_on_the_same_overlay_commits_the_pending_text() {
 #[test]
 fn redo_while_typing_into_a_fresh_placement_keeps_the_placement() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("draft".to_string()));
-    app.update(Message::Redo);
+    let _ = app.update(Message::UpdateOverlayText("draft".to_string()));
+    let _ = app.update(Message::Redo);
 
     let overlays = &app.document.as_ref().unwrap().overlays;
     assert_eq!(overlays.len(), 1, "redo must never undo a placement");
@@ -4068,9 +4068,9 @@ fn redo_while_editing_an_existing_overlay_keeps_the_typed_text() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "original");
 
-    app.update(Message::EditOverlay(0));
-    app.update(Message::UpdateOverlayText("typed".to_string()));
-    app.update(Message::Redo);
+    let _ = app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::UpdateOverlayText("typed".to_string()));
+    let _ = app.update(Message::Redo);
 
     assert_eq!(
         app.document.as_ref().unwrap().overlays[0].text,
@@ -4084,17 +4084,17 @@ fn redo_while_editing_an_existing_overlay_keeps_the_typed_text() {
 fn typing_into_a_selected_overlay_starts_a_recorded_edit_session() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "original");
-    app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
 
     // IPC drives `select` then `type` with no edit in between.
-    app.update(Message::UpdateOverlayText("typed".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("typed".to_string()));
     assert!(
         app.canvas.editing,
         "typing into a selection must open a session so the change is recorded"
     );
     assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "typed");
 
-    app.update(Message::CommitText);
+    let _ = app.update(Message::CommitText);
     assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "typed");
     assert_history_matches_document(&app, "after typing into a selection");
 }
@@ -4103,9 +4103,9 @@ fn typing_into_a_selected_overlay_starts_a_recorded_edit_session() {
 fn typing_with_nothing_selected_is_ignored() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "original");
-    app.update(Message::DeselectOverlay);
+    let _ = app.update(Message::DeselectOverlay);
 
-    app.update(Message::UpdateOverlayText("stray".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("stray".to_string()));
 
     assert_eq!(
         app.document.as_ref().unwrap().overlays[0].text,
@@ -4118,13 +4118,13 @@ fn typing_with_nothing_selected_is_ignored() {
 #[test]
 fn undoing_a_delete_made_while_typing_restores_only_recorded_text() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("typed".to_string()));
-    app.update(Message::DeleteOverlay);
-    app.update(Message::Undo);
+    let _ = app.update(Message::UpdateOverlayText("typed".to_string()));
+    let _ = app.update(Message::DeleteOverlay);
+    let _ = app.update(Message::Undo);
 
     assert_history_matches_document(&app, "after undoing a delete made mid-edit");
 }
@@ -4132,13 +4132,13 @@ fn undoing_a_delete_made_while_typing_restores_only_recorded_text() {
 #[test]
 fn placing_an_overlay_while_editing_commits_the_pending_text() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
-    app.update(Message::UpdateOverlayText("first".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("first".to_string()));
     // The canvas commits before placing, but IPC `click` does not.
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 200.0, y: 600.0 },
     });
@@ -4150,20 +4150,20 @@ fn placing_an_overlay_while_editing_commits_the_pending_text() {
 #[test]
 fn selecting_a_different_overlay_ends_the_multiline_edit_session() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 100.0, y: 700.0 },
         width: 200.0,
         height: 60.0,
     });
-    app.update(Message::UpdateOverlayText("multi".to_string()));
+    let _ = app.update(Message::UpdateOverlayText("multi".to_string()));
     place_committed_overlay(&mut app, 300.0, "single");
 
     // Re-open the multiline session so the select is what ends it.
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     assert!(app.editor_content.is_some());
 
-    app.update(Message::SelectOverlay(0));
+    let _ = app.update(Message::SelectOverlay(0));
 
     assert!(
         app.editor_content.is_none(),
@@ -4186,10 +4186,10 @@ fn font_picker_starts_closed() {
 fn toggling_the_font_picker_opens_then_closes_it() {
     let mut app = test_app_with_document();
 
-    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
     assert!(app.toolbar.font_picker_open, "first toggle should open it");
 
-    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
     assert!(
         !app.toolbar.font_picker_open,
         "second toggle should close it"
@@ -4199,10 +4199,10 @@ fn toggling_the_font_picker_opens_then_closes_it() {
 #[test]
 fn selecting_a_font_closes_the_picker() {
     let mut app = test_app_with_document();
-    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
     let courier = font_option_named(&app, "Courier");
 
-    app.update(Message::Toolbar(toolbar::Message::FontSelected(courier)));
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontSelected(courier)));
 
     assert!(!app.toolbar.font_picker_open);
     assert_eq!(
@@ -4215,9 +4215,9 @@ fn selecting_a_font_closes_the_picker() {
 fn dismissing_the_font_picker_leaves_the_font_unchanged() {
     let mut app = test_app_with_document();
     let before = app.toolbar.font;
-    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
 
-    app.update(Message::Toolbar(toolbar::Message::FontPickerDismissed));
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontPickerDismissed));
 
     assert!(!app.toolbar.font_picker_open);
     assert_eq!(app.toolbar.font, before);
@@ -4226,8 +4226,8 @@ fn dismissing_the_font_picker_leaves_the_font_unchanged() {
 #[test]
 fn dismissing_the_font_picker_while_editing_returns_focus_task() {
     let mut app = test_app_with_overlay();
-    app.update(Message::EditOverlay(0));
-    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+    let _ = app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
 
     let task = app.update(Message::Toolbar(toolbar::Message::FontPickerDismissed));
 
@@ -4241,7 +4241,7 @@ fn dismissing_the_font_picker_while_editing_returns_focus_task() {
 #[test]
 fn opening_the_font_picker_does_not_steal_focus() {
     let mut app = test_app_with_overlay();
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
 
     let task = app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
 
@@ -4261,18 +4261,18 @@ fn opening_the_font_picker_does_not_steal_focus() {
 fn state_generation_advances_on_every_processed_message() {
     let (mut app, _) = App::new(false);
     let before = app.state_generation;
-    app.update(Message::Noop);
+    let _ = app.update(Message::Noop);
     assert_eq!(app.state_generation, before + 1);
-    app.update(Message::Noop);
+    let _ = app.update(Message::Noop);
     assert_eq!(app.state_generation, before + 2);
 }
 
 #[test]
 fn frame_presented_records_the_generation_as_of_the_redraw() {
     let (mut app, _) = App::new(false);
-    app.update(Message::Noop);
+    let _ = app.update(Message::Noop);
     let expected = app.state_generation + 1; // FramePresented itself advances state_generation.
-    app.update(Message::FramePresented);
+    let _ = app.update(Message::FramePresented);
     assert_eq!(app.presented_generation, expected);
 }
 
@@ -4317,7 +4317,7 @@ fn ipc_wait_frame_not_yet_presented_sets_pending() {
     let mut app = test_app_with_document();
     let _rx = attach_ipc_response_sender(&mut app);
     // Mutate state without a following FramePresented: presented_generation lags.
-    app.update(Message::Noop);
+    let _ = app.update(Message::Noop);
     let generation_before_wait = app.state_generation;
     let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::WaitFrame));
     // The target excludes WaitFrame's own generation bump, so a wait already
@@ -4457,7 +4457,7 @@ fn a_placed_text_box_starts_its_first_line_below_the_boxs_top_edge() {
         .insert(1, (612.0, 792.0));
     app.toolbar.font_size = 20.0;
 
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 100.0, y: 700.0 },
         width: 200.0,
@@ -4488,7 +4488,7 @@ fn a_placed_text_box_opens_an_edit_session_with_a_multiline_editor() {
         .page_dimensions
         .insert(1, (612.0, 792.0));
 
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 100.0, y: 700.0 },
         width: 200.0,
@@ -4519,7 +4519,7 @@ fn type_text(app: &mut App, text: &str) {
         .map_or_else(String::new, |o| o.text.clone());
     for c in text.chars() {
         typed.push(c);
-        app.update(Message::UpdateOverlayText(typed.clone()));
+        let _ = app.update(Message::UpdateOverlayText(typed.clone()));
     }
 }
 
@@ -4533,10 +4533,10 @@ fn overlay_text(app: &App) -> String {
 fn consecutive_typing_coalesces_into_one_session_undo_step() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "start");
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     type_text(&mut app, "abc");
 
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
 
     assert_eq!(
         overlay_text(&app),
@@ -4550,16 +4550,16 @@ fn consecutive_typing_coalesces_into_one_session_undo_step() {
 fn a_font_change_breaks_the_typing_burst_into_separate_session_steps() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "S");
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     type_text(&mut app, "ab");
     let courier = app.font_registry.find_by_name("Courier").unwrap();
-    app.update(Message::ChangeFont(courier));
+    let _ = app.update(Message::ChangeFont(courier));
     type_text(&mut app, "cd");
 
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert_eq!(overlay_text(&app), "Sab", "the second burst undoes alone");
 
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert_eq!(
         app.document.as_ref().unwrap().overlays[0].font,
         app.font_registry.default_font(),
@@ -4567,7 +4567,7 @@ fn a_font_change_breaks_the_typing_burst_into_separate_session_steps() {
     );
     assert_eq!(overlay_text(&app), "Sab");
 
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert_eq!(overlay_text(&app), "S", "the first burst undoes last");
     assert!(app.canvas.editing);
 }
@@ -4576,11 +4576,11 @@ fn a_font_change_breaks_the_typing_burst_into_separate_session_steps() {
 fn session_undo_of_a_font_size_change_restores_the_previous_size() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "text");
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     let original = app.document.as_ref().unwrap().overlays[0].font_size;
-    app.update(Message::ChangeFontSize(original + 10.0));
+    let _ = app.update(Message::ChangeFontSize(original + 10.0));
 
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
 
     assert!(
         (app.document.as_ref().unwrap().overlays[0].font_size - original).abs() < f32::EPSILON,
@@ -4606,18 +4606,18 @@ fn abandoning_a_fresh_placement_keeps_history_for_other_overlays_changed_meanwhi
         .page_dimensions
         .insert(1, (612.0, 792.0));
 
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 100.0, y: 700.0 },
         width: 200.0,
         height: 80.0,
     });
-    app.update(Message::UpdateOverlayText("established".to_string()));
-    app.update(Message::CommitText);
+    let _ = app.update(Message::UpdateOverlayText("established".to_string()));
+    let _ = app.update(Message::CommitText);
 
     // A new placement opens a fresh session; resizing the established overlay
     // records a command on top of it.
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 300.0, y: 700.0 },
         width: 150.0,
@@ -4625,7 +4625,7 @@ fn abandoning_a_fresh_placement_keeps_history_for_other_overlays_changed_meanwhi
     });
     let established = crate::overlay::OverlayBox::of(&app.document.as_ref().unwrap().overlays[0])
         .expect("the established overlay is a box");
-    app.update(Message::ResizeOverlay {
+    let _ = app.update(Message::ResizeOverlay {
         index: 0,
         old_box: established,
         new_box: crate::overlay::OverlayBox {
@@ -4635,7 +4635,7 @@ fn abandoning_a_fresh_placement_keeps_history_for_other_overlays_changed_meanwhi
     });
 
     // Abandon the blank placement.
-    app.update(Message::CommitText);
+    let _ = app.update(Message::CommitText);
 
     let overlays = &app.document.as_ref().unwrap().overlays;
     assert_eq!(overlays.len(), 1, "the blank placement should be discarded");
@@ -4647,17 +4647,17 @@ fn abandoning_a_fresh_placement_keeps_history_for_other_overlays_changed_meanwhi
 fn exhausting_the_session_history_cancels_the_session_then_reaches_the_document() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "committed");
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     type_text(&mut app, "X");
 
     // Step 1: the typing burst.
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert_eq!(overlay_text(&app), "committed");
     assert!(app.canvas.editing);
 
     // Step 2: the session itself. It changed nothing once the burst was
     // undone, so it falls through to the document history, exactly as today.
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert!(!app.canvas.editing, "the session closes");
     assert_history_matches_document(&app, "after the session history ran out");
 }
@@ -4666,12 +4666,12 @@ fn exhausting_the_session_history_cancels_the_session_then_reaches_the_document(
 fn session_redo_reapplies_a_session_undo_without_closing_the_session() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "start");
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     type_text(&mut app, "more");
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert_eq!(overlay_text(&app), "start");
 
-    app.update(Message::Redo);
+    let _ = app.update(Message::Redo);
 
     assert_eq!(overlay_text(&app), "startmore", "session redo restores it");
     assert!(app.canvas.editing, "redo must not close the session");
@@ -4681,12 +4681,12 @@ fn session_redo_reapplies_a_session_undo_without_closing_the_session() {
 fn typing_after_a_session_undo_clears_the_session_redo() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "start");
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     type_text(&mut app, "abc");
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     type_text(&mut app, "z");
 
-    app.update(Message::Redo);
+    let _ = app.update(Message::Redo);
 
     assert_eq!(
         overlay_text(&app),
@@ -4700,10 +4700,10 @@ fn committing_after_a_session_undo_records_only_the_net_change() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "start");
     let depth_before = app.undo_stack.len();
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     type_text(&mut app, "abc");
-    app.update(Message::Undo);
-    app.update(Message::CommitText);
+    let _ = app.update(Message::Undo);
+    let _ = app.update(Message::CommitText);
 
     assert_eq!(
         app.undo_stack.len(),
@@ -4716,19 +4716,19 @@ fn committing_after_a_session_undo_records_only_the_net_change() {
 #[test]
 fn session_undo_inside_a_fresh_placement_stops_at_the_placement() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
     type_text(&mut app, "draft");
 
     // The typing burst goes first, leaving the blank fresh placement.
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
     assert_eq!(overlay_text(&app), "");
 
     // The next undo cancels the placement itself.
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert!(app.document.as_ref().unwrap().overlays.is_empty());
     assert!(app.undo_stack.is_empty());
     assert!(!app.canvas.editing);
@@ -4739,14 +4739,14 @@ fn undo_is_offered_while_a_session_has_steps_to_step_back_through() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "start");
     while app.can_undo() {
-        app.update(Message::Undo);
+        let _ = app.update(Message::Undo);
     }
     assert!(!app.can_undo(), "nothing left anywhere");
 
     while app.can_redo() {
-        app.update(Message::Redo);
+        let _ = app.update(Message::Redo);
     }
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     assert!(
         !app.can_redo(),
         "an open session with no steps has nothing to redo"
@@ -4754,7 +4754,7 @@ fn undo_is_offered_while_a_session_has_steps_to_step_back_through() {
 
     type_text(&mut app, "x");
     assert!(app.can_undo(), "the typing burst is undoable");
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert!(app.can_redo(), "the undone burst is redoable");
 }
 
@@ -4789,16 +4789,16 @@ fn closing_the_session_is_its_own_undo_keystroke() {
     place_committed_overlay(&mut app, 100.0, "first");
     place_committed_overlay(&mut app, 200.0, "second");
 
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     type_text(&mut app, "X");
 
     // 1: the typing burst, leaving the session open and changed nothing.
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert_eq!(overlay_text(&app), "first");
     assert!(app.canvas.editing);
 
     // 2: the session itself, and nothing else.
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert!(!app.canvas.editing, "the box closes");
     let overlays = &app.document.as_ref().unwrap().overlays;
     assert_eq!(overlays.len(), 2, "no document command may be undone too");
@@ -4808,7 +4808,7 @@ fn closing_the_session_is_its_own_undo_keystroke() {
     );
 
     // 3: only now does the document history move.
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert_eq!(app.document.as_ref().unwrap().overlays[1].text, "");
 }
 
@@ -4816,7 +4816,7 @@ fn closing_the_session_is_its_own_undo_keystroke() {
 fn an_open_session_is_always_undoable_because_closing_it_is_work() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "text");
-    app.update(Message::EditOverlay(0));
+    let _ = app.update(Message::EditOverlay(0));
     // Isolate the session: with the document history emptied, only the open
     // box can be the thing undo would act on.
     app.undo_stack.clear();
@@ -4839,7 +4839,7 @@ fn a_resize_made_mid_session_is_undone_before_the_session_closes() {
         .page_dimensions
         .insert(1, (612.0, 792.0));
 
-    app.update(Message::PlaceTextBox {
+    let _ = app.update(Message::PlaceTextBox {
         page: 1,
         top_left: PdfPosition { x: 100.0, y: 700.0 },
         width: 200.0,
@@ -4849,7 +4849,7 @@ fn a_resize_made_mid_session_is_undone_before_the_session_closes() {
 
     let before = crate::overlay::OverlayBox::of(&app.document.as_ref().unwrap().overlays[0])
         .expect("a placed text box is resizable");
-    app.update(Message::ResizeOverlay {
+    let _ = app.update(Message::ResizeOverlay {
         index: 0,
         old_box: before,
         new_box: crate::overlay::OverlayBox {
@@ -4863,7 +4863,7 @@ fn a_resize_made_mid_session_is_undone_before_the_session_closes() {
     );
 
     // 1: the resize, with the box still open.
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     let overlay = &app.document.as_ref().unwrap().overlays[0];
     assert_eq!(overlay.width, Some(200.0), "the resize is walked back");
     assert_eq!(overlay.min_height, Some(80.0));
@@ -4874,14 +4874,14 @@ fn a_resize_made_mid_session_is_undone_before_the_session_closes() {
     );
 
     // 2: the typing burst, still inside the session.
-    app.update(Message::Undo);
+    let _ = app.update(Message::Undo);
     assert_eq!(overlay_text(&app), "");
     assert!(app.canvas.editing);
 
     // 3: redo reapplies the burst, then the resize, in the order they were made.
-    app.update(Message::Redo);
+    let _ = app.update(Message::Redo);
     assert_eq!(overlay_text(&app), "boxed");
-    app.update(Message::Redo);
+    let _ = app.update(Message::Redo);
     assert_eq!(
         app.document.as_ref().unwrap().overlays[0].width,
         Some(400.0)

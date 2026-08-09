@@ -103,7 +103,7 @@ mod tests {
     use super::*;
     use crate::fonts::FontRegistry;
     use crate::ui::test_harness::{Harness, Screenshot, load_bundled_fonts};
-    use crate::ui::toolbar::{font_options, option_named};
+    use crate::ui::toolbar::option_named;
     use iced_test::simulator;
 
     const VIEWPORT: iced::Size = iced::Size::new(320.0, 400.0);

@@ -213,13 +213,14 @@ mod tests {
     #[test]
     fn render_page_batch_trait_exists() {
         // Compile-time proof that the function exists on PdftoppmRenderer
-        let _f: fn(
+        type RenderPageBatch = fn(
             &PdftoppmRenderer,
             &Path,
             u32,
             u32,
             u32,
-        ) -> Result<Vec<(u32, DynamicImage)>, RendererError> = PdftoppmRenderer::render_page_batch;
+        ) -> Result<Vec<(u32, DynamicImage)>, RendererError>;
+        let _f: RenderPageBatch = PdftoppmRenderer::render_page_batch;
     }
 
     #[test]

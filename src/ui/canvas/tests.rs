@@ -1502,8 +1502,10 @@ fn ctrl_scroll_up_publishes_zoom_in() {
     let dims = test_page_dimensions();
     let registry = FontRegistry::new();
     let program = test_program(&overlays, &dims, &registry);
-    let mut state = ProgramState::default();
-    state.keyboard_modifiers = iced::keyboard::Modifiers::COMMAND;
+    let mut state = ProgramState {
+        keyboard_modifiers: iced::keyboard::Modifiers::COMMAND,
+        ..Default::default()
+    };
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(500.0, 500.0);
 
@@ -1520,8 +1522,10 @@ fn ctrl_scroll_down_publishes_zoom_out() {
     let dims = test_page_dimensions();
     let registry = FontRegistry::new();
     let program = test_program(&overlays, &dims, &registry);
-    let mut state = ProgramState::default();
-    state.keyboard_modifiers = iced::keyboard::Modifiers::COMMAND;
+    let mut state = ProgramState {
+        keyboard_modifiers: iced::keyboard::Modifiers::COMMAND,
+        ..Default::default()
+    };
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(500.0, 500.0);
 
@@ -1820,13 +1824,15 @@ fn cursor_move_requests_redraw_during_resize_drag() {
         active_overlay: Some(0),
         ..test_program(&overlays, &dims, &registry)
     };
-    let mut state = ProgramState::default();
-    state.resize_drag = Some(ResizeDragState {
-        overlay_index: 0,
-        anchor: OverlayAnchor::of(&overlays[0]),
-        edge: ResizeEdge::Right,
-        initial_box: OverlayBox::of(&overlays[0]).unwrap(),
-    });
+    let mut state = ProgramState {
+        resize_drag: Some(ResizeDragState {
+            overlay_index: 0,
+            anchor: OverlayAnchor::of(&overlays[0]),
+            edge: ResizeEdge::Right,
+            initial_box: OverlayBox::of(&overlays[0]).unwrap(),
+        }),
+        ..Default::default()
+    };
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(450.0, 75.0);
 
@@ -2365,8 +2371,10 @@ fn cursor_move_off_overlay_clears_hovered_overlay() {
     let dims = test_page_dimensions();
     let registry = FontRegistry::new();
     let program = test_program(&overlays, &dims, &registry);
-    let mut state = ProgramState::default();
-    state.hovered_overlay = Some(0);
+    let mut state = ProgramState {
+        hovered_overlay: Some(0),
+        ..Default::default()
+    };
     let bounds = test_canvas_bounds();
 
     // Move to blank page area (500, 500)
@@ -2939,9 +2947,7 @@ fn overlay_with_font(font_name: &str, font_size: f32, text: &str) -> TextOverlay
 /// The threshold sits far above the overlay tint's darkening (~51 on a
 /// white page) so only the near-black text counts.
 fn rightmost_ink_column(shot: &Screenshot, top: u32, bottom: u32) -> Option<u32> {
-    (0..shot.width)
-        .filter(|x| (top..=bottom).any(|y| shot.darkening(*x, y) >= 150.0))
-        .next_back()
+    (0..shot.width).rfind(|x| (top..=bottom).any(|y| shot.darkening(*x, y) >= 150.0))
 }
 
 /// Last row of the surface holding glyph ink, scanning the whole height.
@@ -3038,7 +3044,7 @@ fn anchor_resolves_to_the_topmost_of_two_overlays_stacked_at_one_spot() {
     // one's, and re-resolving must pick the same one back.
     let stacked_below = overlay_at(72.0, 720.0, "below");
     let stacked_above = overlay_at(72.0, 720.0, "above");
-    let before = vec![
+    let before = [
         overlay_at(72.0, 600.0, "elsewhere"),
         stacked_below.clone(),
         stacked_above.clone(),
@@ -3357,7 +3363,7 @@ fn a_resize_in_flight_keeps_showing_its_own_pointer() {
 
 #[test]
 fn a_single_line_overlay_has_no_resize_handles_anywhere() {
-    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    let overlays = [overlay_at(72.0, 720.0, "Hello")];
     let dims = test_page_dimensions();
     let registry = FontRegistry::new();
     let params = ConversionParams {

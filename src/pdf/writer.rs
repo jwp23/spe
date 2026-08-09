@@ -1972,7 +1972,7 @@ mod tests {
     }
 
     /// The font dictionary on page 1 whose BaseFont is `base_font`.
-    fn page_font_dict<'a>(doc: &'a Document, base_font: &[u8]) -> lopdf::Dictionary {
+    fn page_font_dict(doc: &Document, base_font: &[u8]) -> lopdf::Dictionary {
         let &page_id = doc.get_pages().get(&1).expect("page 1");
         doc.get_page_fonts(page_id)
             .expect("get_page_fonts")
