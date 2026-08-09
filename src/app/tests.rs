@@ -1503,6 +1503,53 @@ fn test_app_with_overlay() -> App {
     app
 }
 
+/// An app with a single selected overlay whose font size has been set to
+/// `size`. Shared setup for the font-size stepper/arrow-key tests below,
+/// which otherwise only differ in which message they dispatch next.
+fn selected_overlay_at_font_size(size: f32) -> App {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::ChangeFontSize(size));
+    app
+}
+
+/// Dispatches `toolbar::Message::FontSizeIncrement`/`FontSizeDecrement`
+/// against a selected overlay at font size 12.0, mirroring what the
+/// stepper buttons send.
+fn step_via_toolbar_message(increment: bool) -> App {
+    let mut app = selected_overlay_at_font_size(12.0);
+    let message = if increment {
+        toolbar::Message::FontSizeIncrement
+    } else {
+        toolbar::Message::FontSizeDecrement
+    };
+    app.update(Message::Toolbar(message));
+    app
+}
+
+/// Dispatches `Message::FontSizeArrowKeyResult` against a selected overlay
+/// at font size 12.0, as if the arrow key's focus check had already
+/// confirmed the font-size input was focused.
+fn step_via_arrow_key_result(increment: bool) -> App {
+    let mut app = selected_overlay_at_font_size(12.0);
+    app.update(Message::FontSizeArrowKeyResult(increment));
+    app
+}
+
+/// Simulates a real click on the toolbar's font-size stepper button whose
+/// label matches `glyph` (`"+"` or `"-"`) and applies whatever messages it
+/// produces.
+fn click_font_size_stepper(app: &mut App, glyph: &str) {
+    let mut simulator = iced_test::Simulator::new(app.view());
+    simulator.click(glyph).unwrap_or_else(|_| {
+        panic!("font size \"{glyph}\" button should be present in the toolbar")
+    });
+    let messages: Vec<Message> = simulator.into_messages().collect();
+    for message in messages {
+        app.update(message);
+    }
+}
+
 #[test]
 fn edit_overlay_sets_active_and_editing() {
     let mut app = test_app_with_overlay();
@@ -1584,17 +1631,9 @@ fn undo_font_size_change_syncs_toolbar_to_active_overlay() {
 
 #[test]
 fn clicking_font_size_increment_button_steps_up_the_overlay_size() {
-    let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
-    app.update(Message::ChangeFontSize(12.0));
+    let mut app = selected_overlay_at_font_size(12.0);
 
-    let mut simulator = iced_test::Simulator::new(app.view());
-    simulator
-        .click("+")
-        .expect("font size increment button should be present in the toolbar");
-    for message in simulator.into_messages() {
-        app.update(message);
-    }
+    click_font_size_stepper(&mut app, "+");
 
     assert!((app.toolbar.font_size - 13.0).abs() < f32::EPSILON);
     let doc = app.document.as_ref().unwrap();
@@ -1603,17 +1642,9 @@ fn clicking_font_size_increment_button_steps_up_the_overlay_size() {
 
 #[test]
 fn clicking_font_size_decrement_button_steps_down_the_overlay_size() {
-    let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
-    app.update(Message::ChangeFontSize(12.0));
+    let mut app = selected_overlay_at_font_size(12.0);
 
-    let mut simulator = iced_test::Simulator::new(app.view());
-    simulator
-        .click("-")
-        .expect("font size decrement button should be present in the toolbar");
-    for message in simulator.into_messages() {
-        app.update(message);
-    }
+    click_font_size_stepper(&mut app, "-");
 
     assert!((app.toolbar.font_size - 11.0).abs() < f32::EPSILON);
     let doc = app.document.as_ref().unwrap();
@@ -1622,11 +1653,7 @@ fn clicking_font_size_decrement_button_steps_down_the_overlay_size() {
 
 #[test]
 fn font_size_increment_toolbar_message_steps_up_and_updates_overlay() {
-    let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
-    app.update(Message::ChangeFontSize(12.0));
-
-    app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
+    let app = step_via_toolbar_message(true);
 
     assert!((app.toolbar.font_size - 13.0).abs() < f32::EPSILON);
     assert_eq!(app.toolbar.font_size_input, "13");
@@ -1636,11 +1663,7 @@ fn font_size_increment_toolbar_message_steps_up_and_updates_overlay() {
 
 #[test]
 fn font_size_decrement_toolbar_message_steps_down_and_updates_overlay() {
-    let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
-    app.update(Message::ChangeFontSize(12.0));
-
-    app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
+    let app = step_via_toolbar_message(false);
 
     assert!((app.toolbar.font_size - 11.0).abs() < f32::EPSILON);
     assert_eq!(app.toolbar.font_size_input, "11");
@@ -1650,9 +1673,7 @@ fn font_size_decrement_toolbar_message_steps_down_and_updates_overlay() {
 
 #[test]
 fn font_size_decrement_toolbar_message_floors_at_minimum() {
-    let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
-    app.update(Message::ChangeFontSize(1.0));
+    let mut app = selected_overlay_at_font_size(1.0);
 
     app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
 
@@ -1689,9 +1710,7 @@ fn font_size_decrement_after_clamped_submit_stays_at_floor_then_steps_cleanly() 
 
 #[test]
 fn font_size_increment_is_undoable() {
-    let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
-    app.update(Message::ChangeFontSize(12.0));
+    let mut app = selected_overlay_at_font_size(12.0);
 
     app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
     app.update(Message::Undo);
@@ -1773,11 +1792,7 @@ fn arrow_key_result_is_noop_when_unfocused_and_decrement() {
 
 #[test]
 fn font_size_arrow_key_result_increments_when_focused() {
-    let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
-    app.update(Message::ChangeFontSize(12.0));
-
-    app.update(Message::FontSizeArrowKeyResult(true));
+    let app = step_via_arrow_key_result(true);
 
     assert!((app.toolbar.font_size - 13.0).abs() < f32::EPSILON);
     let doc = app.document.as_ref().unwrap();
@@ -1786,11 +1801,7 @@ fn font_size_arrow_key_result_increments_when_focused() {
 
 #[test]
 fn font_size_arrow_key_result_decrements_when_focused() {
-    let mut app = test_app_with_overlay();
-    app.update(Message::SelectOverlay(0));
-    app.update(Message::ChangeFontSize(12.0));
-
-    app.update(Message::FontSizeArrowKeyResult(false));
+    let app = step_via_arrow_key_result(false);
 
     assert!((app.toolbar.font_size - 11.0).abs() < f32::EPSILON);
     let doc = app.document.as_ref().unwrap();
