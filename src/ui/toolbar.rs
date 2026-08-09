@@ -1,8 +1,9 @@
 // Font family and size selection controls.
 
-use iced::widget::{button, pick_list, row, text, text_input};
+use iced::widget::{button, row, text, text_input};
 
 use crate::fonts::{FontId, FontRegistry};
+use crate::ui::font_picker::font_picker;
 use crate::ui::icons;
 
 /// One selectable family in the font picker: what to call it, and the Iced
@@ -173,9 +174,7 @@ pub fn toolbar_view<'a>(
     .spacing(2);
 
     let font_group = {
-        let selected = options.iter().find(|o| o.id == state.font).cloned();
-        let font_pick: iced::Element<'a, Message> =
-            pick_list(options.to_vec(), selected, Message::FontSelected).into();
+        let font_pick = font_picker(options, state.font, state.font_picker_open);
 
         let size_input: iced::Element<'a, Message> = if has_document {
             text_input("size", &state.font_size_input)
@@ -359,6 +358,42 @@ mod tests {
         let _ = Message::PageInput("5".to_string());
         let _ = Message::ToggleSidebar;
         let _ = Message::DeleteOverlay;
+    }
+
+    /// A toolbar over a loaded document, with the font picker open or closed.
+    fn toolbar_simulator(font_picker_open: bool) -> iced_test::Simulator<'static, Message> {
+        let registry = FontRegistry::new();
+        let mut state = ToolbarState::new(registry.default_font());
+        state.font_picker_open = font_picker_open;
+        let ctx = ToolbarContext {
+            has_document: true,
+            can_undo: false,
+            can_redo: false,
+            has_selection: false,
+            current_page: 1,
+            page_count: 1,
+            zoom_percent: 100,
+            sidebar_visible: false,
+        };
+        iced_test::simulator(toolbar_view(&state, &ctx, &font_options(&registry)))
+    }
+
+    #[test]
+    fn the_open_font_picker_lists_the_families() {
+        let mut toolbar = toolbar_simulator(true);
+        assert!(
+            toolbar.find("Times Roman").is_ok(),
+            "an open picker should list every family"
+        );
+    }
+
+    #[test]
+    fn the_closed_font_picker_lists_no_families() {
+        let mut toolbar = toolbar_simulator(false);
+        assert!(
+            toolbar.find("Times Roman").is_err(),
+            "a closed picker should list nothing"
+        );
     }
 
     #[test]

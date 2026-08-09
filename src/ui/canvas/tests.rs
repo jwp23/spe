@@ -6,7 +6,6 @@ use crate::overlay::{PdfPosition, TextOverlay};
 use iced::event;
 use iced::mouse;
 use iced::widget::canvas;
-use iced::widget::image::Handle;
 use std::collections::HashMap;
 
 // --- PageLayout tests ---
@@ -2269,44 +2268,6 @@ const RENDER_SIZE: iced::Size = iced::Size {
     height: 700.0,
 };
 
-/// A headlessly rendered frame, as RGBA pixels over a white page.
-struct RenderedCanvas {
-    width: u32,
-    rgba: Vec<u8>,
-}
-
-impl RenderedCanvas {
-    fn height(&self) -> u32 {
-        (self.rgba.len() as u32 / 4) / self.width
-    }
-
-    fn pixel(&self, x: u32, y: u32) -> (u8, u8, u8) {
-        assert!(
-            x < self.width && y < self.height(),
-            "sample ({x}, {y}) is outside the {}x{} render surface",
-            self.width,
-            self.height()
-        );
-        let i = ((y * self.width + x) * 4) as usize;
-        (self.rgba[i], self.rgba[i + 1], self.rgba[i + 2])
-    }
-
-    /// How much darker than white the pixel at (x, y) is, averaged over RGB.
-    /// Measured on the real composited output, so it accounts for whatever
-    /// blending the renderer actually performs.
-    fn darkening(&self, x: u32, y: u32) -> f32 {
-        let (r, g, b) = self.pixel(x, y);
-        (3.0 * 255.0 - r as f32 - g as f32 - b as f32) / 3.0
-    }
-
-    /// Rows in `x`'s column that are darker than white by at least `threshold`.
-    fn darkened_rows(&self, x: u32, threshold: f32, height: u32) -> Vec<u32> {
-        (0..height)
-            .filter(|y| self.darkening(x, *y) >= threshold)
-            .collect()
-    }
-}
-
 /// Render an overlay canvas program over a white page, headlessly.
 ///
 /// When `cursor` is given it is delivered as a real cursor-moved event first,
@@ -2314,60 +2275,17 @@ impl RenderedCanvas {
 fn render_overlay_canvas(
     program: OverlayCanvasProgram<'_>,
     cursor: Option<iced::Point>,
-) -> RenderedCanvas {
-    use iced_test::core::renderer::Headless;
-    use iced_test::runtime::{UserInterface, user_interface};
-
+) -> crate::ui::test_harness::Screenshot {
     let element: iced::Element<Message> = iced::widget::canvas(program)
         .width(iced::Length::Fill)
         .height(iced::Length::Fill)
         .into();
 
-    let mut renderer = iced_test::futures::futures::executor::block_on(
-        // Pinned to the software backend so the rendered pixels these tests
-        // assert on do not depend on whether a GPU is present.
-        <iced::Renderer as Headless>::new(
-            iced::Font::DEFAULT,
-            iced::Pixels(16.0),
-            Some("tiny-skia"),
-        ),
-    )
-    .expect("software renderer should be available without a GPU or display");
-
-    let mut ui = UserInterface::build(
-        element,
-        RENDER_SIZE,
-        user_interface::Cache::default(),
-        &mut renderer,
-    );
-
-    let pointer = match cursor {
-        Some(position) => mouse::Cursor::Available(position),
-        None => mouse::Cursor::Unavailable,
-    };
+    let mut harness = crate::ui::test_harness::Harness::new(element, RENDER_SIZE);
     if let Some(position) = cursor {
-        let _ = ui.update(
-            &[iced::Event::Mouse(mouse::Event::CursorMoved { position })],
-            pointer,
-            &mut renderer,
-            &mut iced_test::core::clipboard::Null,
-            &mut Vec::new(),
-        );
+        let _ = harness.move_cursor(position);
     }
-
-    ui.draw(
-        &mut renderer,
-        &iced::Theme::Light,
-        &iced_test::core::renderer::Style {
-            text_color: iced::Color::BLACK,
-        },
-        pointer,
-    );
-
-    let width = RENDER_SIZE.width as u32;
-    let height = RENDER_SIZE.height as u32;
-    let rgba = renderer.screenshot(iced::Size::new(width, height), 1.0, iced::Color::WHITE);
-    RenderedCanvas { width, rgba }
+    harness.screenshot()
 }
 
 /// Screen-space baseline of an overlay inside the rendered canvas.
@@ -2464,21 +2382,19 @@ fn multiline_tint_covers_the_rows_its_text_occupies() {
     );
 }
 
-impl RenderedCanvas {
-    /// Pixels painted in a strong, saturated blue — the selection border and
-    /// resize handle, which are opaque, unlike the pale overlay tint.
-    ///
-    /// The threshold is derived from `SELECTION_COLOR` itself (halfway to its
-    /// blue/red channel gap) so it tracks the renderer's actual selection
-    /// color instead of a magic number that could silently fall out of sync.
-    fn selection_blue_pixels(&self) -> usize {
-        let blue_red_gap = (super::SELECTION_COLOR.b - super::SELECTION_COLOR.r) * 255.0;
-        let threshold = blue_red_gap / 2.0;
-        self.rgba
-            .chunks_exact(4)
-            .filter(|p| p[2] as f32 - p[0] as f32 > threshold)
-            .count()
-    }
+/// Pixels of `shot` painted in a strong, saturated blue — the selection
+/// border and resize handle, which are opaque, unlike the pale overlay tint.
+///
+/// The threshold is derived from `SELECTION_COLOR` itself (halfway to its
+/// blue/red channel gap) so it tracks the renderer's actual selection color
+/// instead of a magic number that could silently fall out of sync.
+fn selection_blue_pixels(shot: &crate::ui::test_harness::Screenshot) -> usize {
+    let blue_red_gap = (super::SELECTION_COLOR.b - super::SELECTION_COLOR.r) * 255.0;
+    let threshold = blue_red_gap / 2.0;
+    shot.rgba
+        .chunks_exact(4)
+        .filter(|p| p[2] as f32 - p[0] as f32 > threshold)
+        .count()
 }
 
 #[test]
@@ -2491,7 +2407,7 @@ fn selected_overlay_paints_a_selection_border() {
 
     let canvas = render_overlay_canvas(program, None);
     assert!(
-        canvas.selection_blue_pixels() > 0,
+        selection_blue_pixels(&canvas) > 0,
         "a selected overlay should paint a selection border and resize handle"
     );
 }
@@ -2509,7 +2425,7 @@ fn overlay_being_edited_paints_no_selection_border() {
 
     let canvas = render_overlay_canvas(program, None);
     assert_eq!(
-        canvas.selection_blue_pixels(),
+        selection_blue_pixels(&canvas),
         0,
         "the canvas must not draw a second selection border while editing"
     );
