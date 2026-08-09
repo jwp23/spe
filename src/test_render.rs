@@ -60,6 +60,26 @@ pub(crate) fn render_element(
     element: iced::Element<'_, crate::app::Message>,
     cursor: Option<iced::Point>,
 ) -> RenderedCanvas {
+    let moved: Vec<_> = cursor
+        .map(|position| {
+            (
+                iced::Event::Mouse(mouse::Event::CursorMoved { position }),
+                position,
+            )
+        })
+        .into_iter()
+        .collect();
+    render_element_after(element, &moved, cursor)
+}
+
+/// Render a widget after delivering `steps` to it, each event paired with
+/// where the pointer is when it arrives, so state a widget only reaches
+/// through real interaction — a drag in flight, say — can be drawn.
+pub(crate) fn render_element_after(
+    element: iced::Element<'_, crate::app::Message>,
+    steps: &[(iced::Event, iced::Point)],
+    cursor: Option<iced::Point>,
+) -> RenderedCanvas {
     use iced_test::core::renderer::Headless;
     use iced_test::runtime::{UserInterface, user_interface};
 
@@ -85,10 +105,10 @@ pub(crate) fn render_element(
         Some(position) => mouse::Cursor::Available(position),
         None => mouse::Cursor::Unavailable,
     };
-    if let Some(position) = cursor {
+    for (event, position) in steps {
         let _ = ui.update(
-            &[iced::Event::Mouse(mouse::Event::CursorMoved { position })],
-            pointer,
+            std::slice::from_ref(event),
+            mouse::Cursor::Available(*position),
             &mut renderer,
             &mut iced_test::core::clipboard::Null,
             &mut Vec::new(),

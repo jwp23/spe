@@ -3260,3 +3260,89 @@ fn the_resize_handles_are_drawn_along_the_bottom_of_the_box_as_well_as_its_side(
         "blue ink stops at row {bottom} but the bottom handle should reach {border_bottom}"
     );
 }
+
+// =====================================================================
+// spe-qrj: a resize drag shows the box it would commit, the way a
+// placement drag shows the box it would place
+// =====================================================================
+
+/// Grab a resize handle at (`grab_x`, `grab_y`) and drag to (`x`, `y`) without
+/// releasing, returning the blue bounds the canvas draws mid-drag.
+fn resize_preview_bounds(
+    overlay: TextOverlay,
+    grab_x: f32,
+    grab_y: f32,
+    x: f32,
+    y: f32,
+) -> (u32, u32, u32, u32) {
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![overlay];
+    let mut program = test_program(&overlays, &dims, &registry);
+    program.active_overlay = Some(0);
+    let element: iced::Element<Message> = iced::widget::canvas(program)
+        .width(iced::Length::Fill)
+        .height(iced::Length::Fill)
+        .into();
+    let grab = iced::Point::new(grab_x, grab_y);
+    let to = iced::Point::new(x, y);
+    let steps = [
+        (
+            iced::Event::Mouse(mouse::Event::CursorMoved { position: grab }),
+            grab,
+        ),
+        (
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            grab,
+        ),
+        (
+            iced::Event::Mouse(mouse::Event::CursorMoved { position: to }),
+            to,
+        ),
+    ];
+    crate::test_render::render_element_after(element, &steps, Some(to))
+        .selection_blue_bounds()
+        .expect("a resize in flight must draw the box it would commit")
+}
+
+#[test]
+fn a_resize_in_flight_draws_the_box_it_would_commit() {
+    // The overlay is at PDF (72, 600) in a 150x100pt box: on a 900px-wide
+    // surface its text box is x 216..366, y 188..288. Dragging the corner in
+    // to screen (300, 250) shrinks it to x 216..300, y 188..250, so the blue
+    // ink must stop there rather than at the box's committed edges.
+    let mut overlay = multiline_overlay_at(72.0, 600.0, 150.0, "one");
+    overlay.min_height = Some(100.0);
+    let (_, _, right, bottom) = resize_preview_bounds(overlay, 366.0, 288.0, 300.0, 250.0);
+
+    let pad = super::SELECTION_BOX_PADDING;
+    assert!(
+        (right as f32 - (300.0 + pad)).abs() <= 2.0,
+        "the preview's right edge is at column {right}, expected ~{}",
+        300.0 + pad
+    );
+    assert!(
+        (bottom as f32 - (250.0 + pad)).abs() <= 2.0,
+        "the preview's bottom edge is at row {bottom}, expected ~{}",
+        250.0 + pad
+    );
+}
+
+#[test]
+fn a_vertical_resize_in_flight_previews_only_the_height() {
+    let mut overlay = multiline_overlay_at(72.0, 600.0, 150.0, "one");
+    overlay.min_height = Some(100.0);
+    let (_, _, right, bottom) = resize_preview_bounds(overlay, 300.0, 288.0, 300.0, 250.0);
+
+    let pad = super::SELECTION_BOX_PADDING;
+    assert!(
+        (right as f32 - (366.0 + pad)).abs() <= 2.0,
+        "a vertical resize must keep the box's right edge at ~{}, got {right}",
+        366.0 + pad
+    );
+    assert!(
+        (bottom as f32 - (250.0 + pad)).abs() <= 2.0,
+        "the preview's bottom edge is at row {bottom}, expected ~{}",
+        250.0 + pad
+    );
+}
