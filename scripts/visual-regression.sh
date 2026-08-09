@@ -15,14 +15,19 @@ REFERENCE_DIR="$PROJECT_DIR/tests/visual"
 FIXTURE="$PROJECT_DIR/tests/fixtures/single-page.pdf"
 
 # Comparison tolerance: count of differing pixels (ImageMagick's AE metric)
-# allowed before a comparison is reported as a mismatch. Captures are
-# pixel-exact most of the time (see docs/visual-regression.md), but any
-# scenario occasionally shows a stable ~85-pixel difference — small,
-# localized antialiasing variance around an overlay's border, not a content
-# difference. 150 comfortably covers that while staying far below the
-# ~700k+ pixel deltas a real rendering regression (e.g. a missing overlay)
-# produces.
-TOLERANCE_PIXELS="${VISUAL_REGRESSION_TOLERANCE:-150}"
+# allowed before a comparison is reported as a mismatch. With the spe-d3m
+# wait_ready fix (zoom-generation freshness) plus wait_frame, captures are
+# pixel-exact in this environment — 25/25 same-machine comparisons showed 0
+# pixels different (see "Determinism" in docs/visual-regression.md). Older
+# measurements, taken before that fix closed a stale-render race, saw a
+# stable ~85-pixel antialiasing wobble and occasional 230-315-pixel
+# cross-run drift; 40 keeps a safety margin over that noise floor without
+# coming remotely close to the ~700k+ pixel deltas a real rendering
+# regression (e.g. a missing overlay) produces. If a different machine shows
+# a nonzero baseline here, that's font-rendering drift, not a regression —
+# see "Determinism" for how to tell the difference and regenerate
+# references locally.
+TOLERANCE_PIXELS="${VISUAL_REGRESSION_TOLERANCE:-40}"
 
 send() { "$SCREENSHOT_SH" send "$1" >/dev/null; }
 

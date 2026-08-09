@@ -54,8 +54,19 @@ pub struct CanvasState {
     /// ends for any reason: committed with text, cancelled, or superseded by
     /// another overlay becoming active.
     pub fresh_placement: Option<usize>,
+    /// Undo/redo history of the edits made inside the open edit session, so
+    /// an edit in progress can be stepped back through without disturbing the
+    /// document history. Empty whenever no session is open.
+    pub session_history: crate::command::SessionHistory,
     /// Counter incremented on each zoom change; used to debounce re-renders.
     pub zoom_generation: u64,
+    /// The `zoom_generation` the currently cached `page_images` are being
+    /// re-rendered for. Bumped when the debounced re-render actually starts
+    /// (clears the stale cache), not when zoom changes — so it lags
+    /// `zoom_generation` for the whole debounce window. `is_render_idle`
+    /// compares the two to tell a fresh-but-not-yet-rendered zoom apart from
+    /// a genuinely idle one (spe-d3m).
+    pub rendered_generation: u64,
     /// Current vertical scroll offset in pixels.
     pub scroll_y: f32,
     /// Visible viewport height in pixels.
@@ -70,7 +81,9 @@ impl Default for CanvasState {
             editing: false,
             edit_start_text: None,
             fresh_placement: None,
+            session_history: crate::command::SessionHistory::default(),
             zoom_generation: 0,
+            rendered_generation: 0,
             scroll_y: 0.0,
             viewport_height: 0.0,
         }
@@ -255,8 +268,10 @@ pub(crate) fn overlay_wrap_width(overlay: &TextOverlay, scale: f32) -> f32 {
 }
 
 /// Line height iced applies to canvas text, as a multiple of the font size
-/// (`canvas::Text` defaults to `LineHeight::Relative(1.2)`).
-pub(crate) const TEXT_LINE_HEIGHT_RATIO: f32 = 1.2;
+/// (`canvas::Text` defaults to `LineHeight::Relative(1.2)`). Defined in
+/// `overlay` — the shared data model — so `pdf::writer` can match it without
+/// depending on this presentation module.
+pub(crate) use crate::overlay::TEXT_LINE_HEIGHT_RATIO;
 
 /// Line height for the floating edit widget. Deliberately not iced's widget
 /// default (`Relative(1.3)`): the canvas and the saved PDF's text leading both

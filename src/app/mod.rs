@@ -101,6 +101,11 @@ pub struct App {
     /// writing one. Those handlers record the reason here and the response path
     /// consumes it, so no command needs a field of its own.
     pub last_command_error: Option<String>,
+    /// Non-fatal information recorded by the handler of the IPC command
+    /// currently running, surfaced alongside an `ok: true` response — e.g. a
+    /// save that substituted characters the PDF encoding cannot represent.
+    /// Consumed the same way as [`App::last_command_error`] (spe-i1b, #127).
+    pub last_command_warning: Option<String>,
 }
 
 /// All messages the application can process.
@@ -236,6 +241,7 @@ impl App {
             presented_generation: 0,
             pending_frame_wait: None,
             last_command_error: None,
+            last_command_warning: None,
         };
         let mut font_tasks =
             vec![iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded)];
@@ -249,11 +255,21 @@ impl App {
     }
 
     /// Returns true when no render tasks are in flight and all pages have been rendered.
+    ///
+    /// Key presence in `page_images` alone isn't enough: a zoom change bumps
+    /// `zoom_generation` and schedules a debounced re-render, but leaves the
+    /// pre-zoom images cached (for instant visual feedback) until the
+    /// debounce fires. During that window the keys are all present yet
+    /// stale, so idleness also requires `rendered_generation` to have caught
+    /// up (spe-d3m).
     pub fn is_render_idle(&self) -> bool {
         if self.sidebar.active_batch_tasks > 0 {
             return false;
         }
         if let Some(doc) = &self.document {
+            if self.canvas.rendered_generation != self.canvas.zoom_generation {
+                return false;
+            }
             for page in 1..=doc.page_count {
                 if !doc.page_images.contains_key(&page) {
                     return false;
@@ -282,8 +298,12 @@ impl App {
             Some(error) => crate::ipc::IpcResponse {
                 ok: false,
                 error: Some(error),
+                warning: None,
             },
-            None => base,
+            None => crate::ipc::IpcResponse {
+                warning: self.last_command_warning.take(),
+                ..base
+            },
         }
     }
 
@@ -296,6 +316,7 @@ impl App {
             editing: self.canvas.editing,
             undo_depth: self.undo_stack.len(),
             redo_depth: self.redo_stack.len(),
+            session_redo_depth: self.canvas.session_history.redo_depth(),
         }
     }
 
@@ -309,9 +330,11 @@ impl App {
         &mut self,
         cmd: crate::ipc::IpcCommand,
     ) -> (crate::ipc::IpcResponse, iced::Task<Message>) {
-        // Any error left by an earlier command was already reported; clearing it
-        // here keeps a stale failure from being blamed on this command.
+        // Any error or warning left by an earlier command was already
+        // reported; clearing them here keeps stale state from being blamed
+        // on this command.
         self.last_command_error = None;
+        self.last_command_warning = None;
 
         let msg = match cmd.to_message(&self.ipc_context(), &self.font_registry) {
             Ok(msg) => msg,
@@ -320,6 +343,7 @@ impl App {
                     crate::ipc::IpcResponse {
                         ok: false,
                         error: Some(e.to_string()),
+                        warning: None,
                     },
                     iced::Task::none(),
                 );
@@ -329,6 +353,7 @@ impl App {
         let response = self.command_response(crate::ipc::IpcResponse {
             ok: true,
             error: None,
+            warning: None,
         });
         (response, task)
     }
@@ -340,6 +365,7 @@ impl App {
             return self.send_ipc_response(crate::ipc::IpcResponse {
                 ok: true,
                 error: None,
+                warning: None,
             });
         }
         iced::Task::none()
@@ -355,6 +381,7 @@ impl App {
             return self.send_ipc_response(crate::ipc::IpcResponse {
                 ok: true,
                 error: None,
+                warning: None,
             });
         }
         iced::Task::none()
@@ -374,11 +401,28 @@ impl App {
         }
     }
 
+    /// Whether an undo keystroke would change anything: a step of the open
+    /// edit session, the session itself, or a command in the history. An open
+    /// session always counts, because closing it is the keystroke's change.
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty() || self.canvas.editing
+    }
+
+    /// Whether a redo keystroke would change anything.
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty() || self.canvas.session_history.redo_depth() > 0
+    }
+
     fn execute_command(&mut self, cmd: UndoCommand) {
         if let Some(doc) = &mut self.document {
             cmd.apply(&mut doc.overlays);
             self.undo_stack.push(cmd);
             self.redo_stack.clear();
+            // A command made inside an open session is a session step too, so
+            // undo walks the session's own edits in the order they were made.
+            if self.canvas.editing {
+                self.canvas.session_history.record_document();
+            }
         }
     }
 
@@ -540,6 +584,7 @@ impl App {
                     self.send_ipc_response(crate::ipc::IpcResponse {
                         ok: true,
                         error: None,
+                        warning: None,
                     })
                 } else {
                     self.pending_ipc_wait = true;
@@ -570,6 +615,7 @@ impl App {
                     self.send_ipc_response(crate::ipc::IpcResponse {
                         ok: true,
                         error: None,
+                        warning: None,
                     })
                 } else {
                     self.pending_frame_wait = Some(target);

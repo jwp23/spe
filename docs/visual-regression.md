@@ -73,15 +73,26 @@ compare -metric AE /tmp/run-1.png /tmp/run-2.png /dev/null
 compare -metric AE /tmp/run-2.png /tmp/run-3.png /dev/null
 ```
 
-Both should report `0 (0)` (or, for `selected_overlay`, stay within the ~85
-pixel band described below) before you copy the capture over the reference.
+Both should report `0 (0)` (or stay within the tolerance band described
+below) before you copy the capture over the reference.
+
+References were regenerated on 2026-08-09 (spe-h8k), on top of the spe-d3m
+`wait_ready` fix: PR #137 replaced the toolbar's font `pick_list` with a
+previewing picker, which changed toolbar pixel layout again after the #131
+regeneration — every scenario's diff against the pre-#137 reference was
+confined to the toolbar strip (font-picker widget), with zero diff pixels
+anywhere in the page/overlay content below it, confirmed by inspecting each
+diff image. That's the expected fallout of an intended toolbar change, not a
+content regression, so the references were regenerated rather than the
+tolerance widened to absorb it.
 
 ## Comparison Method
 
 `compare -metric AE` (ImageMagick's Absolute Error metric — count of
 differing pixels) against the checked-in reference, with a small default
-tolerance (`VISUAL_REGRESSION_TOLERANCE`, default 150 pixels out of 921,600
-in a 1280x720 frame — see rationale in `scripts/visual-regression.sh`).
+tolerance (`VISUAL_REGRESSION_TOLERANCE`, default 40 pixels out of 921,600
+in a 1280x720 frame — see rationale in `scripts/visual-regression.sh` and the
+recalibration measurement below).
 
 Why ImageMagick instead of a Rust `image`-crate test: `compare` is already
 installed on this system (part of the ImageMagick package), needs no new
@@ -95,14 +106,18 @@ comparison (the crate is already a project dependency).
 ## Determinism
 
 Confirmed by running each scenario 3+ times (10+ for `committed_tint`) and
-diffing every pair with `compare -metric AE`:
+diffing every pair with `compare -metric AE`. The measurements below predate
+the spe-d3m `wait_ready` fix; see "Recalibration after the spe-d3m
+`wait_ready` fix" further down for the current (zero-variance) numbers this
+tolerance is actually calibrated against.
 
-- Most runs, across all three scenarios: 0 pixels different.
+- Most runs, across all three scenarios (this project had three scenarios at
+  the time): 0 pixels different.
 - Occasionally (roughly a quarter of runs, any scenario, not specific to
   one): a stable ~85-pixel difference (0.0093% of the frame), localized to
   antialiasing right around an overlay's tint or selection box border — not
   a content difference, verified by visual diff. Small enough that the
-  default 150-pixel tolerance absorbs it without also absorbing a real
+  then-default 150-pixel tolerance absorbed it without also absorbing a real
   regression (a missing/mispositioned overlay showed up as 700,000+ pixels
   different in testing).
 
@@ -167,6 +182,44 @@ hitting, not scenario-script luck:
    environment's font rendering differing slightly from whatever machine
    generated the references — a pre-existing gap, not a regression.
 
+### Recalibration after the spe-d3m `wait_ready` fix
+
+spe-d3m fixed the `zoom_reset`-then-`wait_ready` staleness gap described
+below (`is_render_idle` now also checks that `CanvasState::rendered_generation`
+has caught up to `zoom_generation`, not just that `page_images` has an entry
+per page — see `src/app/mod.rs`). Re-measured determinism afterward, 5 runs
+per scenario (10 for `committed_tint`), full harness start/stop per run,
+diffing every consecutive pair plus the first-vs-last pair with
+`compare -metric AE`:
+
+| Scenario | comparisons | pixels different |
+|---|---|---|
+| `committed_tint` | 10 (10 runs) | 0 (0) every pair |
+| `selected_overlay` | 5 (5 runs) | 0 (0) every pair |
+| `multiline_overlay` | 5 (5 runs) | 0 (0) every pair |
+| `editing_multiline` | 5 (5 runs) | 0 (0) every pair |
+
+25/25 comparisons pixel-identical — no ~85px antialiasing wobble and no
+230-315px drift this time. Both of those were symptoms of the three races
+above (fit-width-vs-resize, `wait_ready`'s pre-frame-signal blind spot, and
+now the zoom-generation staleness gap); with all three closed, this
+environment's variance floor measures as zero. `TOLERANCE_PIXELS` was
+lowered from 150 to 40 (`scripts/visual-regression.sh`) — a margin over that
+zero floor for whatever residual AA jitter a longer run might still turn up,
+without weakening the check: 40 is still more than four orders of magnitude
+(~17,500x) below the ~700k+-pixel deltas a real regression produces.
+
+This measurement is from one machine. If variance reappears elsewhere,
+first confirm it reproduces consistently on that machine (not a one-off) and
+check whether the diff is localized to a specific widget or spread across
+the frame — a localized diff is more likely a real regression than font/GPU
+drift. Only once a reproducible, non-localized diff is confirmed should it be
+attributed to this environment's font/GPU rendering rather than a returned
+race — see "References" above for how to tell an intended-change diff
+(localized to the affected widget) from noise, and regenerate references
+locally rather than loosening the tolerance to paper over a cross-machine
+offset.
+
 ### Staleness window: which commands are safe before `wait_frame`
 
 `IpcEvent::Command` batches the command's own task with the task that sends
@@ -210,27 +263,31 @@ async work — `open` via a real `pdftoppm` render task delivering
 clears and re-renders `page_images` at the new DPI. `run_scenario` already
 sends `wait_ready` after both, before ever reaching a scenario function.
 
-That said, `wait_ready`'s own precondition (`is_render_idle`, `src/app/
-mod.rs`) only checks that every page number has *some* entry in
-`page_images` — it does not check that entry was rendered at the current
-`zoom_generation`. Structurally, `wait_ready` sent right after `zoom_reset`
-could return `ok` immediately using images still cached from before the
-zoom change, before the 300ms debounce ever fires — a real gap, but one
-that belongs to `wait_ready`'s invariant, not to `wait_frame`'s design; it
-predates spe-xqb.
+`wait_ready`'s precondition (`is_render_idle`, `src/app/mod.rs`) used to only
+check that every page number had *some* entry in `page_images` — it did not
+check that entry was rendered at the current `zoom_generation`. Structurally,
+`wait_ready` sent right after `zoom_reset` (or any zoom change) could return
+`ok` immediately using images still cached from before the zoom change,
+before the 300ms debounce ever fired — a real gap in `wait_ready`'s
+invariant, not `wait_frame`'s design; it predated spe-xqb.
 
-Empirically tested against the running harness (open → wait_ready →
-capture; zoom_reset → wait_ready → capture immediately; sleep 500ms →
-wait_ready → capture again): all three captures were pixel-identical
-(`compare -metric AE` = 0 for every pair). In this headless cage setup,
-`window_size` never differs from what already makes
-`canvas::fit_to_width_zoom` compute exactly `1.0` by the time `open` runs
-(or the resize event hasn't landed yet), so `zoom_reset`'s `1.0 → 1.0`
-change is a no-op here — the debounce still fires 300ms later, but
-re-renders identical output. The gap is real and unaddressed, but it has
-no observed effect on `scripts/visual-regression.sh`'s scenarios in this
-environment. Left as documented, scoped-out follow-up rather than folded
-into `wait_frame` — see below.
+This environment never observed the gap in practice: `zoom_reset`'s `1.0 →
+1.0` is a no-op here (`window_size` always makes `canvas::fit_to_width_zoom`
+compute exactly `1.0` by the time `open` runs), so the missing freshness
+check never had a stale image to hand back. **Fixed in spe-d3m** using a
+real zoom level (`zoom_in`, not the no-op `zoom_reset`) to exercise it:
+`is_render_idle` now also requires `CanvasState::rendered_generation ==
+CanvasState::zoom_generation`, where `rendered_generation` is bumped only
+when the debounced re-render actually starts (see
+`App::handle_zoom_debounce_expired`). Unit tests pin the behavior
+(`app::tests::is_render_idle_false_after_zoom_before_debounce_fires`,
+`app::tests::is_render_idle_true_once_rerender_catches_up_to_zoom_generation`);
+verified end-to-end against the running harness too (`zoom_in` →
+`wait_ready` → capture immediately vs. `zoom_in` → sleep past the debounce →
+`wait_ready` → capture: both pixel-identical, `compare -metric AE` = 0,
+while a before/after-`zoom_in` capture pair differs by 623 pixels, proving
+the zoom itself is visible and the immediate capture correctly reflects it
+rather than a stale pre-zoom frame).
 
 ### Possible follow-ups (not done here)
 
@@ -238,14 +295,4 @@ into `wait_frame` — see below.
   observe from inside the iced process (would need a Wayland-side signal —
   e.g. a frame callback observed by the harness itself — not something the
   app's IPC socket can report).
-- Make `wait_ready`'s `is_render_idle` check `zoom_generation` freshness,
-  not just key presence, to close the (currently dormant, in this
-  environment) `zoom_reset`-then-`wait_ready` staleness gap described
-  above. Out of scope for spe-xqb: it is a pre-existing property of
-  `wait_ready`, not something the frame-presented signal introduced or is
-  responsible for fixing.
-- Regenerate the checked-in reference PNGs in `tests/visual/` from this
-  environment, or otherwise resolve the small constant offset between them
-  and this machine's font rendering, so `compare` reports MATCH instead of
-  a tolerated MISMATCH.
 - Wire this into CI once/if a headless-compositor-capable CI runner exists.

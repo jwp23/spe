@@ -89,6 +89,10 @@ Newline-delimited JSON over a Unix socket. Commands use PDF coordinates, not scr
 Every command returns a JSON response:
 - `{"ok": true}` on success
 - `{"ok": false, "error": "description"}` on failure
+- `{"ok": true, "warning": "description"}` on a success that still lost information — e.g.
+  `save` substituting characters the PDF text encoding cannot represent (mirrors the
+  in-app status toast, since an IPC client never sees it). The `warning` key is present
+  only when there is one.
 
 `ok: true` means the action actually happened. A command whose preconditions
 are not met is rejected before it runs rather than silently doing nothing, so
@@ -102,7 +106,7 @@ automation can assert on the reply:
 | `select` / `edit` / `move` / `resize` with a bad index | `overlay index is out of range` |
 | `resize` on a single-line overlay | `overlay is not resizable (no width set)` |
 | `font` with an unrecognized family | `unknown font: <name>` |
-| `redo` while an overlay is being edited | `an edit session is open — commit or deselect first, then redo` |
+| `redo` while an overlay is being edited, with no session step to reapply | `an edit session is open — commit or deselect first, then redo` |
 
 Commands that can only fail while doing their work — `open` and `save` — report
 the real filesystem error the same way.
@@ -125,7 +129,7 @@ the real filesystem error the same way.
 | Change font | `{"cmd": "font", "family": "Helvetica"}` |
 | Change font size | `{"cmd": "font_size", "size": 14.0}` |
 | Undo | `{"cmd": "undo"}` |
-| Redo | `{"cmd": "redo"}` (rejected while an edit session is open) |
+| Redo | `{"cmd": "redo"}` (while an edit session is open, reapplies a session step if one was undone; otherwise rejected) |
 | Zoom in | `{"cmd": "zoom_in"}` |
 | Zoom out | `{"cmd": "zoom_out"}` |
 | Zoom reset | `{"cmd": "zoom_reset"}` |

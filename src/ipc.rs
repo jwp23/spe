@@ -81,6 +81,8 @@ pub struct CommandContext<'a> {
     pub undo_depth: usize,
     /// Number of commands available to redo.
     pub redo_depth: usize,
+    /// Number of session edits redo could reapply.
+    pub session_redo_depth: usize,
 }
 
 impl<'a> CommandContext<'a> {
@@ -371,8 +373,10 @@ impl IpcCommand {
             }
             IpcCommand::Undo => {
                 ctx.require_document()?;
-                // An in-progress edit is itself undoable: undo cancels the
-                // session before it reaches the command history.
+                // An in-progress edit is itself undoable: undo steps back
+                // through the edits made inside the session, then closes it,
+                // before it reaches the command history. `editing` therefore
+                // covers every session step on its own.
                 if ctx.undo_depth == 0 && !ctx.editing {
                     return Err(IpcError::NothingToUndo);
                 }
@@ -380,15 +384,21 @@ impl IpcCommand {
             }
             IpcCommand::Redo => {
                 ctx.require_document()?;
-                // The mirror image of Undo's rule above, not an oversight.
-                // Undo cancels an open edit session, so a session is itself
-                // something to undo. Redo instead *commits* the session
-                // first, and committing clears the redo stack — so by the
-                // time the redo would run there is truthfully nothing left to
-                // reapply. Refusing here keeps the reply honest and, unlike
-                // reading a post-commit depth, needs no state the context
-                // cannot see. The GUI's Ctrl+Shift+Z keeps its own behaviour;
-                // this is an IPC precondition only.
+                // A session that has steps to reapply is redone in place: the
+                // step is put back without committing, so the redo does real
+                // work and the reply is honest.
+                if ctx.session_redo_depth > 0 {
+                    return Ok(Message::Redo);
+                }
+                // Without one, this is the mirror image of Undo's rule above,
+                // not an oversight. Undo steps back into an open edit session,
+                // so a session is itself something to undo. Redo that reaches
+                // past the session *commits* it first, and committing clears
+                // the redo stack — so by the time the redo would run there is
+                // truthfully nothing left to reapply. Refusing here keeps the
+                // reply honest and, unlike reading a post-commit depth, needs
+                // no state the context cannot see. The GUI's Ctrl+Shift+Z
+                // keeps its own behaviour; this is an IPC precondition only.
                 if ctx.editing {
                     return Err(IpcError::RedoWhileEditing);
                 }
@@ -460,6 +470,11 @@ fn click_at_message(
 pub struct IpcResponse {
     pub ok: bool,
     pub error: Option<String>,
+    /// Set on an `ok: true` response whose command still lost information the
+    /// caller should know about — e.g. a save that substituted characters the
+    /// PDF encoding cannot represent. Mirrors the in-app status toast so an
+    /// IPC client gets the same honesty guarantee (#127).
+    pub warning: Option<String>,
 }
 
 /// Wrapper around the response sender so it can be stored in App state.
@@ -563,7 +578,10 @@ async fn process_line(
 
     // Write the response back to the client.
     let resp_json = if response.ok {
-        serde_json::json!({"ok": true})
+        match response.warning {
+            Some(warning) => serde_json::json!({"ok": true, "warning": warning}),
+            None => serde_json::json!({"ok": true}),
+        }
     } else {
         serde_json::json!({
             "ok": false,
@@ -1660,6 +1678,23 @@ mod tests {
     }
 
     #[test]
+    fn redo_while_editing_is_allowed_when_the_session_has_a_step_to_reapply() {
+        // A session redo step is reapplied in place, without committing, so
+        // there really is something to redo — the reason the editing case is
+        // otherwise refused does not apply.
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            active_overlay: Some(0),
+            editing: true,
+            session_redo_depth: 1,
+            ..CommandContext::default()
+        };
+        let msg = IpcCommand::Redo.to_message(&ctx, &test_registry()).unwrap();
+        assert!(matches!(msg, Message::Redo));
+    }
+
+    #[test]
     fn redo_with_empty_stack_is_rejected() {
         let doc = test_document_with_overlay();
         let result = IpcCommand::Redo.to_message(&context_with_document(&doc), &test_registry());
@@ -1801,6 +1836,7 @@ mod tests {
                 .send(IpcResponse {
                     ok: true,
                     error: None,
+                    warning: None,
                 })
                 .await
                 .unwrap();
@@ -1841,6 +1877,7 @@ mod tests {
                     .send(IpcResponse {
                         ok: true,
                         error: None,
+                        warning: None,
                     })
                     .await
                     .unwrap();
@@ -1881,6 +1918,7 @@ mod tests {
                     .send(IpcResponse {
                         ok: true,
                         error: None,
+                        warning: None,
                     })
                     .await
                     .unwrap();
@@ -1899,6 +1937,79 @@ mod tests {
 
             let reply = read_reply(&mut client).await;
             assert_eq!(reply["ok"], true);
+        });
+    }
+
+    /// A save that substituted characters must name them in the reply, mirroring
+    /// the in-app toast, so an IPC client — which never sees the toast — learns
+    /// about the substitution the same way (spe-i1b, #127).
+    #[test]
+    fn process_line_includes_warning_when_response_carries_one() {
+        run_async(async {
+            let (mut output, _output_rx, resp_tx, mut resp_rx, mut writer, mut client) =
+                process_line_harness();
+
+            tokio::spawn(async move {
+                resp_tx
+                    .send(IpcResponse {
+                        ok: true,
+                        error: None,
+                        warning: Some("replaced with '?': '中' (U+4E2D)".to_string()),
+                    })
+                    .await
+                    .unwrap();
+            });
+
+            let result = process_line(
+                r#"{"cmd":"save","path":"/tmp/out.pdf"}"#,
+                &mut output,
+                &mut resp_rx,
+                &mut writer,
+                std::time::Duration::from_secs(5),
+            )
+            .await;
+
+            assert!(result);
+
+            let reply = read_reply(&mut client).await;
+            assert_eq!(reply["ok"], true);
+            assert_eq!(reply["warning"], "replaced with '?': '中' (U+4E2D)");
+        });
+    }
+
+    #[test]
+    fn process_line_omits_warning_when_response_carries_none() {
+        run_async(async {
+            let (mut output, _output_rx, resp_tx, mut resp_rx, mut writer, mut client) =
+                process_line_harness();
+
+            tokio::spawn(async move {
+                resp_tx
+                    .send(IpcResponse {
+                        ok: true,
+                        error: None,
+                        warning: None,
+                    })
+                    .await
+                    .unwrap();
+            });
+
+            let result = process_line(
+                r#"{"cmd":"deselect"}"#,
+                &mut output,
+                &mut resp_rx,
+                &mut writer,
+                std::time::Duration::from_secs(5),
+            )
+            .await;
+
+            assert!(result);
+
+            let reply = read_reply(&mut client).await;
+            assert!(
+                reply.get("warning").is_none(),
+                "a response with no warning must not include the key: {reply}"
+            );
         });
     }
 }

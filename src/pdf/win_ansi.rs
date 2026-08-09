@@ -8,7 +8,10 @@
 //! makes the text extractable — derives from the one table below, so the three
 //! cannot drift apart.
 
+use std::borrow::Cow;
 use std::ops::RangeInclusive;
+
+use unicode_normalization::{UnicodeNormalization, is_nfc};
 
 /// Codes that WinAnsiEncoding shares with ASCII, mapping to the same scalar.
 const ASCII_RANGE: RangeInclusive<u8> = 0x20..=0x7E;
@@ -98,10 +101,20 @@ pub fn merge_unencodable(seen: &mut Vec<char>, chars: impl IntoIterator<Item = c
 
 /// Encode overlay text for a content stream, substituting [`SUBSTITUTE`] for
 /// characters the encoding cannot represent and reporting them to the caller.
+///
+/// Text is NFC-normalized first: input arriving as NFD (a base letter plus a
+/// combining mark, e.g. some IMEs and macOS paste) has no direct WinAnsiEncoding
+/// code for the combining mark alone, so without normalization "café" would
+/// encode as "cafe?" instead of finding WinAnsi's precomposed 'é'.
 pub fn encode(text: &str) -> EncodedText {
-    let mut bytes = Vec::with_capacity(text.len());
+    let normalized: Cow<str> = if is_nfc(text) {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(text.nfc().collect())
+    };
+    let mut bytes = Vec::with_capacity(normalized.len());
     let mut unencodable: Vec<char> = Vec::new();
-    for c in text.chars() {
+    for c in normalized.chars() {
         match encode_char(c) {
             Some(code) => bytes.push(code),
             None => {
@@ -414,5 +427,17 @@ mod tests {
     fn encode_reports_each_unencodable_character_once_in_first_seen_order() {
         let encoded = encode("中😀中");
         assert_eq!(encoded.unencodable, vec!['中', '😀']);
+    }
+
+    /// "café" typed on some input methods (or pasted from macOS) arrives as
+    /// NFD: 'e' followed by a combining acute accent, rather than the
+    /// precomposed 'é'. WinAnsiEncoding only has a code for the precomposed
+    /// form, so without normalization the accent is silently dropped to '?'.
+    #[test]
+    fn encode_normalizes_nfd_input_to_nfc_before_encoding() {
+        let nfd = "cafe\u{0301}"; // e + combining acute accent (U+0301)
+        let nfc = "café"; // precomposed é (U+00E9)
+        assert_eq!(encode(nfd).bytes, encode(nfc).bytes);
+        assert!(encode(nfd).unencodable.is_empty());
     }
 }
