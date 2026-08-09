@@ -2226,13 +2226,20 @@ fn render_overlay_canvas(
     program: OverlayCanvasProgram<'_>,
     cursor: Option<iced::Point>,
 ) -> RenderedCanvas {
-    use iced_test::core::renderer::Headless;
-    use iced_test::runtime::{UserInterface, user_interface};
-
     let element: iced::Element<Message> = iced::widget::canvas(program)
         .width(iced::Length::Fill)
         .height(iced::Length::Fill)
         .into();
+    render_element(element, cursor)
+}
+
+/// Render an arbitrary widget over a white background, headlessly.
+fn render_element(
+    element: iced::Element<'_, Message>,
+    cursor: Option<iced::Point>,
+) -> RenderedCanvas {
+    use iced_test::core::renderer::Headless;
+    use iced_test::runtime::{UserInterface, user_interface};
 
     let mut renderer = iced_test::futures::futures::executor::block_on(
         // Pinned to the software backend so the rendered pixels these tests
@@ -2563,5 +2570,68 @@ fn resize_handle_hit_area_covers_the_last_line_of_a_multiline_overlay() {
     assert!(
         state.resize_drag.is_some(),
         "the resize handle must extend beside every line of the overlay"
+    );
+}
+
+// =====================================================================
+// spe-m66: the floating editor lays text out on the same lines as the
+// canvas, so text does not jump when an edit session starts or ends
+// =====================================================================
+
+impl RenderedCanvas {
+    /// Top row of each horizontal band of ink, scanning the whole surface.
+    /// A band is a run of consecutive rows containing at least one pixel
+    /// darker than `threshold`, so one band is one line of text.
+    fn ink_band_tops(&self, threshold: f32) -> Vec<u32> {
+        let mut tops = Vec::new();
+        let mut in_band = false;
+        for y in 0..self.height() {
+            let inked = (0..self.width).any(|x| self.darkening(x, y) >= threshold);
+            if inked && !in_band {
+                tops.push(y);
+            }
+            in_band = inked;
+        }
+        tops
+    }
+}
+
+/// Render the floating multi-line editor exactly as the app configures it,
+/// and return the top row of each rendered line of text.
+fn editor_line_tops(font_size: f32) -> Vec<u32> {
+    let content = iced::widget::text_editor::Content::with_text("H\nH\nH");
+    let editor: iced::Element<Message> = iced::widget::text_editor(&content)
+        .size(iced::Pixels(font_size))
+        .line_height(super::TEXT_LINE_HEIGHT)
+        .padding(iced::Padding::ZERO)
+        .style(|_theme, _status| iced::widget::text_editor::Style {
+            background: iced::Background::Color(iced::Color::TRANSPARENT),
+            border: iced::Border::default(),
+            placeholder: iced::Color::BLACK,
+            value: iced::Color::BLACK,
+            selection: iced::Color::TRANSPARENT,
+        })
+        .into();
+    render_element(editor, None).ink_band_tops(100.0)
+}
+
+#[test]
+fn the_editor_lays_lines_out_on_the_canvas_line_height() {
+    // spe-m66: text_editor defaults to LineHeight::Relative(1.3) while the
+    // canvas (and the saved PDF's leading) use 1.2, so text shifted downward
+    // line by line the moment an overlay entered edit mode.
+    let font_size = 60.0;
+    let tops = editor_line_tops(font_size);
+    assert!(
+        tops.len() >= 2,
+        "expected at least two rendered lines of text, found {tops:?}"
+    );
+
+    let spacing = (tops[1] - tops[0]) as f32;
+    let expected = font_size * super::TEXT_LINE_HEIGHT_RATIO;
+    assert!(
+        (spacing - expected).abs() <= 1.5,
+        "editor lines are {spacing}px apart, but the canvas lays {font_size}px \
+         text out on {expected}px lines"
     );
 }

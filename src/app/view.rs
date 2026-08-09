@@ -257,6 +257,7 @@ impl App {
                 .id(self.text_input_id.clone())
                 .font(iced_font)
                 .size(iced::Pixels(scaled_font_size))
+                .line_height(canvas::TEXT_LINE_HEIGHT)
                 .padding(iced::Padding::ZERO)
                 .width(screen_width)
                 .style(overlay_text_editor_style)

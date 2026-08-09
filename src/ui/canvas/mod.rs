@@ -188,6 +188,13 @@ pub(crate) fn draw_overlay_text(
 /// (`canvas::Text` defaults to `LineHeight::Relative(1.2)`).
 pub(crate) const TEXT_LINE_HEIGHT_RATIO: f32 = 1.2;
 
+/// Line height for the floating edit widget. Deliberately not iced's widget
+/// default (`Relative(1.3)`): the canvas and the saved PDF's text leading both
+/// lay lines out on `TEXT_LINE_HEIGHT_RATIO`, so leaving the editor on its own
+/// default made text jump vertically on entering edit mode (spe-m66).
+pub(crate) const TEXT_LINE_HEIGHT: iced::widget::text::LineHeight =
+    iced::widget::text::LineHeight::Relative(TEXT_LINE_HEIGHT_RATIO);
+
 /// Opacity of the background tint behind an overlay, deepened while hovered.
 pub(crate) fn tint_alpha(hovered: bool) -> f32 {
     if hovered {
