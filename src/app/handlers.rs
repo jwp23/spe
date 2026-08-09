@@ -238,15 +238,8 @@ impl App {
         &mut self,
         increment: bool,
     ) -> iced::Task<Message> {
-        iced::widget::operation::is_focused(self.toolbar.font_size_input_id.clone()).map(
-            move |focused| {
-                if focused {
-                    Message::FontSizeArrowKeyResult(increment)
-                } else {
-                    Message::Noop
-                }
-            },
-        )
+        iced::widget::operation::is_focused(self.toolbar.font_size_input_id.clone())
+            .map(move |focused| super::arrow_key_result(focused, increment))
     }
 
     /// The font-size input was confirmed focused when the arrow key was
@@ -495,10 +488,8 @@ impl App {
                 self.toolbar.font_size_input = input;
             }
             toolbar::Message::FontSizeSubmit => {
-                if let Ok(size) = self.toolbar.font_size_input.parse::<f32>()
-                    && size > 0.0
-                {
-                    return self.update(Message::ChangeFontSize(size));
+                if let Ok(size) = self.toolbar.font_size_input.parse::<f32>() {
+                    return self.update(Message::ChangeFontSize(toolbar::clamp_font_size(size)));
                 }
             }
             toolbar::Message::FontSizeIncrement => {

@@ -554,6 +554,17 @@ fn mouse_event_to_message(event: &iced::mouse::Event) -> Option<Message> {
     }
 }
 
+/// Resolve the `is_focused` query [`App::handle_font_size_arrow_pressed`]
+/// dispatches: only step the font size (`FontSizeArrowKeyResult`) when the
+/// font-size input was actually focused, otherwise no-op.
+fn arrow_key_result(focused: bool, increment: bool) -> Message {
+    if focused {
+        Message::FontSizeArrowKeyResult(increment)
+    } else {
+        Message::Noop
+    }
+}
+
 /// Map a keyboard event to an application message.
 fn key_to_message(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<Message> {
     use keyboard::key::Named;

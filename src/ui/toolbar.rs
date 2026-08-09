@@ -33,9 +33,15 @@ pub fn font_options(registry: &FontRegistry) -> Vec<FontOption> {
 
 /// Amount the size stepper buttons/keys change the font size per press.
 const FONT_SIZE_STEP: f32 = 1.0;
-/// Smallest font size the stepper will produce (matches the `> 0.0` bound
-/// enforced when a typed value is submitted).
+/// The single floor every font-size input path enforces: the stepper
+/// buttons/keys, and a typed value submitted in the size field.
 const MIN_FONT_SIZE: f32 = 1.0;
+
+/// Clamp a font size to [`MIN_FONT_SIZE`]. Used both by the stepper and by
+/// a typed value on submit, so every path shares one floor.
+pub fn clamp_font_size(size: f32) -> f32 {
+    size.max(MIN_FONT_SIZE)
+}
 
 /// Step the font size up by one increment.
 pub fn increment_font_size(current: f32) -> f32 {
@@ -44,7 +50,7 @@ pub fn increment_font_size(current: f32) -> f32 {
 
 /// Step the font size down by one increment, floored at [`MIN_FONT_SIZE`].
 pub fn decrement_font_size(current: f32) -> f32 {
-    (current - FONT_SIZE_STEP).max(MIN_FONT_SIZE)
+    clamp_font_size(current - FONT_SIZE_STEP)
 }
 
 /// Persistent state for the toolbar that must survive between view calls.

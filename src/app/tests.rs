@@ -1616,6 +1616,34 @@ fn font_size_decrement_toolbar_message_floors_at_minimum() {
 }
 
 #[test]
+fn font_size_submit_clamps_below_minimum_value_to_floor() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.toolbar.font_size_input = "0.5".to_string();
+
+    app.update(Message::Toolbar(toolbar::Message::FontSizeSubmit));
+
+    assert!((app.toolbar.font_size - 1.0).abs() < f32::EPSILON);
+    assert_eq!(app.toolbar.font_size_input, "1");
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_decrement_after_clamped_submit_stays_at_floor_then_steps_cleanly() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.toolbar.font_size_input = "0.5".to_string();
+    app.update(Message::Toolbar(toolbar::Message::FontSizeSubmit));
+
+    app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
+    assert!((app.toolbar.font_size - 1.0).abs() < f32::EPSILON);
+
+    app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
+    assert!((app.toolbar.font_size - 2.0).abs() < f32::EPSILON);
+}
+
+#[test]
 fn font_size_increment_is_undoable() {
     let mut app = test_app_with_overlay();
     app.update(Message::SelectOverlay(0));
@@ -1671,6 +1699,32 @@ fn font_size_arrow_pressed_returns_a_focus_query_task() {
         !debug.contains("units: 0"),
         "FontSizeArrowPressed should query focus via a widget operation Task, got: {debug}"
     );
+}
+
+#[test]
+fn arrow_key_result_increments_when_focused() {
+    assert!(matches!(
+        arrow_key_result(true, true),
+        Message::FontSizeArrowKeyResult(true)
+    ));
+}
+
+#[test]
+fn arrow_key_result_decrements_when_focused() {
+    assert!(matches!(
+        arrow_key_result(true, false),
+        Message::FontSizeArrowKeyResult(false)
+    ));
+}
+
+#[test]
+fn arrow_key_result_is_noop_when_unfocused_and_increment() {
+    assert!(matches!(arrow_key_result(false, true), Message::Noop));
+}
+
+#[test]
+fn arrow_key_result_is_noop_when_unfocused_and_decrement() {
+    assert!(matches!(arrow_key_result(false, false), Message::Noop));
 }
 
 #[test]
