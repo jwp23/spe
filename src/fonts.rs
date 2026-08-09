@@ -1,6 +1,9 @@
 // Unified font model: FontId, PdfEmbedding, WidthTable, FontEntry, FontRegistry.
 
 use crate::coordinate::BoundingBox;
+use skrifa::attribute::Style;
+use skrifa::instance::Size;
+use skrifa::{FontRef, MetadataProvider};
 
 const GREAT_VIBES_BYTES: &[u8] = include_bytes!("../assets/fonts/great-vibes.ttf");
 const DANCING_SCRIPT_BYTES: &[u8] = include_bytes!("../assets/fonts/dancing-script.ttf");
@@ -251,15 +254,17 @@ impl Default for FontRegistry {
 /// Widths are normalised to 1000em units (standard PDF/AFM convention).
 /// Characters outside the Latin-1 range (0-255) use the default width.
 fn build_ttf_width_table(font_bytes: &[u8]) -> WidthTable {
-    let face = ttf_parser::Face::parse(font_bytes, 0).expect("valid TTF");
-    let units_per_em = face.units_per_em() as f32;
+    let font = FontRef::new(font_bytes).expect("valid TTF");
+    let units_per_em = font.metrics(Size::unscaled(), &[][..]).units_per_em as f32;
+    let charmap = font.charmap();
+    let glyph_metrics = font.glyph_metrics(Size::unscaled(), &[][..]);
     let mut widths = [0.0_f32; 256];
     for code in 0u16..=255 {
         if let Some(c) = char::from_u32(u32::from(code))
-            && let Some(glyph_id) = face.glyph_index(c)
+            && let Some(glyph_id) = charmap.map(c)
         {
-            let advance = face.glyph_hor_advance(glyph_id).unwrap_or(0);
-            widths[usize::from(code)] = advance as f32 / units_per_em * 1000.0;
+            let advance = glyph_metrics.advance_width(glyph_id).unwrap_or(0.0);
+            widths[usize::from(code)] = advance / units_per_em * 1000.0;
         }
     }
     let default = widths[b' ' as usize].max(500.0);
@@ -270,22 +275,26 @@ fn build_ttf_width_table(font_bytes: &[u8]) -> WidthTable {
 ///
 /// All metric values are normalised to 1000em units (PDF convention).
 fn extract_font_descriptor(font_bytes: &[u8]) -> FontDescriptorInfo {
-    let face = ttf_parser::Face::parse(font_bytes, 0).expect("valid TTF");
-    let units_per_em = face.units_per_em() as f32;
-    let scale = |v: i16| -> i64 { (v as f32 / units_per_em * 1000.0).round() as i64 };
-    let bbox = face.global_bounding_box();
+    let font = FontRef::new(font_bytes).expect("valid TTF");
+    let metrics = font.metrics(Size::unscaled(), &[][..]);
+    let units_per_em = metrics.units_per_em as f32;
+    let scale = |v: f32| -> i64 { (v / units_per_em * 1000.0).round() as i64 };
+    let bounds = metrics.bounds.unwrap_or_default();
+    // Mirrors ttf-parser's is_italic(): the OS/2 fsSelection ITALIC bit, or a
+    // non-zero post-table italic angle.
+    let is_italic = font.attributes().style == Style::Italic || metrics.italic_angle != 0.0;
     FontDescriptorInfo {
-        ascent: scale(face.ascender()),
-        descent: scale(face.descender()),
-        cap_height: scale(face.capital_height().unwrap_or(face.ascender())),
-        italic_angle: face.italic_angle(),
+        ascent: scale(metrics.ascent),
+        descent: scale(metrics.descent),
+        cap_height: scale(metrics.cap_height.unwrap_or(metrics.ascent)),
+        italic_angle: metrics.italic_angle,
         // PDF flags: bit 7 (64) = Italic, bit 6 (32) = Nonsymbolic.
-        flags: if face.is_italic() { 64 } else { 32 },
+        flags: if is_italic { 64 } else { 32 },
         bbox: [
-            (bbox.x_min as f32 / units_per_em * 1000.0).round() as i64,
-            (bbox.y_min as f32 / units_per_em * 1000.0).round() as i64,
-            (bbox.x_max as f32 / units_per_em * 1000.0).round() as i64,
-            (bbox.y_max as f32 / units_per_em * 1000.0).round() as i64,
+            scale(bounds.x_min),
+            scale(bounds.y_min),
+            scale(bounds.x_max),
+            scale(bounds.y_max),
         ],
         stem_v: 80,
     }
