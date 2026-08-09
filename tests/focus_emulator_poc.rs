@@ -22,9 +22,12 @@
 //    matched against the emulator's own live, persisted widget-tree cache.
 //    Building a *second*, independent `UserInterface` to query focus
 //    directly does not work: it starts from a fresh `Cache::default()`,
-//    which has no memory of the mutations the emulator applied (verified
-//    empirically against a standalone UserInterface -- see the debug
-//    experiment referenced in the eval report). So this test observes the
+//    which has no memory of the mutations the emulator applied. Verified
+//    empirically: building a standalone `UserInterface` from
+//    `Cache::default()` right after the emulator ran a real
+//    `widget::operation::focus` reports the target as unfocused every
+//    time, because `Cache::default()` seeds a blank widget-state tree that
+//    the emulator's mutation never touched. So this test observes the
 //    *behavioral* consequence of focus instead: iced's text_input widget
 //    only consumes character key-presses while its internal `is_focused`
 //    state is set (iced_widget-0.14.2/src/text_input.rs:890, the `update`
@@ -60,9 +63,11 @@
 // This test needs a working headless renderer (GPU-via-Mesa or the
 // tiny-skia software fallback) and is marked #[ignore] for the same reason
 // tests/e2e.rs's Simulator-based tests are: CI runs `cargo test --
-// --ignored` with a Mesa llvmpipe software rasterizer available; plain
-// `cargo test` environments may not have one (this sandbox does, via the
-// tiny-skia fallback -- see the eval report).
+// --ignored` on ubuntu-latest with a Mesa llvmpipe software rasterizer
+// available (see tests/e2e.rs's own #[ignore] comment and .github/workflows/ci.yml,
+// where those Simulator tests already run green under that setup). Plain
+// `cargo test` (no `--ignored`) skips both files, so day-to-day local runs
+// are unaffected either way.
 
 use std::time::{Duration, Instant};
 
@@ -147,6 +152,24 @@ fn step<P: Program + 'static>(
 /// Dispatches a `Message` directly (not through a synthesized UI event) and
 /// drains whatever it produces. See the module doc comment for why this is
 /// needed for the font pick_list specifically.
+///
+/// This is a timing heuristic, not a real completion signal: `Emulator`
+/// exposes no "wait for this update to finish" API outside of
+/// `Instruction`-driven `run()` calls (see the module doc comment), so we
+/// poll the channel and declare done once it's gone quiet for `quiet_for`.
+/// On a slow/loaded CI runner, a Task-stream drain that takes longer than
+/// `quiet_for` to produce its next item would in principle be mistaken for
+/// "finished" and the test would fall through to its next assertion
+/// prematurely. Two things keep this acceptable for a #[ignore]d PoC
+/// rather than a real, always-run test: the dispatched Task here is a
+/// single-hop `widget::operation::focus` (no further messages chase it),
+/// so there's only ever one event to wait for, not an open-ended chain;
+/// and `quiet_for` is set well above the cost of that one hop (a
+/// synchronous in-process widget-tree operate() call) so it would take
+/// genuine scheduler starvation, not just a slow runner, to lose the race.
+/// A hard overall deadline (`max_wait`) still turns "we mistimed it" into
+/// a loud, fast test failure instead of a silent false pass or an
+/// indefinite hang.
 fn dispatch<P: Program + 'static>(
     emulator: &mut Emulator<P>,
     program: &P,
@@ -155,10 +178,18 @@ fn dispatch<P: Program + 'static>(
 ) {
     emulator.update(program, message);
 
-    let quiet_for = Duration::from_millis(20);
+    let quiet_for = Duration::from_millis(100);
+    let max_wait = Duration::from_secs(5);
+    let started = Instant::now();
     let mut last_event = Instant::now();
 
     while last_event.elapsed() < quiet_for {
+        assert!(
+            started.elapsed() < max_wait,
+            "dispatch() did not go quiet within {max_wait:?}; the emulator's \
+             Task stream may still be running"
+        );
+
         match receiver.try_recv() {
             Ok(Event::Action(action)) => {
                 emulator.perform(program, action);
