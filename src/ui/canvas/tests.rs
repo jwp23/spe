@@ -3,10 +3,10 @@ use crate::app::Message;
 use crate::coordinate::ConversionParams;
 use crate::fonts::FontRegistry;
 use crate::overlay::{PdfPosition, TextOverlay};
+use crate::ui::test_harness::{Harness, Screenshot};
 use iced::event;
 use iced::mouse;
 use iced::widget::canvas;
-use iced::widget::image::Handle;
 use std::collections::HashMap;
 
 // --- PageLayout tests ---
@@ -2245,44 +2245,6 @@ const RENDER_SIZE: iced::Size = iced::Size {
     height: 700.0,
 };
 
-/// A headlessly rendered frame, as RGBA pixels over a white page.
-struct RenderedCanvas {
-    width: u32,
-    rgba: Vec<u8>,
-}
-
-impl RenderedCanvas {
-    fn height(&self) -> u32 {
-        (self.rgba.len() as u32 / 4) / self.width
-    }
-
-    fn pixel(&self, x: u32, y: u32) -> (u8, u8, u8) {
-        assert!(
-            x < self.width && y < self.height(),
-            "sample ({x}, {y}) is outside the {}x{} render surface",
-            self.width,
-            self.height()
-        );
-        let i = ((y * self.width + x) * 4) as usize;
-        (self.rgba[i], self.rgba[i + 1], self.rgba[i + 2])
-    }
-
-    /// How much darker than white the pixel at (x, y) is, averaged over RGB.
-    /// Measured on the real composited output, so it accounts for whatever
-    /// blending the renderer actually performs.
-    fn darkening(&self, x: u32, y: u32) -> f32 {
-        let (r, g, b) = self.pixel(x, y);
-        (3.0 * 255.0 - r as f32 - g as f32 - b as f32) / 3.0
-    }
-
-    /// Rows in `x`'s column that are darker than white by at least `threshold`.
-    fn darkened_rows(&self, x: u32, threshold: f32, height: u32) -> Vec<u32> {
-        (0..height)
-            .filter(|y| self.darkening(x, *y) >= threshold)
-            .collect()
-    }
-}
-
 /// Render an overlay canvas program over a white page, headlessly.
 ///
 /// When `cursor` is given it is delivered as a real cursor-moved event first,
@@ -2290,7 +2252,7 @@ impl RenderedCanvas {
 fn render_overlay_canvas(
     program: OverlayCanvasProgram<'_>,
     cursor: Option<iced::Point>,
-) -> RenderedCanvas {
+) -> Screenshot {
     let element: iced::Element<Message> = iced::widget::canvas(program)
         .width(iced::Length::Fill)
         .height(iced::Length::Fill)
@@ -2299,58 +2261,12 @@ fn render_overlay_canvas(
 }
 
 /// Render an arbitrary widget over a white background, headlessly.
-fn render_element(
-    element: iced::Element<'_, Message>,
-    cursor: Option<iced::Point>,
-) -> RenderedCanvas {
-    use iced_test::core::renderer::Headless;
-    use iced_test::runtime::{UserInterface, user_interface};
-
-    let mut renderer = iced_test::futures::futures::executor::block_on(
-        // Pinned to the software backend so the rendered pixels these tests
-        // assert on do not depend on whether a GPU is present.
-        <iced::Renderer as Headless>::new(
-            iced::Font::DEFAULT,
-            iced::Pixels(16.0),
-            Some("tiny-skia"),
-        ),
-    )
-    .expect("software renderer should be available without a GPU or display");
-
-    let mut ui = UserInterface::build(
-        element,
-        RENDER_SIZE,
-        user_interface::Cache::default(),
-        &mut renderer,
-    );
-
-    let pointer = match cursor {
-        Some(position) => mouse::Cursor::Available(position),
-        None => mouse::Cursor::Unavailable,
-    };
+fn render_element(element: iced::Element<'_, Message>, cursor: Option<iced::Point>) -> Screenshot {
+    let mut harness = Harness::new(element, RENDER_SIZE);
     if let Some(position) = cursor {
-        let _ = ui.update(
-            &[iced::Event::Mouse(mouse::Event::CursorMoved { position })],
-            pointer,
-            &mut renderer,
-            &mut iced_test::core::clipboard::Null,
-            &mut Vec::new(),
-        );
+        let _ = harness.move_cursor(position);
     }
-
-    ui.draw(
-        &mut renderer,
-        &iced::Theme::Light,
-        &iced_test::core::renderer::Style {
-            text_color: iced::Color::BLACK,
-        },
-        pointer,
-    );
-
-    let width = RENDER_SIZE.width as u32;
-    let height = RENDER_SIZE.height as u32;
-    let rgba = renderer.screenshot(iced::Size::new(width, height), 1.0, iced::Color::WHITE);
-    RenderedCanvas { width, rgba }
+    harness.screenshot()
 }
 
 /// Screen-space baseline of an overlay inside the rendered canvas.
@@ -2447,21 +2363,19 @@ fn multiline_tint_covers_the_rows_its_text_occupies() {
     );
 }
 
-impl RenderedCanvas {
-    /// Pixels painted in a strong, saturated blue — the selection border and
-    /// resize handle, which are opaque, unlike the pale overlay tint.
-    ///
-    /// The threshold is derived from `SELECTION_COLOR` itself (halfway to its
-    /// blue/red channel gap) so it tracks the renderer's actual selection
-    /// color instead of a magic number that could silently fall out of sync.
-    fn selection_blue_pixels(&self) -> usize {
-        let blue_red_gap = (super::SELECTION_COLOR.b - super::SELECTION_COLOR.r) * 255.0;
-        let threshold = blue_red_gap / 2.0;
-        self.rgba
-            .chunks_exact(4)
-            .filter(|p| p[2] as f32 - p[0] as f32 > threshold)
-            .count()
-    }
+/// Pixels of `shot` painted in a strong, saturated blue — the selection
+/// border and resize handle, which are opaque, unlike the pale overlay tint.
+///
+/// The threshold is derived from `SELECTION_COLOR` itself (halfway to its
+/// blue/red channel gap) so it tracks the renderer's actual selection color
+/// instead of a magic number that could silently fall out of sync.
+fn selection_blue_pixels(shot: &Screenshot) -> usize {
+    let blue_red_gap = (super::SELECTION_COLOR.b - super::SELECTION_COLOR.r) * 255.0;
+    let threshold = blue_red_gap / 2.0;
+    shot.rgba
+        .chunks_exact(4)
+        .filter(|p| p[2] as f32 - p[0] as f32 > threshold)
+        .count()
 }
 
 #[test]
@@ -2474,7 +2388,7 @@ fn selected_overlay_paints_a_selection_border() {
 
     let canvas = render_overlay_canvas(program, None);
     assert!(
-        canvas.selection_blue_pixels() > 0,
+        selection_blue_pixels(&canvas) > 0,
         "a selected overlay should paint a selection border and resize handle"
     );
 }
@@ -2492,7 +2406,7 @@ fn overlay_being_edited_paints_no_selection_border() {
 
     let canvas = render_overlay_canvas(program, None);
     assert_eq!(
-        canvas.selection_blue_pixels(),
+        selection_blue_pixels(&canvas),
         0,
         "the canvas must not draw a second selection border while editing"
     );
@@ -2502,17 +2416,17 @@ fn overlay_being_edited_paints_no_selection_border() {
 // spe-x2z: the selection box outlines the same geometry as the tint
 // =====================================================================
 
-impl RenderedCanvas {
-    /// Bounding box of the strongly blue pixels — the selection border and
-    /// resize handle — as (left, top, right, bottom), or None if none exist.
-    fn selection_blue_bounds(&self) -> Option<(u32, u32, u32, u32)> {
+/// Bounding box of `shot`'s strongly blue pixels — the selection border and
+/// resize handle — as (left, top, right, bottom), or None if none exist.
+fn selection_blue_bounds(shot: &Screenshot) -> Option<(u32, u32, u32, u32)> {
+    {
         let blue_red_gap = (super::SELECTION_COLOR.b - super::SELECTION_COLOR.r) * 255.0;
         let threshold = blue_red_gap / 2.0;
-        let height = self.height();
+        let height = shot.height;
         let mut bounds: Option<(u32, u32, u32, u32)> = None;
         for y in 0..height {
-            for x in 0..self.width {
-                let (r, _, b) = self.pixel(x, y);
+            for x in 0..shot.width {
+                let (r, _, b) = shot.pixel(x, y);
                 if b as f32 - r as f32 <= threshold {
                     continue;
                 }
@@ -2543,8 +2457,7 @@ fn selection_bounds_and_text_box(overlay: TextOverlay) -> ((u32, u32, u32, u32),
         crate::coordinate::render_scale(TEST_ZOOM, TEST_DPI),
         &registry,
     );
-    let bounds = render_overlay_canvas(program, None)
-        .selection_blue_bounds()
+    let bounds = selection_blue_bounds(&render_overlay_canvas(program, None))
         .expect("a selected overlay must paint a selection border");
     (bounds, text_box)
 }
@@ -2643,15 +2556,15 @@ fn resize_handle_hit_area_covers_the_last_line_of_a_multiline_overlay() {
 // canvas, so text does not jump when an edit session starts or ends
 // =====================================================================
 
-impl RenderedCanvas {
-    /// Top row of each horizontal band of ink, scanning the whole surface.
-    /// A band is a run of consecutive rows containing at least one pixel
-    /// darker than `threshold`, so one band is one line of text.
-    fn ink_band_tops(&self, threshold: f32) -> Vec<u32> {
+/// Top row of each horizontal band of ink in `shot`, scanning the whole
+/// surface. A band is a run of consecutive rows containing at least one pixel
+/// darker than `threshold`, so one band is one line of text.
+fn ink_band_tops(shot: &Screenshot, threshold: f32) -> Vec<u32> {
+    {
         let mut tops = Vec::new();
         let mut in_band = false;
-        for y in 0..self.height() {
-            let inked = (0..self.width).any(|x| self.darkening(x, y) >= threshold);
+        for y in 0..shot.height {
+            let inked = (0..shot.width).any(|x| shot.darkening(x, y) >= threshold);
             if inked && !in_band {
                 tops.push(y);
             }
@@ -2677,7 +2590,7 @@ fn editor_line_tops(font_size: f32) -> Vec<u32> {
             selection: iced::Color::TRANSPARENT,
         })
         .into();
-    render_element(editor, None).ink_band_tops(100.0)
+    ink_band_tops(&render_element(editor, None), 100.0)
 }
 
 #[test]
@@ -2822,16 +2735,14 @@ fn overlay_with_font(font_name: &str, font_size: f32, text: &str) -> TextOverlay
     }
 }
 
-impl RenderedCanvas {
-    /// Rightmost column holding glyph ink between `top` and `bottom`.
-    ///
-    /// The threshold sits far above the overlay tint's darkening (~51 on a
-    /// white page) so only the near-black text counts.
-    fn rightmost_ink_column(&self, top: u32, bottom: u32) -> Option<u32> {
-        (0..self.width)
-            .filter(|x| (top..=bottom).any(|y| self.darkening(*x, y) >= 150.0))
-            .next_back()
-    }
+/// Rightmost column of `shot` holding glyph ink between `top` and `bottom`.
+///
+/// The threshold sits far above the overlay tint's darkening (~51 on a
+/// white page) so only the near-black text counts.
+fn rightmost_ink_column(shot: &Screenshot, top: u32, bottom: u32) -> Option<u32> {
+    (0..shot.width)
+        .filter(|x| (top..=bottom).any(|y| shot.darkening(*x, y) >= 150.0))
+        .next_back()
 }
 
 #[test]
@@ -2853,9 +2764,12 @@ fn the_text_box_covers_every_glyph_of_a_proportional_font_overlay() {
         crate::coordinate::render_scale(TEST_ZOOM, TEST_DPI),
         &registry,
     );
-    let rightmost = canvas
-        .rightmost_ink_column(text_box.y as u32, (text_box.y + text_box.height) as u32)
-        .expect("the overlay text should have been rendered");
+    let rightmost = rightmost_ink_column(
+        &canvas,
+        text_box.y as u32,
+        (text_box.y + text_box.height) as u32,
+    )
+    .expect("the overlay text should have been rendered");
 
     let box_right = text_box.x + text_box.width;
     assert!(
@@ -2956,8 +2870,7 @@ fn text_input_first_line_top(
     if let Some(line_height) = line_height {
         input = input.line_height(line_height);
     }
-    *render_element(input.into(), None)
-        .ink_band_tops(100.0)
+    *ink_band_tops(&render_element(input.into(), None), 100.0)
         .first()
         .expect("the input should render its text")
 }
