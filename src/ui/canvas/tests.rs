@@ -1021,6 +1021,31 @@ fn update_click_outside_page_deselects() {
 }
 
 #[test]
+fn update_click_on_page_missing_dimensions_is_ignored_not_deselected() {
+    // Page 1 exists in the layout (so the click lands on a page, not a gap)
+    // but page_dimensions lacks an entry for it, so conversion params can't
+    // be built. This must be distinct from "no page under the cursor": a
+    // page-hit-but-no-params click is simply ignored, it does not deselect.
+    let overlays: Vec<TextOverlay> = vec![];
+    let registry = FontRegistry::new();
+    let layout_dims = test_page_dimensions();
+    let empty_dims: HashMap<u32, (f32, f32)> = HashMap::new();
+    let program = OverlayCanvasProgram {
+        page_layout: page_layout(&layout_dims, 1, TEST_ZOOM, TEST_DPI),
+        page_dimensions: &empty_dims,
+        ..test_program(&overlays, &empty_dims, &registry)
+    };
+    let mut state = ProgramState::default();
+    let bounds = test_canvas_bounds();
+    let cursor = cursor_at(300.0, 200.0); // inside page 1's rect
+
+    let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+    let (msg, status) = decompose(action);
+    assert!(msg.is_none());
+    assert_eq!(status, event::Status::Ignored);
+}
+
+#[test]
 fn update_click_while_editing_commits_text_first() {
     // Iced actions carry a single message, so clicking while editing
     // returns CommitText only. The place/select happens on the next click.

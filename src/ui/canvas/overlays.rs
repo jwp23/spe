@@ -60,6 +60,25 @@ impl OverlayCanvasProgram<'_> {
         Some((page, rect))
     }
 
+    /// Find the page under the cursor, if any.
+    ///
+    /// Returns None if the cursor is outside the canvas bounds or falls in a
+    /// gap between pages. Distinct from [`Self::page_at_cursor`]: a caller
+    /// that must tell "no page here" apart from "page here but its
+    /// conversion params are unavailable" hit-tests with this first, then
+    /// resolves params itself.
+    fn page_hit(
+        &self,
+        cursor_pos: iced::Point,
+        bounds: iced::Rectangle,
+    ) -> Option<(u32, iced::Rectangle)> {
+        if !bounds.contains(cursor_pos) {
+            return None;
+        }
+        let canvas_y = cursor_pos.y - bounds.y;
+        self.page_at_canvas_y(canvas_y, bounds.width)
+    }
+
     /// Resolve the page under the cursor and its PDF conversion params.
     ///
     /// Returns None if the cursor is outside the canvas bounds, falls in a
@@ -69,11 +88,7 @@ impl OverlayCanvasProgram<'_> {
         cursor_pos: iced::Point,
         bounds: iced::Rectangle,
     ) -> Option<(u32, iced::Rectangle, ConversionParams)> {
-        if !bounds.contains(cursor_pos) {
-            return None;
-        }
-        let canvas_y = cursor_pos.y - bounds.y;
-        let (page, page_rect) = self.page_at_canvas_y(canvas_y, bounds.width)?;
+        let (page, page_rect) = self.page_hit(cursor_pos, bounds)?;
         let page_screen_rect = to_screen_rect(page_rect, &bounds);
         let params = self.conversion_params_for_page(page, &page_screen_rect)?;
         Some((page, page_rect, params))
@@ -99,11 +114,14 @@ impl OverlayCanvasProgram<'_> {
         let canvas_y = cursor_pos.y - bounds.y;
         let canvas_x = cursor_pos.x - bounds.x;
 
-        let Some((page, page_rect, params)) = self.page_at_cursor(cursor_pos, bounds) else {
+        let Some((page, page_rect)) = self.page_hit(cursor_pos, bounds) else {
             // Click in gap or outside pages
             state.last_click = None;
             return Some(canvas::Action::publish(Message::DeselectOverlay).and_capture());
         };
+
+        let page_screen_rect = to_screen_rect(page_rect, &bounds);
+        let params = self.conversion_params_for_page(page, &page_screen_rect)?;
 
         if let Some(action) = self.try_resize_handle(state, cursor_pos, page, &params) {
             return Some(action);
