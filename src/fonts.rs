@@ -1,6 +1,7 @@
 // Unified font model: FontId, PdfEmbedding, WidthTable, FontEntry, FontRegistry.
 
 use crate::coordinate::BoundingBox;
+use crate::pdf::win_ansi;
 use skrifa::attribute::Style;
 use skrifa::instance::Size;
 use skrifa::{FontRef, MetadataProvider};
@@ -33,24 +34,26 @@ pub enum PdfEmbedding {
 pub enum WidthTable {
     /// All characters have the same width (e.g., Courier).
     Monospaced(f32),
-    /// Per-character lookup table for the Latin-1 range (0-255).
-    /// Characters outside this range use the default width.
+    /// Per-character lookup table indexed by WinAnsiEncoding code (0-255) —
+    /// the same code space the PDF writer uses for `/Widths`. Characters
+    /// WinAnsiEncoding cannot represent use the default width.
     Proportional { widths: [f32; 256], default: f32 },
 }
 
 impl WidthTable {
     /// Look up the width of a character in 1000em units.
+    ///
+    /// Resolves `c` through [`win_ansi::encode_char`] before indexing, so a
+    /// character's width always comes from the same code the PDF writer will
+    /// use to show it — including the 27 codes (euro sign, curly quotes,
+    /// dashes, etc.) where WinAnsiEncoding diverges from raw Unicode scalars.
     pub fn char_width(&self, c: char) -> f32 {
         match self {
             Self::Monospaced(w) => *w,
-            Self::Proportional { widths, default } => {
-                let code = c as u32;
-                if code < 256 {
-                    widths[code as usize]
-                } else {
-                    *default
-                }
-            }
+            Self::Proportional { widths, default } => match win_ansi::encode_char(c) {
+                Some(code) => widths[usize::from(code)],
+                None => *default,
+            },
         }
     }
 }
@@ -251,23 +254,28 @@ impl Default for FontRegistry {
 
 /// Extract per-character width data from a TrueType font's glyph metrics.
 ///
-/// Widths are normalised to 1000em units (standard PDF/AFM convention).
-/// Characters outside the Latin-1 range (0-255) use the default width.
+/// Widths are normalised to 1000em units (standard PDF/AFM convention) and
+/// indexed by WinAnsiEncoding code, not by Unicode scalar — the 27 codes
+/// where WinAnsiEncoding diverges from Latin-1 (0x80-0x9F: euro sign, curly
+/// quotes, dashes, etc.) name Unicode scalars far outside 0-255, so indexing
+/// by scalar would silently drop their advances even when the font has the
+/// glyph. Codes WinAnsiEncoding leaves undefined, or that the font has no
+/// glyph for, use the default width.
 fn build_ttf_width_table(font_bytes: &[u8]) -> WidthTable {
     let font = FontRef::new(font_bytes).expect("valid TTF");
     let units_per_em = font.metrics(Size::unscaled(), &[][..]).units_per_em as f32;
     let charmap = font.charmap();
     let glyph_metrics = font.glyph_metrics(Size::unscaled(), &[][..]);
     let mut widths = [0.0_f32; 256];
-    for code in 0u16..=255 {
-        if let Some(c) = char::from_u32(u32::from(code))
+    for code in 0u8..=255 {
+        if let Some(c) = win_ansi::decode(code)
             && let Some(glyph_id) = charmap.map(c)
         {
             let advance = glyph_metrics.advance_width(glyph_id).unwrap_or(0.0);
             widths[usize::from(code)] = advance / units_per_em * 1000.0;
         }
     }
-    let default = widths[b' ' as usize].max(500.0);
+    let default = widths[usize::from(b' ')].max(500.0);
     WidthTable::Proportional { widths, default }
 }
 
@@ -517,8 +525,8 @@ fn standard_14_fonts() -> Vec<FontEntry> {
     ]
 }
 
-/// Build a proportional width table from an array of (char_index, width) pairs.
-/// Unspecified characters get the `default` width.
+/// Build a proportional width table from an array of (WinAnsiEncoding code,
+/// width) pairs. Codes not listed get the `default` width.
 fn build_proportional_width_table(entries: &[(u8, f32)], default: f32) -> WidthTable {
     let mut widths = [default; 256];
     for &(i, v) in entries {
@@ -1447,6 +1455,32 @@ mod tests {
         let id = registry.find_by_name("Pacifico").unwrap();
         let desc = registry.get(id).descriptor.as_ref().unwrap();
         assert_descriptor_matches(desc, 1303, -453, 840, 0.0, 32, [-593, -457, 1660, 1478]);
+    }
+
+    /// `char_width` for the euro sign must resolve to Great Vibes' real glyph
+    /// advance, not the proportional table's fallback width. Ground truth is
+    /// computed directly from the font's charmap/glyph metrics, independent of
+    /// `build_ttf_width_table`, so a bug in that function can't pass by
+    /// agreeing with itself.
+    #[test]
+    fn great_vibes_euro_width_is_the_real_glyph_advance_not_the_fallback() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Great Vibes").unwrap();
+        let widths = &registry.get(id).widths;
+
+        let font = FontRef::new(GREAT_VIBES_BYTES).expect("valid TTF");
+        let units_per_em = font.metrics(Size::unscaled(), &[][..]).units_per_em as f32;
+        let glyph_id = font
+            .charmap()
+            .map('\u{20AC}')
+            .expect("Great Vibes has a euro glyph");
+        let glyph_metrics = font.glyph_metrics(Size::unscaled(), &[][..]);
+        let expected = glyph_metrics.advance_width(glyph_id).unwrap() / units_per_em * 1000.0;
+
+        // The fallback (space width) is far narrower than a real euro glyph
+        // advance in a cursive script font; this also guards against the fix
+        // accidentally leaving the fallback in place.
+        assert_width_close(widths.char_width('\u{20AC}'), expected, "€");
     }
 
     #[test]
