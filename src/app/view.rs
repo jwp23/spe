@@ -280,6 +280,7 @@ impl App {
                 .on_submit(Message::CommitText)
                 .font(iced_font)
                 .size(iced::Pixels(scaled_font_size))
+                .line_height(canvas::TEXT_LINE_HEIGHT)
                 .padding(iced::Padding::ZERO)
                 .width(input_width)
                 .style(overlay_text_input_style)

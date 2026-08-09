@@ -3081,3 +3081,59 @@ fn resize_release_does_not_reshape_a_single_line_overlay_that_took_the_index() {
         "resizing must not turn a single-line overlay into a wrapped one, got {msg:?}"
     );
 }
+
+/// Top row of the first line of ink drawn by the single-line edit widget.
+/// `line_height` of `None` leaves iced's own default in place.
+fn text_input_first_line_top(
+    font_size: f32,
+    line_height: Option<iced::widget::text::LineHeight>,
+) -> u32 {
+    let mut input = iced::widget::text_input("", "H")
+        .size(iced::Pixels(font_size))
+        .padding(iced::Padding::ZERO)
+        .style(|_theme, _status| iced::widget::text_input::Style {
+            background: iced::Background::Color(iced::Color::TRANSPARENT),
+            border: iced::Border::default(),
+            icon: iced::Color::BLACK,
+            placeholder: iced::Color::BLACK,
+            value: iced::Color::BLACK,
+            selection: iced::Color::TRANSPARENT,
+        });
+    if let Some(line_height) = line_height {
+        input = input.line_height(line_height);
+    }
+    *render_element(input.into(), None)
+        .ink_band_tops(100.0)
+        .first()
+        .expect("the input should render its text")
+}
+
+#[test]
+fn the_single_line_edit_widget_needs_its_line_height_set_explicitly() {
+    // spe-m66: text_input keeps iced's own default (1.3) unless told
+    // otherwise. If a future iced made the default match the canvas this
+    // would fail, and `.line_height(TEXT_LINE_HEIGHT)` in view.rs could go.
+    let font_size = 60.0;
+    let defaulted = text_input_first_line_top(font_size, None);
+    let pinned = text_input_first_line_top(font_size, Some(super::TEXT_LINE_HEIGHT));
+    assert_ne!(
+        defaulted, pinned,
+        "iced's default already matches TEXT_LINE_HEIGHT, so pinning it is dead code"
+    );
+}
+
+#[test]
+fn both_edit_widgets_put_their_first_line_on_the_same_row() {
+    // A single-line and a multi-line overlay must start their text on the same
+    // row, so switching an overlay between them never shifts the text.
+    let font_size = 60.0;
+    let input_top = text_input_first_line_top(font_size, Some(super::TEXT_LINE_HEIGHT));
+    let editor_top = *editor_line_tops(font_size)
+        .first()
+        .expect("the editor should render its text");
+
+    assert!(
+        input_top.abs_diff(editor_top) <= 1,
+        "single-line edit starts at row {input_top} but multi-line edit starts at {editor_top}"
+    );
+}
