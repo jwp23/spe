@@ -33,6 +33,9 @@ scripts/screenshot.sh send '{"cmd": "deselect"}'
 scripts/screenshot.sh capture screenshots/overlay-test.png
 # Then use the Read tool in Claude Code to inspect the screenshot
 
+# Save the result (same PDF writer as Save As; only the file dialog is bypassed)
+scripts/screenshot.sh send '{"cmd": "save", "path": "/tmp/out.pdf"}'
+
 # Tear down
 scripts/screenshot.sh stop
 ```
@@ -97,6 +100,7 @@ the real filesystem error the same way.
 | Command | JSON |
 |---------|------|
 | Open PDF | `{"cmd": "open", "path": "/path/to.pdf"}` |
+| Save PDF | `{"cmd": "save", "path": "/path/to-out.pdf"}` |
 | Click canvas | `{"cmd": "click", "page": 1, "x": 100.0, "y": 700.0}` |
 | Drag (multiline) | `{"cmd": "drag", "page": 1, "x1": 100.0, "y1": 700.0, "x2": 300.0, "y2": 700.0}` |
 | Type text | `{"cmd": "type", "text": "Hello"}` |

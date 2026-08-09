@@ -111,6 +111,11 @@ pub enum IpcCommand {
     Open {
         path: PathBuf,
     },
+    /// Write the document with its overlays to `path`. Uses the same PDF
+    /// writer as the Save As dialog; only the dialog itself is bypassed.
+    Save {
+        path: PathBuf,
+    },
     Click {
         page: u32,
         x: f32,
@@ -188,6 +193,10 @@ impl IpcCommand {
     ) -> Result<Message, IpcError> {
         match self {
             IpcCommand::Open { path } => Ok(Message::FileOpened(path)),
+            IpcCommand::Save { path } => {
+                ctx.require_document()?;
+                Ok(Message::SaveDestinationChosen(path))
+            }
             IpcCommand::Click { page, x, y } => {
                 ctx.require_page(page)?;
                 Ok(Message::PlaceOverlay {
@@ -1026,6 +1035,39 @@ mod tests {
         };
         let msg = cmd.to_message(&ctx, &test_registry()).unwrap();
         assert!(matches!(msg, Message::UpdateOverlayText(ref t) if t == "Hello"));
+    }
+
+    // --- save (spe-94g) ---
+
+    #[test]
+    fn save_produces_save_destination_chosen() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Save {
+            path: PathBuf::from("/tmp/out.pdf"),
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(
+            msg,
+            Message::SaveDestinationChosen(p) if p == PathBuf::from("/tmp/out.pdf")
+        ));
+    }
+
+    #[test]
+    fn save_without_document_is_rejected() {
+        let cmd = IpcCommand::Save {
+            path: PathBuf::from("/tmp/out.pdf"),
+        };
+        let result = cmd.to_message(&CommandContext::default(), &test_registry());
+        assert!(matches!(result, Err(IpcError::NoDocument)));
+    }
+
+    #[test]
+    fn parse_save_command() {
+        let json = r#"{"cmd": "save", "path": "/tmp/out.pdf"}"#;
+        let cmd: IpcCommand = serde_json::from_str(json).unwrap();
+        assert!(matches!(cmd, IpcCommand::Save { path } if path.to_str() == Some("/tmp/out.pdf")));
     }
 
     // --- undo / redo (spe-0nc) ---

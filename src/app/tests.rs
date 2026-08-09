@@ -2135,6 +2135,96 @@ fn ipc_command_error_does_not_leak_into_the_next_command() {
 }
 
 // =====================================================================
+// spe-94g: save over IPC — reuses the writer, bypasses only the dialog
+// =====================================================================
+
+/// An app holding a real, loadable PDF with one overlay of text on it — the
+/// state a save is meant to persist.
+fn app_with_loaded_pdf(source: &tempfile::NamedTempFile) -> App {
+    let (mut app, _) = App::new(true);
+    let _ = app.handle_file_opened(source.path().to_path_buf());
+    assert!(app.document.is_some(), "fixture PDF must load");
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 100.0,
+        y: 700.0,
+    });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Saved overlay".to_string(),
+    });
+    app
+}
+
+#[test]
+fn ipc_save_writes_the_destination_file_and_reports_success() {
+    let source = make_temp_pdf();
+    let mut app = app_with_loaded_pdf(&source);
+    let dest = tempfile::NamedTempFile::new().expect("temp file");
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Save {
+        path: dest.path().to_path_buf(),
+    });
+
+    assert!(response.ok, "save reported: {:?}", response.error);
+    assert!(
+        lopdf::Document::load(dest.path()).is_ok(),
+        "the saved file must be a readable PDF"
+    );
+}
+
+#[test]
+fn ipc_save_records_the_destination_for_later_saves() {
+    let source = make_temp_pdf();
+    let mut app = app_with_loaded_pdf(&source);
+    let dest = tempfile::NamedTempFile::new().expect("temp file");
+
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Save {
+        path: dest.path().to_path_buf(),
+    });
+
+    assert_eq!(
+        app.document.as_ref().unwrap().save_path.as_deref(),
+        Some(dest.path())
+    );
+}
+
+#[test]
+fn ipc_save_over_the_source_file_reports_failure() {
+    let source = make_temp_pdf();
+    let mut app = app_with_loaded_pdf(&source);
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Save {
+        path: source.path().to_path_buf(),
+    });
+
+    assert!(!response.ok, "overwriting the source must not report ok");
+    assert!(response.error.unwrap().contains("source file"));
+}
+
+#[test]
+fn ipc_save_to_an_unwritable_path_reports_failure() {
+    let source = make_temp_pdf();
+    let mut app = app_with_loaded_pdf(&source);
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Save {
+        path: PathBuf::from("/nonexistent-dir/out.pdf"),
+    });
+
+    assert!(!response.ok, "an unwritable path must not report ok");
+    assert!(response.error.is_some());
+}
+
+#[test]
+fn ipc_save_without_document_reports_failure() {
+    let (mut app, _) = App::new(true);
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Save {
+        path: PathBuf::from("/tmp/out.pdf"),
+    });
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("no document"));
+}
+
+// =====================================================================
 // spe-0nc: undo / redo over IPC
 // =====================================================================
 

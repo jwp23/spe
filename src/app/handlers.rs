@@ -472,10 +472,13 @@ impl App {
                 let filename = dest.file_name().and_then(|n| n.to_str()).unwrap_or("file");
                 self.status_message =
                     Some((format!("Saved to {filename}"), std::time::Instant::now()));
+                self.last_command_error = None;
             }
             Err(e) => {
                 self.status_message =
                     Some((format!("Save failed: {e}"), std::time::Instant::now()));
+                // Surfaced to an IPC `save` client by App::command_response.
+                self.last_command_error = Some(format!("failed to save {}: {e}", dest.display()));
             }
         }
     }
@@ -501,10 +504,7 @@ impl App {
             // Prevent saving over the source file to avoid data loss on
             // write failure (the source would already be truncated).
             if path == doc.source_path {
-                self.status_message = Some((
-                    "Save failed: cannot overwrite the source file".to_string(),
-                    std::time::Instant::now(),
-                ));
+                self.set_save_result(Err::<(), _>("cannot overwrite the source file"), &path);
                 return;
             }
             let source = doc.source_path.clone();
