@@ -222,12 +222,14 @@ impl App {
     }
 
     pub(super) fn handle_deselect_overlay(&mut self) -> iced::Task<Message> {
-        if self.canvas.editing {
-            return self.handle_commit_text();
-        }
+        let task = if self.canvas.editing {
+            self.handle_commit_text()
+        } else {
+            iced::Task::none()
+        };
         self.canvas.active_overlay = None;
         self.canvas.editing = false;
-        iced::Task::none()
+        task
     }
 
     pub(super) fn handle_commit_text(&mut self) -> iced::Task<Message> {
@@ -237,7 +239,9 @@ impl App {
             && let Some(old_text) = self.canvas.edit_start_text.take()
         {
             let new_text = doc.overlays[idx].text.clone();
-            if old_text != new_text {
+            if new_text.is_empty() {
+                self.discard_empty_overlay(idx, old_text);
+            } else if old_text != new_text {
                 let cmd = UndoCommand::EditText {
                     index: idx,
                     old_text,
@@ -251,6 +255,29 @@ impl App {
         self.canvas.edit_start_text = None;
         self.editor_content = None;
         iced::Task::none()
+    }
+
+    /// Remove an overlay that holds no text, since it would only render as an
+    /// empty selection box. Abandoning a freshly placed overlay leaves no undo
+    /// history; erasing the text of an established overlay records a deletion
+    /// that restores `text_at_edit_start` when undone.
+    fn discard_empty_overlay(&mut self, index: usize, text_at_edit_start: String) {
+        let Some(doc) = &mut self.document else {
+            return;
+        };
+        let mut overlay = doc.overlays.remove(index);
+        if matches!(
+            self.undo_stack.last(),
+            Some(UndoCommand::PlaceOverlay { .. })
+        ) {
+            self.undo_stack.pop();
+        } else {
+            overlay.text = text_at_edit_start;
+            self.undo_stack
+                .push(UndoCommand::DeleteOverlay { overlay, index });
+            self.redo_stack.clear();
+        }
+        self.canvas.active_overlay = None;
     }
 
     pub(super) fn handle_toolbar_message(&mut self, msg: toolbar::Message) -> iced::Task<Message> {
