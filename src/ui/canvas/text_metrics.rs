@@ -36,6 +36,13 @@ static WIDTHS: LazyLock<RwLock<HashMap<(FontId, String), f32>>> =
 static LINE_COUNTS: LazyLock<RwLock<HashMap<LineCountKey, usize>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
+/// Number of lines [`FontRegistry::word_wrap`] — the PDF writer's own wrap —
+/// breaks a string into, keyed the same way as [`LINE_COUNTS`]. The writer
+/// sums AFM widths that scale linearly with font size just like the shaped
+/// widths above, so the same ratio key and reference-size trick apply.
+static WRITER_LINE_COUNTS: LazyLock<RwLock<HashMap<LineCountKey, usize>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
 /// Font, string, and wrap ratio bits — see [`LINE_COUNTS`].
 type LineCountKey = (FontId, String, u32);
 
@@ -94,6 +101,38 @@ pub(crate) fn canvas_line_count(
     );
     insert_bounded(
         &mut LINE_COUNTS.write().unwrap_or_else(|e| e.into_inner()),
+        key,
+        count,
+    );
+    count
+}
+
+/// Number of lines the PDF writer's [`FontRegistry::word_wrap`] breaks `text`
+/// into when wrapped at `wrap_ratio` times the font size — the same wrap the
+/// saved PDF uses, so the canvas can floor a box's height to it without
+/// re-wrapping on every frame.
+pub(crate) fn writer_line_count(
+    text: &str,
+    font: FontId,
+    wrap_ratio: f32,
+    registry: &FontRegistry,
+) -> usize {
+    let key = (font, text.to_string(), wrap_ratio.to_bits());
+    if let Some(count) = WRITER_LINE_COUNTS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+    {
+        return *count;
+    }
+
+    let count = registry
+        .word_wrap(text, font, REFERENCE_SIZE, wrap_ratio * REFERENCE_SIZE)
+        .len();
+    insert_bounded(
+        &mut WRITER_LINE_COUNTS
+            .write()
+            .unwrap_or_else(|e| e.into_inner()),
         key,
         count,
     );
@@ -294,6 +333,46 @@ mod tests {
         for size in [8.0_f32, 24.0, 72.0] {
             let shaped = shaped_line_count(text, registry.get(font).iced_font, size, ratio * size);
             assert_eq!(shaped, expected, "line breaking drifted at {size}pt");
+        }
+    }
+
+    #[test]
+    fn writer_line_count_matches_a_direct_word_wrap_call() {
+        let registry = registry();
+        let font = registry.find_by_name("Courier").unwrap();
+        let text = "mmmm mmmm mmmm mmmm";
+        let font_size = 12.0;
+        let max_width = 50.0;
+        let expected = registry.word_wrap(text, font, font_size, max_width).len();
+        let cached = writer_line_count(text, font, max_width / font_size, &registry);
+        assert_eq!(cached, expected);
+    }
+
+    #[test]
+    fn repeated_writer_line_count_queries_agree() {
+        let registry = registry();
+        let font = registry.find_by_name("Courier").unwrap();
+        let text = "mmmm mmmm mmmm mmmm";
+        let ratio = 50.0 / 12.0;
+        let first = writer_line_count(text, font, ratio, &registry);
+        let second = writer_line_count(text, font, ratio, &registry);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn writer_line_count_ratio_describes_wrapping_at_every_size() {
+        // Same invariant as canvas_line_count: word_wrap's break points depend
+        // only on max_width/font_size, since every AFM width it sums scales
+        // linearly with font_size. Compared against the engine wrapping each
+        // size directly, not against another cache read.
+        let registry = registry();
+        let font = registry.find_by_name("Courier").unwrap();
+        let text = "mmmm mmmm mmmm mmmm mmmm";
+        let ratio = 50.0 / 12.0;
+        let expected = writer_line_count(text, font, ratio, &registry);
+        for size in [8.0_f32, 24.0, 72.0] {
+            let direct = registry.word_wrap(text, font, size, ratio * size).len();
+            assert_eq!(direct, expected, "wrapping drifted at {size}pt");
         }
     }
 

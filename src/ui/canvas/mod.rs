@@ -11,7 +11,7 @@ pub use overlays::*;
 pub use pages::*;
 pub use zoom::*;
 
-pub(crate) use text_metrics::{canvas_line_count, canvas_text_width};
+pub(crate) use text_metrics::{canvas_line_count, canvas_text_width, writer_line_count};
 
 use iced::widget::canvas;
 
@@ -326,15 +326,9 @@ pub(crate) fn overlay_text_box(
     let scaled_font_size = overlay.font_size * scale;
     let (width, line_count) = match overlay.width {
         Some(width_pts) => {
-            let canvas_lines = canvas_line_count(
-                &overlay.text,
-                overlay.font,
-                wrap_ratio(width_pts, overlay.font_size),
-                registry,
-            );
-            let writer_lines = registry
-                .word_wrap(&overlay.text, overlay.font, overlay.font_size, width_pts)
-                .len();
+            let ratio = wrap_ratio(width_pts, overlay.font_size);
+            let canvas_lines = canvas_line_count(&overlay.text, overlay.font, ratio, registry);
+            let writer_lines = writer_line_count(&overlay.text, overlay.font, ratio, registry);
             (width_pts * scale, canvas_lines.max(writer_lines))
         }
         None => (
