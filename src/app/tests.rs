@@ -2513,6 +2513,37 @@ fn save_destination_chosen_when_not_editing_returns_no_focus_task() {
 }
 
 #[test]
+fn dialog_dismissed_while_editing_returns_focus_task() {
+    // Canceling the Open or Save As file dialog (no path chosen) must not
+    // strand the floating overlay editor unfocused, same as every other
+    // toolbar interaction that doesn't end the edit.
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::DialogDismissed);
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "DialogDismissed while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn dialog_dismissed_when_not_editing_returns_no_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+
+    let task = app.update(Message::DialogDismissed);
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "DialogDismissed without an active edit must not steal focus, got: {debug}"
+    );
+}
+
+#[test]
 fn font_size_decrement_while_editing_returns_focus_task() {
     let mut app = test_app_with_overlay();
     app.update(Message::EditOverlay(0));
@@ -2523,6 +2554,54 @@ fn font_size_decrement_while_editing_returns_focus_task() {
     assert!(
         !debug.contains("units: 0"),
         "FontSizeDecrement while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn font_size_submit_refocuses_font_size_input_while_editing() {
+    // Same corrective-chain class as FontSizeArrowKeyResult: ChangeFontSize's
+    // shared refocus_editing_widget() step steals focus back to the overlay's
+    // text widget, so a typed size submitted from the font-size field must
+    // chain a corrective refocus back onto that field afterward, or the
+    // user's next keystroke silently lands in the overlay editor instead.
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::EditOverlay(0));
+    app.toolbar.font_size_input = "18".to_string();
+
+    let task = app.update(Message::Toolbar(toolbar::Message::FontSizeSubmit));
+
+    assert_eq!(
+        task.units(),
+        2,
+        "FontSizeSubmit while editing should refocus the font-size input \
+         after ChangeFontSize's editor refocus, so the user's next keystroke \
+         lands in the font-size field, not the overlay editor"
+    );
+}
+
+#[test]
+fn page_input_submit_refocuses_page_input_while_editing() {
+    // Same corrective-chain class: GoToPage's scroll_to_page batches
+    // refocus_editing_widget(), which steals focus back to the overlay's
+    // text widget. A page number submitted from the page-input field must
+    // chain a corrective refocus back onto that field afterward, or the
+    // user's next digits silently corrupt the overlay text instead.
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+    app.toolbar.page_input = "1".to_string();
+
+    let task = app.update(Message::Toolbar(toolbar::Message::PageInputSubmit));
+
+    // scroll_to_page already batches a scroll operation with the editor
+    // refocus (2 units); the corrective refocus onto the page input adds a
+    // third.
+    assert_eq!(
+        task.units(),
+        3,
+        "PageInputSubmit while editing should refocus the page-number input \
+         after GoToPage's editor refocus, so the user's next keystroke lands \
+         in the page field, not the overlay editor"
     );
 }
 

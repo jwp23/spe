@@ -266,10 +266,42 @@ impl App {
         ))
     }
 
+    /// A typed font size was submitted from the font-size input. Flows
+    /// through `ChangeFontSize` like every other font-size change, but that
+    /// path's `refocus_editing_widget()` step steals focus back to the
+    /// overlay editor when one is being edited — which would strand the
+    /// user mid-typing in the font-size field. Chain a corrective refocus
+    /// onto the font-size input, mirroring `handle_font_size_arrow_key_result`.
+    pub(super) fn handle_font_size_submit(&mut self) -> iced::Task<Message> {
+        let Ok(size) = self.toolbar.font_size_input.parse::<f32>() else {
+            return iced::Task::none();
+        };
+        let change_task = self.update(Message::ChangeFontSize(toolbar::clamp_font_size(size)));
+        change_task.chain(iced::widget::operation::focus(
+            self.toolbar.font_size_input_id.clone(),
+        ))
+    }
+
+    /// A page number was submitted from the page-input field. Flows through
+    /// `GoToPage`, but `scroll_to_page`'s `refocus_editing_widget()` step
+    /// steals focus back to the overlay editor when one is being edited —
+    /// which would strand the user mid-typing in the page field. Chain a
+    /// corrective refocus onto the page input, mirroring
+    /// `handle_font_size_arrow_key_result`.
+    pub(super) fn handle_page_input_submit(&mut self) -> iced::Task<Message> {
+        let Ok(page) = self.toolbar.page_input.parse::<u32>() else {
+            return iced::Task::none();
+        };
+        let goto_task = self.update(Message::GoToPage(page));
+        goto_task.chain(iced::widget::operation::focus(
+            self.toolbar.page_input_id.clone(),
+        ))
+    }
+
     /// Return keyboard focus to the floating text widget while an overlay is
     /// being edited. Clicking a toolbar control unfocuses the floating widget,
     /// so typing must be handed back once the toolbar interaction completes.
-    fn refocus_editing_widget(&self) -> iced::Task<Message> {
+    pub(super) fn refocus_editing_widget(&self) -> iced::Task<Message> {
         if self.canvas.editing && self.canvas.active_overlay.is_some() {
             return iced::widget::operation::focus(self.text_input_id.clone());
         }
@@ -495,11 +527,7 @@ impl App {
             toolbar::Message::FontSizeInput(input) => {
                 self.toolbar.font_size_input = input;
             }
-            toolbar::Message::FontSizeSubmit => {
-                if let Ok(size) = self.toolbar.font_size_input.parse::<f32>() {
-                    return self.update(Message::ChangeFontSize(toolbar::clamp_font_size(size)));
-                }
-            }
+            toolbar::Message::FontSizeSubmit => return self.handle_font_size_submit(),
             toolbar::Message::FontSizeIncrement => {
                 let size = toolbar::increment_font_size(self.toolbar.font_size);
                 return self.update(Message::ChangeFontSize(size));
@@ -517,11 +545,7 @@ impl App {
             toolbar::Message::PageInput(input) => {
                 self.toolbar.page_input = input;
             }
-            toolbar::Message::PageInputSubmit => {
-                if let Ok(page) = self.toolbar.page_input.parse::<u32>() {
-                    return self.update(Message::GoToPage(page));
-                }
-            }
+            toolbar::Message::PageInputSubmit => return self.handle_page_input_submit(),
             toolbar::Message::ToggleSidebar => return self.update(Message::ToggleSidebar),
             toolbar::Message::DeleteOverlay => return self.update(Message::DeleteOverlay),
         }
@@ -539,7 +563,7 @@ impl App {
             },
             |path| match path {
                 Some(p) => Message::FileOpened(p),
-                None => Message::Noop,
+                None => Message::DialogDismissed,
             },
         )
     }
@@ -653,7 +677,7 @@ impl App {
             },
             |path| match path {
                 Some(p) => Message::SaveDestinationChosen(p),
-                None => Message::Noop,
+                None => Message::DialogDismissed,
             },
         )
     }
@@ -664,16 +688,20 @@ impl App {
             // write failure (the source would already be truncated).
             if denotes_same_file(&path, &doc.source_path) {
                 self.set_save_result(Err::<(), _>("cannot overwrite the source file"), &path);
-                return self.refocus_editing_widget();
-            }
-            let source = doc.source_path.clone();
-            let overlays = doc.overlays.clone();
-            let result =
-                crate::pdf::writer::write_overlays(&source, &path, &overlays, &self.font_registry);
-            let succeeded = result.is_ok();
-            self.set_save_result(result, &path);
-            if succeeded {
-                self.document.as_mut().unwrap().save_path = Some(path);
+            } else {
+                let source = doc.source_path.clone();
+                let overlays = doc.overlays.clone();
+                let result = crate::pdf::writer::write_overlays(
+                    &source,
+                    &path,
+                    &overlays,
+                    &self.font_registry,
+                );
+                let succeeded = result.is_ok();
+                self.set_save_result(result, &path);
+                if succeeded {
+                    self.document.as_mut().unwrap().save_path = Some(path);
+                }
             }
         }
         self.refocus_editing_widget()
