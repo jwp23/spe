@@ -279,3 +279,68 @@ fn ipc_open_place_type_save_round_trip() {
         "the saved PDF must exist and contain the typed overlay text"
     );
 }
+
+/// spe-47n: Save must always produce a file, even with no overlays placed —
+/// open then save with nothing typed must still write a loadable PDF with
+/// the same page count as the source, not silently do nothing.
+#[test]
+#[ignore]
+fn ipc_open_save_with_no_overlays_still_writes_file() {
+    if !cage_available() {
+        eprintln!("SKIP ipc_open_save_with_no_overlays_still_writes_file: `cage` not available");
+        return;
+    }
+
+    let runtime_dir = make_test_runtime_dir("save-empty");
+    let socket = socket_path(&runtime_dir);
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/single-page.pdf");
+    let dest = runtime_dir.join("saved-empty.pdf");
+    let mut child = launch_app(&runtime_dir, &socket);
+
+    let outcome = (|| -> Result<CommandLog, String> {
+        wait_for_socket(&socket, &mut child, Duration::from_secs(20))?;
+        let send = |json: &str| send_command(&socket, json, Duration::from_secs(15));
+
+        let mut results: CommandLog = Vec::new();
+        results.push((
+            "open",
+            send(&format!(
+                r#"{{"cmd": "open", "path": "{}"}}"#,
+                fixture.display()
+            )),
+        ));
+        results.push(("wait_ready", send(r#"{"cmd": "wait_ready"}"#)));
+        results.push((
+            "save",
+            send(&format!(
+                r#"{{"cmd": "save", "path": "{}"}}"#,
+                dest.display()
+            )),
+        ));
+        Ok(results)
+    })();
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let source_pages = lopdf::Document::load(&fixture)
+        .expect("fixture must be a loadable PDF")
+        .get_pages()
+        .len();
+    let dest_pages = dest
+        .exists()
+        .then(|| lopdf::Document::load(&dest).ok())
+        .flatten()
+        .map(|doc| doc.get_pages().len());
+    let _ = std::fs::remove_dir_all(&runtime_dir);
+
+    let results = outcome.expect("IPC sequence setup failed");
+    for (label, reply) in &results {
+        assert_ok(label, reply);
+    }
+    assert_eq!(
+        dest_pages,
+        Some(source_pages),
+        "an empty-overlay save must still write a loadable PDF with the source's page count"
+    );
+}
