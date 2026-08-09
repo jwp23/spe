@@ -352,6 +352,50 @@ fn escape_maps_to_deselect() {
 }
 
 #[test]
+fn ctrl_enter_maps_to_deselect_same_as_escape() {
+    let msg = key_to_message(
+        keyboard::Key::Named(keyboard::key::Named::Enter),
+        keyboard::Modifiers::COMMAND,
+    );
+    assert!(matches!(msg, Some(Message::DeselectOverlay)));
+}
+
+fn enter_key_press(modifiers: keyboard::Modifiers) -> iced::widget::text_editor::KeyPress {
+    iced::widget::text_editor::KeyPress {
+        key: keyboard::Key::Named(keyboard::key::Named::Enter),
+        modified_key: keyboard::Key::Named(keyboard::key::Named::Enter),
+        physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Enter),
+        modifiers,
+        text: None,
+        status: iced::widget::text_editor::Status::Focused { is_hovered: false },
+    }
+}
+
+#[test]
+fn ctrl_enter_key_binding_does_not_capture_in_text_editor() {
+    let key_press = enter_key_press(keyboard::Modifiers::COMMAND);
+
+    let binding = super::view::overlay_text_editor_key_binding(key_press);
+
+    // Returning None lets the KeyPressed event bubble to the app-level
+    // subscription instead of being captured by the text_editor, matching
+    // how Escape (Binding::Unfocus) bubbles today.
+    assert!(binding.is_none());
+}
+
+#[test]
+fn plain_enter_key_binding_still_inserts_newline_in_text_editor() {
+    let key_press = enter_key_press(keyboard::Modifiers::empty());
+
+    let binding = super::view::overlay_text_editor_key_binding(key_press);
+
+    assert!(matches!(
+        binding,
+        Some(iced::widget::text_editor::Binding::Enter)
+    ));
+}
+
+#[test]
 fn delete_maps_to_delete_overlay() {
     let msg = key_to_message(
         keyboard::Key::Named(keyboard::key::Named::Delete),
@@ -990,7 +1034,7 @@ fn handle_file_opened_with_bad_path_records_load_error() {
     let _ = app.handle_file_opened(PathBuf::from("/nonexistent/does-not-exist.pdf"));
     assert!(app.document.is_none());
     assert!(
-        app.last_open_error.is_some(),
+        app.last_command_error.is_some(),
         "a failed open should record an error message"
     );
 }
@@ -998,11 +1042,11 @@ fn handle_file_opened_with_bad_path_records_load_error() {
 #[test]
 fn handle_file_opened_success_clears_previous_load_error() {
     let (mut app, _) = App::new(false);
-    app.last_open_error = Some("stale error from a previous failed open".to_string());
+    app.last_command_error = Some("stale error from a previous failed open".to_string());
     let tmp = make_temp_pdf();
     let _ = app.handle_file_opened(tmp.path().to_path_buf());
     assert!(app.document.is_some());
-    assert!(app.last_open_error.is_none());
+    assert!(app.last_command_error.is_none());
 }
 
 #[test]
@@ -1013,7 +1057,7 @@ fn ipc_open_command_dispatch_leaves_document_unset_on_bad_path() {
     // this harness doesn't drive it (unlike deliver_ipc_response_writes_to_channel,
     // which calls the async fn directly). The response *contract* — that a
     // failed load reports ok:false with an error — is covered directly by
-    // open_command_response_reports_failure_when_load_failed below.
+    // command_response_reports_failure_when_load_failed below.
     let (mut app, _) = App::new(true);
     let _rx = attach_ipc_response_sender(&mut app);
     let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::Command(
@@ -1025,23 +1069,23 @@ fn ipc_open_command_dispatch_leaves_document_unset_on_bad_path() {
 }
 
 #[test]
-fn open_command_response_reports_failure_when_load_failed() {
+fn command_response_reports_failure_when_load_failed() {
     let (mut app, _) = App::new(false);
     let _ = app.handle_file_opened(PathBuf::from("/nonexistent/does-not-exist.pdf"));
-    let response = app.open_command_response(crate::ipc::IpcResponse {
+    let response = app.command_response(crate::ipc::IpcResponse {
         ok: true,
         error: None,
     });
     assert!(!response.ok, "a failed load must not report ok:true");
     assert!(response.error.is_some());
     assert!(
-        app.last_open_error.is_none(),
+        app.last_command_error.is_none(),
         "the error should be consumed once reported, so it doesn't leak into the next command"
     );
 }
 
 #[test]
-fn open_command_response_reports_success_when_load_succeeded() {
+fn command_response_reports_success_when_load_succeeded() {
     let (mut app, _) = App::new(false);
     let tmp = make_temp_pdf();
     let _ = app.handle_file_opened(tmp.path().to_path_buf());
@@ -1049,7 +1093,7 @@ fn open_command_response_reports_success_when_load_succeeded() {
         ok: true,
         error: None,
     };
-    let response = app.open_command_response(ok_response);
+    let response = app.command_response(ok_response);
     assert!(response.ok);
     assert!(response.error.is_none());
 }
@@ -1459,6 +1503,53 @@ fn test_app_with_overlay() -> App {
     app
 }
 
+/// An app with a single selected overlay whose font size has been set to
+/// `size`. Shared setup for the font-size stepper/arrow-key tests below,
+/// which otherwise only differ in which message they dispatch next.
+fn selected_overlay_at_font_size(size: f32) -> App {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::ChangeFontSize(size));
+    app
+}
+
+/// Dispatches `toolbar::Message::FontSizeIncrement`/`FontSizeDecrement`
+/// against a selected overlay at font size 12.0, mirroring what the
+/// stepper buttons send.
+fn step_via_toolbar_message(increment: bool) -> App {
+    let mut app = selected_overlay_at_font_size(12.0);
+    let message = if increment {
+        toolbar::Message::FontSizeIncrement
+    } else {
+        toolbar::Message::FontSizeDecrement
+    };
+    app.update(Message::Toolbar(message));
+    app
+}
+
+/// Dispatches `Message::FontSizeArrowKeyResult` against a selected overlay
+/// at font size 12.0, as if the arrow key's focus check had already
+/// confirmed the font-size input was focused.
+fn step_via_arrow_key_result(increment: bool) -> App {
+    let mut app = selected_overlay_at_font_size(12.0);
+    app.update(Message::FontSizeArrowKeyResult(increment));
+    app
+}
+
+/// Simulates a real click on the toolbar's font-size stepper button whose
+/// label matches `glyph` (`"+"` or `"-"`) and applies whatever messages it
+/// produces.
+fn click_font_size_stepper(app: &mut App, glyph: &str) {
+    let mut simulator = iced_test::Simulator::new(app.view());
+    simulator.click(glyph).unwrap_or_else(|_| {
+        panic!("font size \"{glyph}\" button should be present in the toolbar")
+    });
+    let messages: Vec<Message> = simulator.into_messages().collect();
+    for message in messages {
+        app.update(message);
+    }
+}
+
 #[test]
 fn edit_overlay_sets_active_and_editing() {
     let mut app = test_app_with_overlay();
@@ -1536,6 +1627,227 @@ fn undo_font_size_change_syncs_toolbar_to_active_overlay() {
         app.toolbar.font_size_input,
         format!("{}", doc.overlays[0].font_size)
     );
+}
+
+#[test]
+fn clicking_font_size_increment_button_steps_up_the_overlay_size() {
+    let mut app = selected_overlay_at_font_size(12.0);
+
+    click_font_size_stepper(&mut app, "+");
+
+    assert!((app.toolbar.font_size - 13.0).abs() < f32::EPSILON);
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 13.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn clicking_font_size_decrement_button_steps_down_the_overlay_size() {
+    let mut app = selected_overlay_at_font_size(12.0);
+
+    click_font_size_stepper(&mut app, "-");
+
+    assert!((app.toolbar.font_size - 11.0).abs() < f32::EPSILON);
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 11.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_increment_toolbar_message_steps_up_and_updates_overlay() {
+    let app = step_via_toolbar_message(true);
+
+    assert!((app.toolbar.font_size - 13.0).abs() < f32::EPSILON);
+    assert_eq!(app.toolbar.font_size_input, "13");
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 13.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_decrement_toolbar_message_steps_down_and_updates_overlay() {
+    let app = step_via_toolbar_message(false);
+
+    assert!((app.toolbar.font_size - 11.0).abs() < f32::EPSILON);
+    assert_eq!(app.toolbar.font_size_input, "11");
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 11.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_decrement_toolbar_message_floors_at_minimum() {
+    let mut app = selected_overlay_at_font_size(1.0);
+
+    app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
+
+    assert!((app.toolbar.font_size - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_submit_clamps_below_minimum_value_to_floor() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.toolbar.font_size_input = "0.5".to_string();
+
+    app.update(Message::Toolbar(toolbar::Message::FontSizeSubmit));
+
+    assert!((app.toolbar.font_size - 1.0).abs() < f32::EPSILON);
+    assert_eq!(app.toolbar.font_size_input, "1");
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_decrement_after_clamped_submit_stays_at_floor_then_steps_cleanly() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.toolbar.font_size_input = "0.5".to_string();
+    app.update(Message::Toolbar(toolbar::Message::FontSizeSubmit));
+
+    app.update(Message::Toolbar(toolbar::Message::FontSizeDecrement));
+    assert!((app.toolbar.font_size - 1.0).abs() < f32::EPSILON);
+
+    app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
+    assert!((app.toolbar.font_size - 2.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_increment_is_undoable() {
+    let mut app = selected_overlay_at_font_size(12.0);
+
+    app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
+    app.update(Message::Undo);
+
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 12.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_increment_while_editing_returns_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::Toolbar(toolbar::Message::FontSizeIncrement));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "FontSizeIncrement while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn arrow_up_maps_to_font_size_arrow_pressed_increment() {
+    let msg = key_to_message(
+        keyboard::Key::Named(keyboard::key::Named::ArrowUp),
+        keyboard::Modifiers::empty(),
+    );
+    assert!(matches!(msg, Some(Message::FontSizeArrowPressed(true))));
+}
+
+#[test]
+fn arrow_down_maps_to_font_size_arrow_pressed_decrement() {
+    let msg = key_to_message(
+        keyboard::Key::Named(keyboard::key::Named::ArrowDown),
+        keyboard::Modifiers::empty(),
+    );
+    assert!(matches!(msg, Some(Message::FontSizeArrowPressed(false))));
+}
+
+#[test]
+fn alt_modified_arrow_up_does_not_map_to_font_size_arrow_pressed() {
+    let msg = key_to_message(
+        keyboard::Key::Named(keyboard::key::Named::ArrowUp),
+        keyboard::Modifiers::ALT,
+    );
+    assert!(msg.is_none());
+}
+
+#[test]
+fn alt_modified_arrow_down_does_not_map_to_font_size_arrow_pressed() {
+    let msg = key_to_message(
+        keyboard::Key::Named(keyboard::key::Named::ArrowDown),
+        keyboard::Modifiers::ALT,
+    );
+    assert!(msg.is_none());
+}
+
+#[test]
+fn font_size_arrow_pressed_returns_a_focus_query_task() {
+    let (mut app, _) = App::new(false);
+
+    let task = app.update(Message::FontSizeArrowPressed(true));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "FontSizeArrowPressed should query focus via a widget operation Task, got: {debug}"
+    );
+}
+
+#[test]
+fn arrow_key_result_increments_when_focused() {
+    assert!(matches!(
+        arrow_key_result(true, true),
+        Message::FontSizeArrowKeyResult(true)
+    ));
+}
+
+#[test]
+fn arrow_key_result_decrements_when_focused() {
+    assert!(matches!(
+        arrow_key_result(true, false),
+        Message::FontSizeArrowKeyResult(false)
+    ));
+}
+
+#[test]
+fn arrow_key_result_is_noop_when_unfocused_and_increment() {
+    assert!(matches!(arrow_key_result(false, true), Message::Noop));
+}
+
+#[test]
+fn arrow_key_result_is_noop_when_unfocused_and_decrement() {
+    assert!(matches!(arrow_key_result(false, false), Message::Noop));
+}
+
+#[test]
+fn font_size_arrow_key_result_increments_when_focused() {
+    let app = step_via_arrow_key_result(true);
+
+    assert!((app.toolbar.font_size - 13.0).abs() < f32::EPSILON);
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 13.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_arrow_key_result_refocuses_font_size_input_while_editing() {
+    // While an overlay is being edited, ChangeFontSize's shared
+    // refocus_editing_widget() step steals focus back to the overlay's text
+    // widget. An arrow-key-triggered change must chain a corrective refocus
+    // onto the font-size input afterward, or the next arrow press resolves
+    // as unfocused and does nothing. The units count captures both focus
+    // operations: the editor refocus baked into ChangeFontSize, plus the
+    // corrective one this handler chains on top.
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::FontSizeArrowKeyResult(true));
+
+    assert_eq!(
+        task.units(),
+        2,
+        "arrow-key font-size changes while editing should refocus the \
+         font-size input after ChangeFontSize's editor refocus, so repeated \
+         arrow presses keep working"
+    );
+}
+
+#[test]
+fn font_size_arrow_key_result_decrements_when_focused() {
+    let app = step_via_arrow_key_result(false);
+
+    assert!((app.toolbar.font_size - 11.0).abs() < f32::EPSILON);
+    let doc = app.document.as_ref().unwrap();
+    assert!((doc.overlays[0].font_size - 11.0).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -2064,6 +2376,386 @@ fn ipc_command_with_error_does_not_apply_a_message() {
         },
     )));
     assert!(app.document.as_ref().unwrap().overlays.is_empty());
+}
+
+// =====================================================================
+// spe-749: every IPC command's response reflects whether it acted.
+// `run_ipc_command` returns the response synchronously, so these assert on
+// the reply the client would receive without driving the async delivery task.
+// =====================================================================
+
+#[test]
+fn ipc_type_without_active_overlay_reports_failure() {
+    let mut app = test_app_with_document();
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Hello".to_string(),
+    });
+    assert!(
+        !response.ok,
+        "typing with nothing selected must not report ok"
+    );
+    assert!(response.error.unwrap().contains("no overlay is active"));
+}
+
+#[test]
+fn ipc_click_without_document_reports_failure() {
+    let (mut app, _) = App::new(true);
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 10.0,
+        y: 10.0,
+    });
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("no document"));
+}
+
+#[test]
+fn ipc_select_with_out_of_range_index_reports_failure() {
+    let mut app = test_app_with_document();
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Select { index: 3 });
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("out of range"));
+}
+
+#[test]
+fn ipc_type_after_click_reports_success_and_applies_the_text() {
+    let mut app = test_app_with_document();
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 100.0,
+        y: 700.0,
+    });
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Hello".to_string(),
+    });
+    assert!(response.ok, "typing into a fresh overlay must succeed");
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+}
+
+#[test]
+fn ipc_open_failure_is_reported_through_the_shared_command_outcome() {
+    // The same mechanism that reports a failed open reports any handler-recorded
+    // failure — there is no per-command branch in the response path.
+    let (mut app, _) = App::new(true);
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Open {
+        path: PathBuf::from("/nonexistent/does-not-exist.pdf"),
+    });
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("failed to open"));
+}
+
+#[test]
+fn ipc_command_error_does_not_leak_into_the_next_command() {
+    let (mut app, _) = App::new(true);
+    let (failed, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Open {
+        path: PathBuf::from("/nonexistent/does-not-exist.pdf"),
+    });
+    assert!(!failed.ok);
+    let (next, _task) = app.run_ipc_command(crate::ipc::IpcCommand::ZoomIn);
+    assert!(
+        next.ok,
+        "a later command must not inherit the earlier error"
+    );
+}
+
+// =====================================================================
+// spe-7f1: `click_at` goes through the canvas hit test, so automation can
+// exercise real click-to-select instead of always placing.
+// =====================================================================
+
+/// Place an overlay reading "Hello" at PDF (100, 700) on page 1 and leave
+/// nothing selected — the state a subsequent click has to interpret.
+fn app_with_committed_overlay() -> App {
+    let mut app = test_app_with_document();
+    app.document
+        .as_mut()
+        .unwrap()
+        .page_dimensions
+        .insert(1, (612.0, 792.0));
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 100.0,
+        y: 700.0,
+    });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Hello".to_string(),
+    });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Deselect);
+    app
+}
+
+#[test]
+fn ipc_click_at_on_an_existing_overlay_selects_it_instead_of_placing() {
+    let mut app = app_with_committed_overlay();
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::ClickAt {
+        page: 1,
+        x: 102.0,
+        y: 705.0,
+    });
+    assert!(response.ok);
+    assert_eq!(
+        app.document.as_ref().unwrap().overlays.len(),
+        1,
+        "no new overlay"
+    );
+    assert_eq!(app.canvas.active_overlay, Some(0));
+}
+
+#[test]
+fn ipc_click_at_on_empty_page_area_places_a_new_overlay() {
+    let mut app = app_with_committed_overlay();
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::ClickAt {
+        page: 1,
+        x: 400.0,
+        y: 300.0,
+    });
+    assert!(response.ok);
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 2);
+    assert_eq!(app.canvas.active_overlay, Some(1));
+}
+
+#[test]
+fn ipc_click_bypasses_the_hit_test_and_always_places() {
+    // The older `click` command is deliberately unconditional; keeping it
+    // distinguishable from `click_at` is what makes `click_at` meaningful.
+    let mut app = app_with_committed_overlay();
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 102.0,
+        y: 705.0,
+    });
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 2);
+}
+
+// =====================================================================
+// spe-94g: save over IPC — reuses the writer, bypasses only the dialog
+// =====================================================================
+
+/// An app holding a real, loadable PDF with one overlay of text on it — the
+/// state a save is meant to persist.
+fn app_with_loaded_pdf(source: &tempfile::NamedTempFile) -> App {
+    let (mut app, _) = App::new(true);
+    let _ = app.handle_file_opened(source.path().to_path_buf());
+    assert!(app.document.is_some(), "fixture PDF must load");
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 100.0,
+        y: 700.0,
+    });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Saved overlay".to_string(),
+    });
+    app
+}
+
+#[test]
+fn ipc_save_writes_the_destination_file_and_reports_success() {
+    let source = make_temp_pdf();
+    let mut app = app_with_loaded_pdf(&source);
+    let dest = tempfile::NamedTempFile::new().expect("temp file");
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Save {
+        path: dest.path().to_path_buf(),
+    });
+
+    assert!(response.ok, "save reported: {:?}", response.error);
+    assert!(
+        lopdf::Document::load(dest.path()).is_ok(),
+        "the saved file must be a readable PDF"
+    );
+}
+
+#[test]
+fn ipc_save_records_the_destination_for_later_saves() {
+    let source = make_temp_pdf();
+    let mut app = app_with_loaded_pdf(&source);
+    let dest = tempfile::NamedTempFile::new().expect("temp file");
+
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Save {
+        path: dest.path().to_path_buf(),
+    });
+
+    assert_eq!(
+        app.document.as_ref().unwrap().save_path.as_deref(),
+        Some(dest.path())
+    );
+}
+
+#[test]
+fn ipc_save_over_the_source_file_reports_failure() {
+    let source = make_temp_pdf();
+    let mut app = app_with_loaded_pdf(&source);
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Save {
+        path: source.path().to_path_buf(),
+    });
+
+    assert!(!response.ok, "overwriting the source must not report ok");
+    assert!(response.error.unwrap().contains("source file"));
+}
+
+#[test]
+fn ipc_save_to_another_spelling_of_the_source_is_rejected() {
+    // The guard exists to stop the open document being truncated. It must key
+    // on which file the path denotes, not on how the path is spelled: an IPC
+    // client can name the source relatively, through `..`, or via a symlink.
+    let source = make_temp_pdf();
+    let mut app = app_with_loaded_pdf(&source);
+    let alias = source
+        .path()
+        .parent()
+        .unwrap()
+        .join("..")
+        .join(source.path().parent().unwrap().file_name().unwrap())
+        .join(source.path().file_name().unwrap());
+    assert_ne!(
+        alias,
+        source.path(),
+        "the alias must be spelled differently"
+    );
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Save { path: alias });
+
+    assert!(!response.ok, "overwriting the source must not report ok");
+    assert!(response.error.unwrap().contains("source file"));
+}
+
+#[test]
+fn ipc_save_to_a_hard_link_of_the_source_is_rejected() {
+    // A hard link is a second name for the same inode. Canonicalizing both
+    // names yields two different paths, so a path comparison — however
+    // normalized — cannot see that writing one truncates the other.
+    let source = make_temp_pdf();
+    let mut app = app_with_loaded_pdf(&source);
+    let dir = tempfile::tempdir().expect("temp dir");
+    let link = dir.path().join("same-inode.pdf");
+    std::fs::hard_link(source.path(), &link).expect("hard link");
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Save { path: link });
+
+    assert!(
+        !response.ok,
+        "writing a hard link of the source truncates the open document"
+    );
+    assert!(response.error.unwrap().contains("source file"));
+}
+
+#[test]
+fn ipc_save_to_an_unwritable_path_reports_failure() {
+    let source = make_temp_pdf();
+    let mut app = app_with_loaded_pdf(&source);
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Save {
+        path: PathBuf::from("/nonexistent-dir/out.pdf"),
+    });
+
+    assert!(!response.ok, "an unwritable path must not report ok");
+    assert!(response.error.is_some());
+}
+
+#[test]
+fn ipc_save_without_document_reports_failure() {
+    let (mut app, _) = App::new(true);
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Save {
+        path: PathBuf::from("/tmp/out.pdf"),
+    });
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("no document"));
+}
+
+// =====================================================================
+// spe-0nc: undo / redo over IPC
+// =====================================================================
+
+#[test]
+fn ipc_undo_reverts_a_placement() {
+    let mut app = test_app_with_document();
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 100.0,
+        y: 700.0,
+    });
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Undo);
+    assert!(response.ok);
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+}
+
+#[test]
+fn ipc_redo_restores_an_undone_edit() {
+    // The edit is committed first: while a placement is still being edited,
+    // undo cancels that session rather than popping the command history, so
+    // there would be nothing to redo.
+    let mut app = app_with_committed_overlay();
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Edit { index: 0 });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Hello again".to_string(),
+    });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Deselect);
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Undo);
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Redo);
+    assert!(response.ok, "redo reported: {:?}", response.error);
+    assert_eq!(
+        app.document.as_ref().unwrap().overlays[0].text,
+        "Hello again"
+    );
+}
+
+#[test]
+fn ipc_redo_while_editing_is_rejected() {
+    // handle_redo commits an open edit session first, and that commit clears
+    // the redo stack, so the pop that follows finds nothing. The precondition
+    // reads redo_depth from before the commit, so it cannot see that coming —
+    // the command must be refused up front rather than reporting success for
+    // a redo that never happens.
+    let mut app = app_with_committed_overlay();
+    // Bank a redo entry: change the text, commit it, then undo.
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Edit { index: 0 });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Hello again".to_string(),
+    });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Deselect);
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Undo);
+    assert_eq!(app.redo_stack.len(), 1, "a redo entry must be banked");
+
+    // Now open a fresh edit session with modified, uncommitted text.
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Edit { index: 0 });
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Changed".to_string(),
+    });
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Redo);
+
+    assert!(!response.ok, "a redo that cannot happen must not report ok");
+    assert!(response.error.unwrap().contains("edit session"));
+    // Rejected before any side effect: the session is still open and its
+    // banked redo entry survives.
+    assert!(app.canvas.editing, "the edit session must still be open");
+    assert_eq!(
+        app.redo_stack.len(),
+        1,
+        "the redo entry must not have been cleared by a commit"
+    );
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Changed");
+}
+
+#[test]
+fn ipc_undo_with_nothing_to_undo_reports_failure() {
+    let mut app = test_app_with_document();
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Undo);
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("nothing to undo"));
+}
+
+#[test]
+fn ipc_redo_with_nothing_to_redo_reports_failure() {
+    let mut app = test_app_with_document();
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Redo);
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("nothing to redo"));
 }
 
 #[test]

@@ -254,6 +254,7 @@ impl App {
             let screen_width = pdf_width * scale;
             iced::widget::text_editor(content)
                 .on_action(Message::TextEditorAction)
+                .key_binding(overlay_text_editor_key_binding)
                 .id(self.text_input_id.clone())
                 .font(iced_font)
                 .size(iced::Pixels(scaled_font_size))
@@ -327,6 +328,32 @@ fn overlay_text_input_style(
         value: iced::Color::BLACK,
         selection: OVERLAY_SELECTION,
     }
+}
+
+/// Key bindings for the floating multi-line text_editor.
+///
+/// The default binding maps `Enter` to a line break regardless of
+/// modifiers, which would swallow Ctrl+Enter and never let the app's
+/// keyboard subscription see it. Returning `None` here leaves the
+/// KeyPressed event uncaptured, so it bubbles up to `event_to_message`
+/// the same way Escape (mapped by the widget to `Binding::Unfocus`,
+/// which also doesn't capture) already does — letting Ctrl+Enter commit
+/// the overlay via `Message::DeselectOverlay`.
+pub(super) fn overlay_text_editor_key_binding(
+    key_press: iced::widget::text_editor::KeyPress,
+) -> Option<iced::widget::text_editor::Binding<Message>> {
+    let is_ctrl_enter = key_press.modifiers.command()
+        && !key_press.modifiers.shift()
+        && matches!(
+            key_press.key,
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter)
+        );
+
+    if is_ctrl_enter {
+        return None;
+    }
+
+    iced::widget::text_editor::Binding::from_key_press(key_press)
 }
 
 fn overlay_text_editor_style(
