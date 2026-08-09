@@ -2831,3 +2831,61 @@ fn overlay_anchor_distinguishes_overlays_on_different_pages() {
     };
     assert!(anchor.resolve(&overlays, 0).is_none());
 }
+
+// =====================================================================
+// spe-x2z: single-line box width must come from the font the canvas
+// actually renders with, not from the PDF's AFM metrics
+// =====================================================================
+
+fn overlay_with_font(font_name: &str, font_size: f32, text: &str) -> TextOverlay {
+    TextOverlay {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 600.0 },
+        text: text.to_string(),
+        font: FontRegistry::new().find_by_name(font_name).unwrap(),
+        font_size,
+        width: None,
+    }
+}
+
+impl RenderedCanvas {
+    /// Rightmost column holding glyph ink between `top` and `bottom`.
+    ///
+    /// The threshold sits far above the overlay tint's darkening (~51 on a
+    /// white page) so only the near-black text counts.
+    fn rightmost_ink_column(&self, top: u32, bottom: u32) -> Option<u32> {
+        (0..self.width)
+            .filter(|x| (top..=bottom).any(|y| self.darkening(*x, y) >= 150.0))
+            .next_back()
+    }
+}
+
+#[test]
+fn the_text_box_covers_every_glyph_of_a_proportional_font_overlay() {
+    // The box width came from the PDF AFM widths, but the canvas renders with
+    // whatever system font resolves for the family — Times' advances there run
+    // up to a third wider — so trailing glyphs were drawn past the tint and
+    // outside the click target.
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![overlay_with_font("Times Bold", 36.0, "Hello world")];
+    let canvas = render_overlay_canvas(test_program(&overlays, &dims, &registry), None);
+
+    let (sx, sy) = rendered_baseline(&overlays[0], &dims);
+    let text_box = super::overlay_text_box(
+        &overlays[0],
+        sx,
+        sy,
+        crate::coordinate::render_scale(TEST_ZOOM, TEST_DPI),
+        &registry,
+    );
+    let rightmost = canvas
+        .rightmost_ink_column(text_box.y as u32, (text_box.y + text_box.height) as u32)
+        .expect("the overlay text should have been rendered");
+
+    let box_right = text_box.x + text_box.width;
+    assert!(
+        rightmost as f32 <= box_right,
+        "text reaches column {rightmost} but the box ends at {box_right}"
+    );
+}

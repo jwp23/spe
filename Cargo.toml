@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-iced = { version = "0.14", features = ["image", "canvas", "tokio"] }
+iced = { version = "0.14", features = ["image", "canvas", "tokio", "advanced"] }
 lopdf = "0.42"
 rfd = "0.17"
 image = "0.25"

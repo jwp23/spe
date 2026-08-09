@@ -3,12 +3,15 @@
 mod layout;
 mod overlays;
 mod pages;
+mod text_metrics;
 mod zoom;
 
 pub use layout::*;
 pub use overlays::*;
 pub use pages::*;
 pub use zoom::*;
+
+pub(crate) use text_metrics::canvas_text_width;
 
 use iced::widget::canvas;
 
@@ -250,7 +253,9 @@ pub(crate) fn tint_alpha(hovered: bool) -> f32 {
 /// `draw_overlay_text` anchors the text's top edge one font size above the PDF
 /// baseline and lays out lines downward, so the box starts there and extends
 /// one line height per line of text. Multi-line overlays are as wide as the box
-/// the user dragged; single-line overlays are as wide as their text.
+/// the user dragged; single-line overlays are as wide as the canvas actually
+/// shapes their text — the PDF's own width tables describe a different face
+/// and leave trailing glyphs outside the box (spe-x2z).
 pub(crate) fn overlay_text_box(
     overlay: &TextOverlay,
     screen_x: f32,
@@ -261,12 +266,7 @@ pub(crate) fn overlay_text_box(
     let scaled_font_size = overlay.font_size * scale;
     let width = match overlay.width {
         Some(width_pts) => width_pts * scale,
-        None => {
-            registry
-                .overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size)
-                .width
-                * scale
-        }
+        None => canvas_text_width(&overlay.text, overlay.font, scaled_font_size, registry),
     };
     let line_count = overlay.text.lines().count().max(1) as f32;
     iced::Rectangle {

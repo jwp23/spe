@@ -263,11 +263,14 @@ impl App {
                 .style(overlay_text_editor_style)
                 .into()
         } else {
-            let text_width = self
-                .font_registry
-                .overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size)
-                .width
-                * scale;
+            // Sized from the canvas font's own advances: the PDF width tables
+            // describe a different face and would size the box too narrow.
+            let text_width = canvas::canvas_text_width(
+                &overlay.text,
+                overlay.font,
+                scaled_font_size,
+                &self.font_registry,
+            );
             let buffer = scaled_font_size * 2.0;
             let input_width = (scaled_font_size * 6.0).max(text_width + buffer);
             iced::widget::text_input("", &overlay.text)
