@@ -73,13 +73,18 @@ Tests live in `tests/` (integration/E2E) and co-located `#[cfg(test)]` modules (
 
 ## Phosphor Icon Font (contributors only)
 
-The subsetted font is already committed — you do **not** need these tools to build or run the app. This section is only for regenerating the subset after changing which icons are included:
+The subsetted font is already committed — you do **not** need these tools to build or run the app. This section is only for regenerating the subset after changing which icons are included.
+
+Source: [phosphor-icons/web](https://github.com/phosphor-icons/web) (MIT licensed), `src/regular/Phosphor.ttf` at commit [`3d40a3e`](https://github.com/phosphor-icons/web/commit/3d40a3eaa73b25d20d263f0e1e55c9fed3e66809). Codepoints come from that commit's `src/regular/selection.json`.
 
 ```bash
-pip install fonttools  # or: pipx install fonttools
+pipx install fonttools  # provides pyftsubset; do not `pip install` system-wide
+
+curl -sLO https://raw.githubusercontent.com/phosphor-icons/web/3d40a3eaa73b25d20d263f0e1e55c9fed3e66809/src/regular/Phosphor.ttf
+
 pyftsubset Phosphor.ttf \
-  --unicodes="U+E036,U+E038,U+E08A,U+E138,U+E13A,U+E248,U+E256,U+E30C,U+E30E,U+E310,U+EAB6,U+E4A6" \
-  --output-file=assets/phosphor-subset.ttf \
+  --unicodes="U+E036,U+E038,U+E08A,U+E136,U+E138,U+E13A,U+E13C,U+E248,U+E256,U+E30C,U+E30E,U+E310,U+EAB6,U+E4A6" \
+  --output-file=assets/icons/phosphor-subset.ttf \
   --no-hinting --desubroutinize
 ```
 
