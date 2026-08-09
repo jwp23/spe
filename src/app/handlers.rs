@@ -865,15 +865,18 @@ impl App {
 
 /// Whether two paths denote the same file on disk.
 ///
-/// Compares canonical paths rather than the paths as written: a relative path,
-/// a `..` segment, or a symlink all spell the same file differently, and a
-/// lexical comparison would let such a spelling slip past the save guard and
-/// truncate the document being edited. A destination that cannot be
-/// canonicalized does not exist yet, so it cannot be the (existing) source —
-/// the literal comparison is only a fallback for that case.
+/// Compares device and inode numbers rather than the paths themselves. Paths
+/// are an unreliable identity: a relative path, a `..` segment, or a symlink
+/// spell the same file differently, and hard links give one file two names
+/// that stay distinct however thoroughly they are normalized. Any of those
+/// would let a save slip past the guard and truncate the document being
+/// edited. A destination whose metadata cannot be read does not exist yet, so
+/// it cannot be the (existing) source — the literal comparison is only a
+/// fallback for that case.
 fn denotes_same_file(destination: &std::path::Path, source: &std::path::Path) -> bool {
-    match (destination.canonicalize(), source.canonicalize()) {
-        (Ok(dest), Ok(src)) => dest == src,
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(destination), std::fs::metadata(source)) {
+        (Ok(dest), Ok(src)) => dest.dev() == src.dev() && dest.ino() == src.ino(),
         _ => destination == source,
     }
 }

@@ -2297,6 +2297,26 @@ fn ipc_save_to_another_spelling_of_the_source_is_rejected() {
 }
 
 #[test]
+fn ipc_save_to_a_hard_link_of_the_source_is_rejected() {
+    // A hard link is a second name for the same inode. Canonicalizing both
+    // names yields two different paths, so a path comparison — however
+    // normalized — cannot see that writing one truncates the other.
+    let source = make_temp_pdf();
+    let mut app = app_with_loaded_pdf(&source);
+    let dir = tempfile::tempdir().expect("temp dir");
+    let link = dir.path().join("same-inode.pdf");
+    std::fs::hard_link(source.path(), &link).expect("hard link");
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Save { path: link });
+
+    assert!(
+        !response.ok,
+        "writing a hard link of the source truncates the open document"
+    );
+    assert!(response.error.unwrap().contains("source file"));
+}
+
+#[test]
 fn ipc_save_to_an_unwritable_path_reports_failure() {
     let source = make_temp_pdf();
     let mut app = app_with_loaded_pdf(&source);
