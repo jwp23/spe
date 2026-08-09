@@ -1808,81 +1808,162 @@ fn should_draw_overlay_text_true_when_no_active_overlay() {
 }
 
 // =====================================================================
-// spe-ceg.2: tint size computation
+// spe-ceg.2 / spe-ner: overlay text box geometry (tint and hover border)
 // =====================================================================
 
+/// Rendered line height for a 12pt overlay at scale 1.0.
+const LINE_12PT: f32 = 12.0 * super::TEXT_LINE_HEIGHT_RATIO;
+
 #[test]
-fn tint_size_single_line_overlay_uses_bounding_box() {
-    // Single-line overlay (width=None): tint size comes from overlay_bounding_box.
-    // Courier 12pt, "Hello" → width = 5 * 7.2 = 36.0, height = 12.0
-    // scale=1.0 → w=36.0, h=12.0
+fn text_box_top_edge_is_one_font_size_above_the_baseline() {
+    // draw_overlay_text places the text top at baseline - font_size, so the
+    // tint must start there rather than at the baseline.
     let overlay = overlay_at(72.0, 720.0, "Hello");
-    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0, &FontRegistry::new());
-    assert!((w - 36.0).abs() < 0.1, "width should be ~36, got {w}");
-    assert!((h - 12.0).abs() < 0.1, "height should be 12, got {h}");
+    let rect = super::overlay_text_box(&overlay, 40.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        (rect.x - 40.0).abs() < 0.1,
+        "x should be 40, got {}",
+        rect.x
+    );
+    assert!(
+        (rect.y - 88.0).abs() < 0.1,
+        "top should be baseline - font_size = 88, got {}",
+        rect.y
+    );
 }
 
 #[test]
-fn tint_size_single_line_overlay_scales_with_scale() {
-    // Same as above but scale=2.0 → w=72.0, h=24.0
+fn single_line_text_box_width_comes_from_the_font_bounding_box() {
+    // Courier 12pt, "Hello" → 5 * 7.2 = 36.0 wide, one rendered line tall.
     let overlay = overlay_at(72.0, 720.0, "Hello");
-    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 2.0, &FontRegistry::new());
-    assert!((w - 72.0).abs() < 0.1, "width should be ~72, got {w}");
-    assert!((h - 24.0).abs() < 0.1, "height should be 24, got {h}");
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        (rect.width - 36.0).abs() < 0.1,
+        "width should be ~36, got {}",
+        rect.width
+    );
+    assert!(
+        (rect.height - LINE_12PT).abs() < 0.1,
+        "height should be one line ({LINE_12PT}), got {}",
+        rect.height
+    );
 }
 
 #[test]
-fn tint_size_multiline_overlay_uses_width_and_line_count() {
-    // Multi-line overlay (width=Some(150)), two lines of text, font_size=12.
-    // scale=1.0 → w=150.0, h=12.0 * 2 = 24.0
-    let overlay = TextOverlay {
-        page: 1,
-        position: PdfPosition { x: 72.0, y: 720.0 },
-        text: "line one\nline two".to_string(),
-        font: FontRegistry::new().find_by_name("Courier").unwrap(),
-        font_size: 12.0,
-        width: Some(150.0),
-    };
-    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0, &FontRegistry::new());
-    assert!((w - 150.0).abs() < 0.1, "width should be 150, got {w}");
-    assert!((h - 24.0).abs() < 0.1, "height should be 24, got {h}");
+fn multiline_text_box_grows_downward_from_the_first_line() {
+    // spe-ner: text is drawn top-down from baseline - font_size, so a 3-line
+    // overlay must extend *below* the baseline, not upward from it.
+    let overlay = multiline_overlay_at(72.0, 720.0, 150.0, "one\ntwo\nthree");
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        (rect.y - 88.0).abs() < 0.1,
+        "top should be baseline - font_size = 88, got {}",
+        rect.y
+    );
+    let expected_height = 3.0 * LINE_12PT;
+    assert!(
+        (rect.height - expected_height).abs() < 0.1,
+        "height should be 3 rendered lines ({expected_height}), got {}",
+        rect.height
+    );
+    assert!(
+        rect.y + rect.height > 100.0,
+        "box must extend below the first line's baseline, got bottom {}",
+        rect.y + rect.height
+    );
 }
 
 #[test]
-fn tint_size_multiline_overlay_single_line_text_height_is_one_line() {
-    // Multi-line overlay (width=Some) but text has only one line.
-    // Height = font_size * 1 = 12.0
+fn multiline_text_box_width_comes_from_the_overlay_width() {
     let overlay = multiline_overlay_at(72.0, 720.0, 150.0, "Hello");
-    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0, &FontRegistry::new());
-    assert!((w - 150.0).abs() < 0.1, "width should be 150, got {w}");
-    assert!((h - 12.0).abs() < 0.1, "height should be 12, got {h}");
-}
-
-#[test]
-fn tint_alpha_constant_is_correct() {
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
     assert!(
-        (super::OVERLAY_TINT_ALPHA - 0.15).abs() < f32::EPSILON,
-        "OVERLAY_TINT_ALPHA should be 0.15"
+        (rect.width - 150.0).abs() < 0.1,
+        "width should be the overlay width 150, got {}",
+        rect.width
     );
-}
-
-// =====================================================================
-// spe-ceg.3: hover tracking and tint intensification
-// =====================================================================
-
-#[test]
-fn overlay_tint_hover_alpha_constant_is_correct() {
     assert!(
-        (super::OVERLAY_TINT_HOVER_ALPHA - 0.25).abs() < f32::EPSILON,
-        "OVERLAY_TINT_HOVER_ALPHA should be 0.25"
+        (rect.height - LINE_12PT).abs() < 0.1,
+        "single line of text is one rendered line tall, got {}",
+        rect.height
     );
 }
 
 #[test]
-fn overlay_tint_hover_border_alpha_constant_is_correct() {
+fn text_box_scales_with_the_render_scale() {
+    let overlay = overlay_at(72.0, 720.0, "Hello");
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 2.0, &FontRegistry::new());
     assert!(
-        (super::OVERLAY_TINT_HOVER_BORDER_ALPHA - 0.5).abs() < f32::EPSILON,
-        "OVERLAY_TINT_HOVER_BORDER_ALPHA should be 0.5"
+        (rect.width - 72.0).abs() < 0.1,
+        "width should double to 72, got {}",
+        rect.width
+    );
+    assert!(
+        (rect.height - 2.0 * LINE_12PT).abs() < 0.1,
+        "height should double, got {}",
+        rect.height
+    );
+    assert!(
+        (rect.y - 76.0).abs() < 0.1,
+        "top should be baseline - 2 * font_size = 76, got {}",
+        rect.y
+    );
+}
+
+#[test]
+fn empty_overlay_text_box_is_one_line_tall() {
+    let overlay = multiline_overlay_at(72.0, 720.0, 150.0, "");
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        (rect.height - LINE_12PT).abs() < 0.1,
+        "empty text still occupies one line, got {}",
+        rect.height
+    );
+}
+
+// =====================================================================
+// spe-ceg.3 / spe-i4e: tint opacity
+// =====================================================================
+
+/// How much darker than a white page a tint appears, in 0-255 luminance units,
+/// after compositing `color` at `alpha` over white. Uses relative luminance
+/// because a light blue tint is told apart from paper by brightness, not hue.
+fn tint_luminance_drop_over_white_page(color: [f32; 4], alpha: f32) -> f32 {
+    let luminance = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
+    255.0 * (1.0 - luminance) * alpha
+}
+
+/// Luminance drop a tint needs to read as a highlight rather than as blank
+/// paper on a typical display.
+const PERCEPTIBLE_LUMINANCE_DROP: f32 = 30.0;
+
+#[test]
+fn resting_tint_is_perceptible_against_a_white_page() {
+    // spe-i4e: the tint is always drawn, but at too low an opacity it is
+    // indistinguishable from the page, so it reads as "only shows on hover".
+    let drop = tint_luminance_drop_over_white_page(
+        crate::config::AppConfig::default().overlay_color,
+        super::tint_alpha(false),
+    );
+    assert!(
+        drop >= PERCEPTIBLE_LUMINANCE_DROP,
+        "resting tint is only {drop} darker than white paper, needs >= {PERCEPTIBLE_LUMINANCE_DROP}"
+    );
+}
+
+#[test]
+fn hovered_tint_is_more_prominent_than_the_resting_tint() {
+    assert!(
+        super::tint_alpha(true) > super::tint_alpha(false),
+        "hover should deepen the tint"
+    );
+}
+
+#[test]
+fn overlay_tint_hover_border_alpha_is_stronger_than_the_hover_fill() {
+    assert!(
+        super::OVERLAY_TINT_HOVER_BORDER_ALPHA > super::tint_alpha(true),
+        "the hover border must stand out against its own fill"
     );
 }
 

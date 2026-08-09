@@ -10,11 +10,10 @@ use crate::overlay::{PdfPosition, TextOverlay};
 
 use super::{
     DOUBLE_CLICK_DISTANCE_PX, DOUBLE_CLICK_TIMEOUT_MS, LocalDragState, MIN_DRAG_DISTANCE,
-    OVERLAY_TINT_ALPHA, OVERLAY_TINT_HOVER_ALPHA, OVERLAY_TINT_HOVER_BORDER_ALPHA, PageLayout,
-    PlacementDragState, ProgramState, ResizeDragState, SELECTION_BORDER_WIDTH,
-    SELECTION_BOX_PADDING, SELECTION_COLOR, draw_overlay_text, hit_test, page_rect_in_canvas,
-    resize_handle_hit, should_draw_overlay_text, should_draw_selection_box, tint_size_for_overlay,
-    to_screen_rect, visible_pages,
+    OVERLAY_TINT_HOVER_BORDER_ALPHA, PageLayout, PlacementDragState, ProgramState, ResizeDragState,
+    SELECTION_BORDER_WIDTH, SELECTION_BOX_PADDING, SELECTION_COLOR, draw_overlay_text, hit_test,
+    overlay_text_box, page_rect_in_canvas, resize_handle_hit, should_draw_overlay_text,
+    should_draw_selection_box, tint_alpha, to_screen_rect, visible_pages,
 };
 
 /// Canvas program that renders text overlays using native Iced drawing primitives.
@@ -370,31 +369,10 @@ impl OverlayCanvasProgram<'_> {
 
         if should_draw_overlay_text(self.editing, self.active_overlay, index) {
             let is_hovered = state.hovered_overlay == Some(index);
-            let tint_alpha = if is_hovered {
-                OVERLAY_TINT_HOVER_ALPHA
-            } else {
-                OVERLAY_TINT_ALPHA
-            };
-            draw_overlay_tint(
-                frame,
-                overlay,
-                sx,
-                sy,
-                scale,
-                overlay_color,
-                tint_alpha,
-                self.font_registry,
-            );
+            let text_box = overlay_text_box(overlay, sx, sy, scale, self.font_registry);
+            draw_overlay_tint(frame, text_box, overlay_color, tint_alpha(is_hovered));
             if is_hovered {
-                draw_overlay_hover_border(
-                    frame,
-                    overlay,
-                    sx,
-                    sy,
-                    scale,
-                    overlay_color,
-                    self.font_registry,
-                );
+                draw_overlay_hover_border(frame, text_box, overlay_color);
             }
             draw_overlay_text(
                 frame,
@@ -679,48 +657,32 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
 }
 
 /// Draw a semi-transparent tint rectangle behind overlay text using native fill_rectangle.
-#[allow(clippy::too_many_arguments)]
 fn draw_overlay_tint(
     frame: &mut canvas::Frame,
-    overlay: &TextOverlay,
-    screen_x: f32,
-    screen_y: f32,
-    scale: f32,
+    text_box: iced::Rectangle,
     tint_color: iced::Color,
     alpha: f32,
-    registry: &FontRegistry,
 ) {
-    let (w, h) = tint_size_for_overlay(overlay, scale, registry);
     let fill_color = iced::Color {
         a: alpha,
         ..tint_color
     };
-    frame.fill_rectangle(
-        iced::Point::new(screen_x, screen_y - h),
-        iced::Size::new(w, h),
-        fill_color,
-    );
+    frame.fill_rectangle(text_box.position(), text_box.size(), fill_color);
 }
 
 /// Draw a thin border around a hovered overlay using native stroke_rectangle.
-#[allow(clippy::too_many_arguments)]
 fn draw_overlay_hover_border(
     frame: &mut canvas::Frame,
-    overlay: &TextOverlay,
-    screen_x: f32,
-    screen_y: f32,
-    scale: f32,
+    text_box: iced::Rectangle,
     border_color: iced::Color,
-    registry: &FontRegistry,
 ) {
-    let (w, h) = tint_size_for_overlay(overlay, scale, registry);
     let stroke_color = iced::Color {
         a: OVERLAY_TINT_HOVER_BORDER_ALPHA,
         ..border_color
     };
     frame.stroke_rectangle(
-        iced::Point::new(screen_x, screen_y - h),
-        iced::Size::new(w, h),
+        text_box.position(),
+        text_box.size(),
         canvas::Stroke::default()
             .with_color(stroke_color)
             .with_width(1.0),
