@@ -521,7 +521,15 @@ impl App {
             toolbar::Message::SaveAs => return self.update(Message::SaveAs),
             toolbar::Message::Undo => return self.update(Message::Undo),
             toolbar::Message::Redo => return self.update(Message::Redo),
+            toolbar::Message::FontPickerToggled => {
+                self.toolbar.font_picker_open = !self.toolbar.font_picker_open;
+            }
+            toolbar::Message::FontPickerDismissed => {
+                self.toolbar.font_picker_open = false;
+                return self.refocus_editing_widget();
+            }
             toolbar::Message::FontSelected(option) => {
+                self.toolbar.font_picker_open = false;
                 return self.update(Message::ChangeFont(option.id));
             }
             toolbar::Message::FontSizeInput(input) => {

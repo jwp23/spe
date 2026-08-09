@@ -71,6 +71,8 @@ pub struct ToolbarState {
     /// after a submit whose GoToPage path refocuses the overlay editor
     /// instead.
     pub page_input_id: iced::widget::Id,
+    /// Whether the font picker's family list is showing.
+    pub font_picker_open: bool,
 }
 
 impl ToolbarState {
@@ -82,6 +84,7 @@ impl ToolbarState {
             page_input: "1".to_string(),
             font_size_input_id: iced::widget::Id::unique(),
             page_input_id: iced::widget::Id::unique(),
+            font_picker_open: false,
         }
     }
 }
@@ -94,6 +97,11 @@ pub enum Message {
     SaveAs,
     Undo,
     Redo,
+    /// The font picker's anchor button was pressed: show or hide the list.
+    FontPickerToggled,
+    /// The open font picker was closed without picking a family (Escape, or
+    /// a click outside the list).
+    FontPickerDismissed,
     FontSelected(FontOption),
     FontSizeInput(String),
     FontSizeSubmit,
