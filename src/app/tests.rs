@@ -1075,6 +1075,7 @@ fn command_response_reports_failure_when_load_failed() {
     let response = app.command_response(crate::ipc::IpcResponse {
         ok: true,
         error: None,
+        warning: None,
     });
     assert!(!response.ok, "a failed load must not report ok:true");
     assert!(response.error.is_some());
@@ -1092,10 +1093,42 @@ fn command_response_reports_success_when_load_succeeded() {
     let ok_response = crate::ipc::IpcResponse {
         ok: true,
         error: None,
+        warning: None,
     };
     let response = app.command_response(ok_response);
     assert!(response.ok);
     assert!(response.error.is_none());
+}
+
+#[test]
+fn command_response_includes_warning_recorded_by_the_handler() {
+    let (mut app, _) = App::new(false);
+    app.last_command_warning = Some("replaced with '?': '中' (U+4E2D)".to_string());
+    let response = app.command_response(crate::ipc::IpcResponse {
+        ok: true,
+        error: None,
+        warning: None,
+    });
+    assert!(response.ok);
+    assert_eq!(
+        response.warning.as_deref(),
+        Some("replaced with '?': '中' (U+4E2D)")
+    );
+    assert!(
+        app.last_command_warning.is_none(),
+        "the warning should be consumed once reported, so it doesn't leak into the next command"
+    );
+}
+
+#[test]
+fn command_response_omits_warning_when_handler_recorded_none() {
+    let (mut app, _) = App::new(false);
+    let response = app.command_response(crate::ipc::IpcResponse {
+        ok: true,
+        error: None,
+        warning: None,
+    });
+    assert!(response.warning.is_none());
 }
 
 #[test]
@@ -1152,8 +1185,8 @@ fn save_destination_sets_status_message_on_success() {
 }
 
 /// Place a single overlay containing `text` on page 1, save it, and return the
-/// resulting status toast.
-fn save_with_text(text: &str) -> String {
+/// app afterward so callers can inspect the toast and/or `last_command_warning`.
+fn save_app_with_text(text: &str) -> App {
     let mut app = test_app_with_document();
     let tmp_source = make_temp_pdf();
     let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
@@ -1171,7 +1204,14 @@ fn save_with_text(text: &str) -> String {
     app.update(Message::SaveDestinationChosen(
         tmp_dest.path().to_path_buf(),
     ));
-    app.status_message
+    app
+}
+
+/// Place a single overlay containing `text` on page 1, save it, and return the
+/// resulting status toast.
+fn save_with_text(text: &str) -> String {
+    save_app_with_text(text)
+        .status_message
         .as_ref()
         .expect("status message")
         .0
@@ -1226,6 +1266,34 @@ fn save_status_stays_quiet_when_every_character_encodes() {
     assert!(
         !msg.contains('?'),
         "a losslessly encoded save must not warn: '{msg}'"
+    );
+}
+
+/// A save that substituted characters must surface that in `last_command_warning`
+/// too, mirroring the status toast, so an IPC `save` client — which never sees the
+/// toast — learns about the substitution the same way (spe-i1b, #127).
+#[test]
+fn save_records_a_command_warning_naming_substituted_characters() {
+    let app = save_app_with_text("\u{4e2d}");
+
+    let warning = app
+        .last_command_warning
+        .as_deref()
+        .expect("a save with substitutions must record a command warning");
+    assert!(
+        warning.contains("'\u{4e2d}' (U+4E2D)"),
+        "the substituted character must be named with its codepoint: '{warning}'"
+    );
+}
+
+#[test]
+fn save_records_no_command_warning_when_every_character_encodes() {
+    let app = save_app_with_text("caf\u{e9}");
+
+    assert!(
+        app.last_command_warning.is_none(),
+        "a losslessly encoded save must not warn: {:?}",
+        app.last_command_warning
     );
 }
 
@@ -3229,6 +3297,7 @@ fn deliver_ipc_response_writes_to_channel() {
         crate::ipc::IpcResponse {
             ok: true,
             error: None,
+            warning: None,
         },
     ));
     let received = rx

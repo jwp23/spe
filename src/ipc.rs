@@ -395,6 +395,11 @@ fn click_at_message(
 pub struct IpcResponse {
     pub ok: bool,
     pub error: Option<String>,
+    /// Set on an `ok: true` response whose command still lost information the
+    /// caller should know about — e.g. a save that substituted characters the
+    /// PDF encoding cannot represent. Mirrors the in-app status toast so an
+    /// IPC client gets the same honesty guarantee (#127).
+    pub warning: Option<String>,
 }
 
 /// Wrapper around the response sender so it can be stored in App state.
@@ -498,7 +503,10 @@ async fn process_line(
 
     // Write the response back to the client.
     let resp_json = if response.ok {
-        serde_json::json!({"ok": true})
+        match response.warning {
+            Some(warning) => serde_json::json!({"ok": true, "warning": warning}),
+            None => serde_json::json!({"ok": true}),
+        }
     } else {
         serde_json::json!({
             "ok": false,
@@ -1538,6 +1546,7 @@ mod tests {
                 .send(IpcResponse {
                     ok: true,
                     error: None,
+                    warning: None,
                 })
                 .await
                 .unwrap();
@@ -1578,6 +1587,7 @@ mod tests {
                     .send(IpcResponse {
                         ok: true,
                         error: None,
+                        warning: None,
                     })
                     .await
                     .unwrap();
@@ -1618,6 +1628,7 @@ mod tests {
                     .send(IpcResponse {
                         ok: true,
                         error: None,
+                        warning: None,
                     })
                     .await
                     .unwrap();
@@ -1636,6 +1647,79 @@ mod tests {
 
             let reply = read_reply(&mut client).await;
             assert_eq!(reply["ok"], true);
+        });
+    }
+
+    /// A save that substituted characters must name them in the reply, mirroring
+    /// the in-app toast, so an IPC client — which never sees the toast — learns
+    /// about the substitution the same way (spe-i1b, #127).
+    #[test]
+    fn process_line_includes_warning_when_response_carries_one() {
+        run_async(async {
+            let (mut output, _output_rx, resp_tx, mut resp_rx, mut writer, mut client) =
+                process_line_harness();
+
+            tokio::spawn(async move {
+                resp_tx
+                    .send(IpcResponse {
+                        ok: true,
+                        error: None,
+                        warning: Some("replaced with '?': '中' (U+4E2D)".to_string()),
+                    })
+                    .await
+                    .unwrap();
+            });
+
+            let result = process_line(
+                r#"{"cmd":"save","path":"/tmp/out.pdf"}"#,
+                &mut output,
+                &mut resp_rx,
+                &mut writer,
+                std::time::Duration::from_secs(5),
+            )
+            .await;
+
+            assert!(result);
+
+            let reply = read_reply(&mut client).await;
+            assert_eq!(reply["ok"], true);
+            assert_eq!(reply["warning"], "replaced with '?': '中' (U+4E2D)");
+        });
+    }
+
+    #[test]
+    fn process_line_omits_warning_when_response_carries_none() {
+        run_async(async {
+            let (mut output, _output_rx, resp_tx, mut resp_rx, mut writer, mut client) =
+                process_line_harness();
+
+            tokio::spawn(async move {
+                resp_tx
+                    .send(IpcResponse {
+                        ok: true,
+                        error: None,
+                        warning: None,
+                    })
+                    .await
+                    .unwrap();
+            });
+
+            let result = process_line(
+                r#"{"cmd":"deselect"}"#,
+                &mut output,
+                &mut resp_rx,
+                &mut writer,
+                std::time::Duration::from_secs(5),
+            )
+            .await;
+
+            assert!(result);
+
+            let reply = read_reply(&mut client).await;
+            assert!(
+                reply.get("warning").is_none(),
+                "a response with no warning must not include the key: {reply}"
+            );
         });
     }
 }

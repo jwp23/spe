@@ -101,6 +101,11 @@ pub struct App {
     /// writing one. Those handlers record the reason here and the response path
     /// consumes it, so no command needs a field of its own.
     pub last_command_error: Option<String>,
+    /// Non-fatal information recorded by the handler of the IPC command
+    /// currently running, surfaced alongside an `ok: true` response — e.g. a
+    /// save that substituted characters the PDF encoding cannot represent.
+    /// Consumed the same way as [`App::last_command_error`] (spe-i1b, #127).
+    pub last_command_warning: Option<String>,
 }
 
 /// All messages the application can process.
@@ -226,6 +231,7 @@ impl App {
             presented_generation: 0,
             pending_frame_wait: None,
             last_command_error: None,
+            last_command_warning: None,
         };
         let mut font_tasks =
             vec![iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded)];
@@ -272,8 +278,12 @@ impl App {
             Some(error) => crate::ipc::IpcResponse {
                 ok: false,
                 error: Some(error),
+                warning: None,
             },
-            None => base,
+            None => crate::ipc::IpcResponse {
+                warning: self.last_command_warning.take(),
+                ..base
+            },
         }
     }
 
@@ -299,9 +309,11 @@ impl App {
         &mut self,
         cmd: crate::ipc::IpcCommand,
     ) -> (crate::ipc::IpcResponse, iced::Task<Message>) {
-        // Any error left by an earlier command was already reported; clearing it
-        // here keeps a stale failure from being blamed on this command.
+        // Any error or warning left by an earlier command was already
+        // reported; clearing them here keeps stale state from being blamed
+        // on this command.
         self.last_command_error = None;
+        self.last_command_warning = None;
 
         let msg = match cmd.to_message(&self.ipc_context(), &self.font_registry) {
             Ok(msg) => msg,
@@ -310,6 +322,7 @@ impl App {
                     crate::ipc::IpcResponse {
                         ok: false,
                         error: Some(e.to_string()),
+                        warning: None,
                     },
                     iced::Task::none(),
                 );
@@ -319,6 +332,7 @@ impl App {
         let response = self.command_response(crate::ipc::IpcResponse {
             ok: true,
             error: None,
+            warning: None,
         });
         (response, task)
     }
@@ -330,6 +344,7 @@ impl App {
             return self.send_ipc_response(crate::ipc::IpcResponse {
                 ok: true,
                 error: None,
+                warning: None,
             });
         }
         iced::Task::none()
@@ -345,6 +360,7 @@ impl App {
             return self.send_ipc_response(crate::ipc::IpcResponse {
                 ok: true,
                 error: None,
+                warning: None,
             });
         }
         iced::Task::none()
@@ -526,6 +542,7 @@ impl App {
                     self.send_ipc_response(crate::ipc::IpcResponse {
                         ok: true,
                         error: None,
+                        warning: None,
                     })
                 } else {
                     self.pending_ipc_wait = true;
@@ -556,6 +573,7 @@ impl App {
                     self.send_ipc_response(crate::ipc::IpcResponse {
                         ok: true,
                         error: None,
+                        warning: None,
                     })
                 } else {
                     self.pending_frame_wait = Some(target);
