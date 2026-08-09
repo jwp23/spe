@@ -3932,3 +3932,99 @@ fn selecting_a_different_overlay_ends_the_multiline_edit_session() {
     );
     assert_history_matches_document(&app, "after selecting away from a multiline edit");
 }
+
+// =====================================================================
+// spe-xqb: wait_frame — a signal for "a frame reflecting the latest
+// state has been presented", replacing the visual-regression settle sleep.
+// =====================================================================
+
+#[test]
+fn state_generation_advances_on_every_processed_message() {
+    let (mut app, _) = App::new(false);
+    let before = app.state_generation;
+    app.update(Message::Noop);
+    assert_eq!(app.state_generation, before + 1);
+    app.update(Message::Noop);
+    assert_eq!(app.state_generation, before + 2);
+}
+
+#[test]
+fn frame_presented_records_the_generation_as_of_the_redraw() {
+    let (mut app, _) = App::new(false);
+    app.update(Message::Noop);
+    let expected = app.state_generation + 1; // FramePresented itself advances state_generation.
+    app.update(Message::FramePresented);
+    assert_eq!(app.presented_generation, expected);
+}
+
+#[test]
+fn frame_event_to_message_maps_redraw_requested() {
+    let event = iced::Event::Window(iced::window::Event::RedrawRequested(
+        std::time::Instant::now(),
+    ));
+    let msg = frame_event_to_message(
+        event,
+        iced::event::Status::Ignored,
+        iced::window::Id::unique(),
+    );
+    assert!(matches!(msg, Some(Message::FramePresented)));
+}
+
+#[test]
+fn frame_event_to_message_ignores_other_events() {
+    let event = iced::Event::Window(iced::window::Event::Focused);
+    let msg = frame_event_to_message(
+        event,
+        iced::event::Status::Ignored,
+        iced::window::Id::unique(),
+    );
+    assert!(msg.is_none());
+}
+
+#[test]
+fn ipc_wait_frame_already_presented_resolves_immediately() {
+    let (mut app, _) = App::new(true);
+    let _rx = attach_ipc_response_sender(&mut app);
+    // No prior mutation: presented_generation (0) already covers state_generation.
+    let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::WaitFrame));
+    assert!(
+        app.pending_frame_wait.is_none(),
+        "an already-presented wait must resolve immediately, not sit pending"
+    );
+}
+
+#[test]
+fn ipc_wait_frame_not_yet_presented_sets_pending() {
+    let mut app = test_app_with_document();
+    let _rx = attach_ipc_response_sender(&mut app);
+    // Mutate state without a following FramePresented: presented_generation lags.
+    app.update(Message::Noop);
+    let generation_before_wait = app.state_generation;
+    let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::WaitFrame));
+    // The target excludes WaitFrame's own generation bump, so a wait already
+    // satisfied by the preceding command's redraw resolves immediately
+    // instead of always paying for one needless extra redraw round-trip (see
+    // the comment on IpcEvent::WaitFrame in src/app/mod.rs for the empirical
+    // check that a self-inclusive target would not hang either — just cost
+    // that avoidable extra frame).
+    assert_eq!(app.pending_frame_wait, Some(generation_before_wait));
+}
+
+#[test]
+fn check_ipc_frame_wait_clears_pending_once_presented_catches_up() {
+    let (mut app, _) = App::new(true);
+    let _rx = attach_ipc_response_sender(&mut app);
+    app.pending_frame_wait = Some(app.state_generation);
+    app.presented_generation = app.state_generation;
+    let _ = app.check_ipc_frame_wait();
+    assert!(app.pending_frame_wait.is_none());
+}
+
+#[test]
+fn check_ipc_frame_wait_keeps_pending_when_not_yet_presented() {
+    let (mut app, _) = App::new(true);
+    let _rx = attach_ipc_response_sender(&mut app);
+    app.pending_frame_wait = Some(app.state_generation + 1);
+    let _ = app.check_ipc_frame_wait();
+    assert!(app.pending_frame_wait.is_some());
+}

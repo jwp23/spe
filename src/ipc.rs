@@ -178,6 +178,9 @@ pub enum IpcCommand {
     Undo,
     Redo,
     WaitReady,
+    /// Wait until a redraw has completed reflecting every command processed
+    /// before this one. See [`IpcEvent::WaitFrame`].
+    WaitFrame,
 }
 
 /// Upper bound on how long the IPC subscription waits for the app to answer a
@@ -344,6 +347,7 @@ impl IpcCommand {
                 Ok(Message::Redo)
             }
             IpcCommand::WaitReady => Ok(Message::Noop),
+            IpcCommand::WaitFrame => Ok(Message::Noop),
         }
     }
 }
@@ -407,6 +411,9 @@ pub enum IpcEvent {
     Command(IpcCommand),
     /// A WaitReady request — app should check idle state.
     WaitReady,
+    /// A WaitFrame request — app should check whether a redraw has completed
+    /// reflecting every command processed so far.
+    WaitFrame,
 }
 
 /// Creates the IPC subscription. Returns events that the app maps to Messages.
@@ -465,6 +472,8 @@ async fn process_line(
     // Yield the appropriate event to the app.
     if matches!(cmd, IpcCommand::WaitReady) {
         let _ = output.send(IpcEvent::WaitReady).await;
+    } else if matches!(cmd, IpcCommand::WaitFrame) {
+        let _ = output.send(IpcEvent::WaitFrame).await;
     } else {
         let _ = output.send(IpcEvent::Command(cmd)).await;
     }
@@ -973,6 +982,22 @@ mod tests {
         let json = r#"{"cmd": "wait_ready"}"#;
         let cmd: IpcCommand = serde_json::from_str(json).unwrap();
         assert!(matches!(cmd, IpcCommand::WaitReady));
+    }
+
+    #[test]
+    fn parse_wait_frame_command() {
+        let json = r#"{"cmd": "wait_frame"}"#;
+        let cmd: IpcCommand = serde_json::from_str(json).unwrap();
+        assert!(matches!(cmd, IpcCommand::WaitFrame));
+    }
+
+    #[test]
+    fn wait_frame_produces_noop() {
+        let cmd = IpcCommand::WaitFrame;
+        let msg = cmd
+            .to_message(&CommandContext::default(), &test_registry())
+            .unwrap();
+        assert!(matches!(msg, Message::Noop));
     }
 
     #[test]
@@ -1538,6 +1563,45 @@ mod tests {
             assert_eq!(
                 reply["ok"], false,
                 "stale response leaked to the next command: {reply}"
+            );
+        });
+    }
+
+    #[test]
+    fn process_line_dispatches_wait_frame_as_its_own_event() {
+        run_async(async {
+            let (mut output, mut output_rx, resp_tx, mut resp_rx, mut writer, mut _client) =
+                process_line_harness();
+
+            tokio::spawn(async move {
+                resp_tx
+                    .send(IpcResponse {
+                        ok: true,
+                        error: None,
+                    })
+                    .await
+                    .unwrap();
+            });
+
+            let result = process_line(
+                r#"{"cmd":"wait_frame"}"#,
+                &mut output,
+                &mut resp_rx,
+                &mut writer,
+                std::time::Duration::from_secs(5),
+            )
+            .await;
+            assert!(result);
+
+            let event = output_rx
+                .try_next()
+                .expect("an event should have been queued")
+                .expect("the output channel must still be open");
+            assert!(
+                matches!(event, IpcEvent::WaitFrame),
+                "wait_frame must dispatch as IpcEvent::WaitFrame, not a generic Command, \
+                 so the app can check presented_generation instead of running it through \
+                 to_message: {event:?}"
             );
         });
     }

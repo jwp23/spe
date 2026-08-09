@@ -131,6 +131,26 @@ the real filesystem error the same way.
 | Zoom reset | `{"cmd": "zoom_reset"}` |
 | Zoom fit width | `{"cmd": "zoom_fit_width"}` |
 | Wait for idle | `{"cmd": "wait_ready"}` |
+| Wait for a presented frame | `{"cmd": "wait_frame"}` |
+
+### `wait_ready` vs `wait_frame`
+
+`wait_ready` blocks until every page image has been rendered by `pdftoppm`
+(page load / zoom). It says nothing about whether the *overlay* changes from a
+`click`, `type`, `deselect`, etc. have actually reached the screen.
+
+`wait_frame` blocks until iced has drawn and submitted a frame that reflects
+every command sent before it — the fix for the race that used to require a
+fixed settle sleep before `capture` (see spe-xqb and the comments in
+`scripts/visual-regression.sh`). Send it right before `capture` after any UI
+mutation. It does not replace `wait_ready`; page rendering is a different,
+slower pipeline (`pdftoppm` subprocess vs. GPU frame), so both are typically
+needed: `wait_ready` after `open`/zoom, `wait_frame` right before `capture`.
+This guarantee covers commands whose handler doesn't chain a trailing task
+that delivers its own message later (`click`, `click_at`, `drag`, `type`,
+`select`, `deselect` all qualify) — see "Staleness window" in
+`docs/visual-regression.md` for the full audit and the `open`/`zoom_*`
+exceptions.
 
 ### `click` vs `click_at`
 
