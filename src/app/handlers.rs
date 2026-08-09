@@ -647,14 +647,29 @@ impl App {
 
     fn set_save_result(
         &mut self,
-        result: Result<(), impl std::fmt::Display>,
+        result: Result<crate::pdf::writer::SaveReport, impl std::fmt::Display>,
         dest: &std::path::Path,
     ) {
         match result {
-            Ok(()) => {
+            Ok(report) => {
                 let filename = dest.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-                self.status_message =
-                    Some((format!("Saved to {filename}"), std::time::Instant::now()));
+                // Characters the PDF text encoding cannot represent are written
+                // as `?`, which is silent data loss unless it is named here.
+                let substitutions = if report.unencodable_chars.is_empty() {
+                    String::new()
+                } else {
+                    let listed: String = report
+                        .unencodable_chars
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!(" — replaced with '?': {listed}")
+                };
+                self.status_message = Some((
+                    format!("Saved to {filename}{substitutions}"),
+                    std::time::Instant::now(),
+                ));
                 self.last_command_error = None;
             }
             Err(e) => {
@@ -687,7 +702,10 @@ impl App {
             // Prevent saving over the source file to avoid data loss on
             // write failure (the source would already be truncated).
             if denotes_same_file(&path, &doc.source_path) {
-                self.set_save_result(Err::<(), _>("cannot overwrite the source file"), &path);
+                self.set_save_result(
+                    Err::<crate::pdf::writer::SaveReport, _>("cannot overwrite the source file"),
+                    &path,
+                );
             } else {
                 let source = doc.source_path.clone();
                 let overlays = doc.overlays.clone();

@@ -1,12 +1,13 @@
 // PDF text overlay writing via lopdf.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use lopdf::content::{Content, Operation};
 use lopdf::{Document, Object, Stream, dictionary};
 use thiserror::Error;
 
+use super::win_ansi;
 use crate::fonts::{FontDescriptorInfo, FontId, FontRegistry, PdfEmbedding};
 use crate::overlay::TextOverlay;
 
@@ -24,6 +25,14 @@ pub enum WriterError {
         #[source]
         source: lopdf::Error,
     },
+}
+
+/// What a completed save is worth telling the user about.
+#[derive(Debug, Default, PartialEq)]
+pub struct SaveReport {
+    /// Characters WinAnsiEncoding cannot represent, each listed once in
+    /// first-seen order. They were written as `?`.
+    pub unencodable_chars: Vec<char>,
 }
 
 /// Maps FontIds to PDF resource names, tracking which font objects need to be added to the page.
@@ -59,14 +68,19 @@ fn build_font_mapping(
 ) -> FontMapping {
     // Build a map from resource name -> BaseFont for the page's existing fonts.
     // Uses lopdf's get_page_fonts which resolves inherited resources from parent nodes.
-    let existing: HashMap<Vec<u8>, Vec<u8>> = doc
+    type FontIdentity = (Vec<u8>, Option<Vec<u8>>);
+    let existing: HashMap<Vec<u8>, FontIdentity> = doc
         .get_page_fonts(page_id)
         .map(|fonts| {
             fonts
                 .into_iter()
                 .filter_map(|(key, fd)| {
                     if let Ok(Object::Name(base)) = fd.get(b"BaseFont") {
-                        Some((key, base.clone()))
+                        let encoding = match fd.get(b"Encoding") {
+                            Ok(Object::Name(name)) => Some(name.clone()),
+                            _ => None,
+                        };
+                        Some((key, (base.clone(), encoding)))
                     } else {
                         None
                     }
@@ -83,10 +97,15 @@ fn build_font_mapping(
         let entry = registry.get(*font);
         let base_font_bytes = entry.pdf_name.as_bytes();
 
-        // Check if any existing resource already maps to this BaseFont.
+        // Reuse an existing resource only when it names the same font *and*
+        // reads bytes the way the overlay writes them; a font left on the
+        // default StandardEncoding would show the wrong glyphs for our bytes.
+        let wanted_encoding = win_ansi_encoding_for(entry.pdf_name);
         let reuse_name = existing
             .iter()
-            .find(|(_, base)| base.as_slice() == base_font_bytes)
+            .find(|(_, (base, encoding))| {
+                base.as_slice() == base_font_bytes && encoding.as_deref() == wanted_encoding
+            })
             .map(|(key, _)| String::from_utf8_lossy(key).into_owned());
 
         if let Some(name) = reuse_name {
@@ -102,11 +121,17 @@ fn build_font_mapping(
                 .expect("infinite iterator always finds a free name");
 
             let font_obj_id = match &entry.embedding {
-                PdfEmbedding::BuiltIn => doc.add_object(dictionary! {
-                    "Type" => "Font",
-                    "Subtype" => "Type1",
-                    "BaseFont" => Object::Name(base_font_bytes.to_vec()),
-                }),
+                PdfEmbedding::BuiltIn => {
+                    let mut font = dictionary! {
+                        "Type" => "Font",
+                        "Subtype" => "Type1",
+                        "BaseFont" => Object::Name(base_font_bytes.to_vec()),
+                    };
+                    if let Some(encoding) = wanted_encoding {
+                        font.set("Encoding", Object::Name(encoding.to_vec()));
+                    }
+                    doc.add_object(font)
+                }
                 PdfEmbedding::TrueType { bytes } => {
                     create_truetype_font_object(doc, entry, base_font_bytes, bytes)
                 }
@@ -119,6 +144,17 @@ fn build_font_mapping(
     FontMapping {
         resource_names,
         new_font_objects,
+    }
+}
+
+/// The `/Encoding` a Standard 14 font must declare so its bytes are read as
+/// WinAnsi, or `None` for the two symbolic fonts (Symbol and ZapfDingbats),
+/// whose own built-in encodings WinAnsiEncoding would override with the wrong
+/// glyphs.
+fn win_ansi_encoding_for(pdf_name: &str) -> Option<&'static [u8]> {
+    match pdf_name {
+        "Symbol" | "ZapfDingbats" => None,
+        _ => Some(b"WinAnsiEncoding"),
     }
 }
 
@@ -178,7 +214,7 @@ fn create_truetype_font_object(
 
     let to_unicode_id = doc.add_object(Stream::new(
         dictionary! {},
-        win_ansi_to_unicode_cmap().into_bytes(),
+        win_ansi::to_unicode_cmap().into_bytes(),
     ));
 
     doc.add_object(dictionary! {
@@ -192,72 +228,6 @@ fn create_truetype_font_object(
         "Encoding" => "WinAnsiEncoding",
         "ToUnicode" => Object::Reference(to_unicode_id),
     })
-}
-
-/// The 27 WinAnsiEncoding codes in 0x80-0x9F whose Unicode values differ from
-/// Latin-1. The remaining codes in that block are undefined and left unmapped.
-const WIN_ANSI_HIGH_CONTROL_BLOCK: &[(u8, u32)] = &[
-    (0x80, 0x20AC),
-    (0x82, 0x201A),
-    (0x83, 0x0192),
-    (0x84, 0x201E),
-    (0x85, 0x2026),
-    (0x86, 0x2020),
-    (0x87, 0x2021),
-    (0x88, 0x02C6),
-    (0x89, 0x2030),
-    (0x8A, 0x0160),
-    (0x8B, 0x2039),
-    (0x8C, 0x0152),
-    (0x8E, 0x017D),
-    (0x91, 0x2018),
-    (0x92, 0x2019),
-    (0x93, 0x201C),
-    (0x94, 0x201D),
-    (0x95, 0x2022),
-    (0x96, 0x2013),
-    (0x97, 0x2014),
-    (0x98, 0x02DC),
-    (0x99, 0x2122),
-    (0x9A, 0x0161),
-    (0x9B, 0x203A),
-    (0x9C, 0x0153),
-    (0x9E, 0x017E),
-    (0x9F, 0x0178),
-];
-
-/// Build a ToUnicode CMap (PDF 32000-1 §9.10.3) mapping WinAnsiEncoding character
-/// codes to Unicode, so readers can extract, copy and search text shown in an
-/// embedded TrueType font instead of treating it as unmappable glyphs.
-///
-/// The ASCII and Latin-1 stretches are emitted as ranges; only WinAnsi's
-/// 0x80-0x9F block, which diverges from Latin-1, needs per-code entries.
-fn win_ansi_to_unicode_cmap() -> String {
-    let mut cmap = String::from(
-        "/CIDInit /ProcSet findresource begin\n\
-         12 dict begin\n\
-         begincmap\n\
-         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
-         /CMapName /Adobe-Identity-UCS def\n\
-         /CMapType 2 def\n\
-         1 begincodespacerange\n\
-         <20> <FF>\n\
-         endcodespacerange\n\
-         2 beginbfrange\n\
-         <20> <7E> <0020>\n\
-         <A0> <FF> <00A0>\n\
-         endbfrange\n",
-    );
-
-    cmap.push_str(&format!(
-        "{} beginbfchar\n",
-        WIN_ANSI_HIGH_CONTROL_BLOCK.len()
-    ));
-    for &(code, unicode) in WIN_ANSI_HIGH_CONTROL_BLOCK {
-        cmap.push_str(&format!("<{code:02X}> <{unicode:04X}>\n"));
-    }
-    cmap.push_str("endbfchar\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
-    cmap
 }
 
 /// Add new font objects to the page's Resources/Font dictionary.
@@ -305,13 +275,20 @@ fn install_page_fonts(
     }
 }
 
+/// A page's overlay content stream operations, with whatever the encoding lost.
+struct OverlayContent {
+    operations: Vec<Operation>,
+    unencodable: Vec<char>,
+}
+
 /// Build PDF content stream operations (BT/Tf/Td/Tj/ET) for a set of overlays.
 fn build_overlay_operations(
     page_overlays: &[&TextOverlay],
     font_resource_names: &HashMap<FontId, String>,
     registry: &FontRegistry,
-) -> Vec<Operation> {
+) -> OverlayContent {
     let mut operations: Vec<Operation> = Vec::new();
+    let mut unencodable: Vec<char> = Vec::new();
     for overlay in page_overlays {
         let resource_name = font_resource_names
             .get(&overlay.font)
@@ -347,18 +324,26 @@ fn build_overlay_operations(
                     vec![Object::Real(0.0), Object::Real(-leading)],
                 ));
             }
+            // A PDF shows text as bytes read through the font's /Encoding, so
+            // the line must be encoded to WinAnsi rather than emitted as UTF-8.
+            let encoded = win_ansi::encode(line);
+            for c in encoded.unencodable {
+                if !unencodable.contains(&c) {
+                    unencodable.push(c);
+                }
+            }
             operations.push(Operation::new(
                 "Tj",
-                vec![Object::String(
-                    line.as_bytes().to_vec(),
-                    lopdf::StringFormat::Literal,
-                )],
+                vec![Object::String(encoded.bytes, lopdf::StringFormat::Literal)],
             ));
         }
 
         operations.push(Operation::new("ET", vec![]));
     }
-    operations
+    OverlayContent {
+        operations,
+        unencodable,
+    }
 }
 
 /// Create a content stream from raw bytes and append it to the page's Contents.
@@ -419,7 +404,7 @@ pub fn write_overlays(
     destination: &Path,
     overlays: &[TextOverlay],
     registry: &FontRegistry,
-) -> Result<(), WriterError> {
+) -> Result<SaveReport, WriterError> {
     let mut doc = Document::load(source).map_err(WriterError::OpenFailed)?;
 
     if overlays.is_empty() {
@@ -428,7 +413,7 @@ pub fn write_overlays(
         // empty-overlay save is never silently a no-op.
         return doc
             .save(destination)
-            .map(|_| ())
+            .map(|_| SaveReport::default())
             .map_err(|e| WriterError::SaveFailed {
                 path: destination.to_path_buf(),
                 source: lopdf::Error::IO(e),
@@ -448,7 +433,8 @@ pub fn write_overlays(
     }
 
     // Group overlays by page number so each page gets a single content stream.
-    let mut overlays_by_page: HashMap<u32, Vec<&TextOverlay>> = HashMap::new();
+    // Ordered by page so the save report reads the same way on every run.
+    let mut overlays_by_page: BTreeMap<u32, Vec<&TextOverlay>> = BTreeMap::new();
     for overlay in overlays {
         overlays_by_page
             .entry(overlay.page)
@@ -456,20 +442,27 @@ pub fn write_overlays(
             .push(overlay);
     }
 
+    let mut report = SaveReport::default();
     for (page_num, page_overlays) in &overlays_by_page {
         let &page_id = pages.get(page_num).expect("validated above");
 
         let needed_fonts = collect_unique_fonts(page_overlays);
         let mapping = build_font_mapping(&mut doc, page_id, &needed_fonts, registry);
         install_page_fonts(&mut doc, page_id, mapping.new_font_objects);
-        let operations = build_overlay_operations(page_overlays, &mapping.resource_names, registry);
-        let content_bytes =
-            Content { operations }
-                .encode()
-                .map_err(|e| WriterError::SaveFailed {
-                    path: destination.to_path_buf(),
-                    source: e,
-                })?;
+        let content = build_overlay_operations(page_overlays, &mapping.resource_names, registry);
+        for c in content.unencodable {
+            if !report.unencodable_chars.contains(&c) {
+                report.unencodable_chars.push(c);
+            }
+        }
+        let content_bytes = Content {
+            operations: content.operations,
+        }
+        .encode()
+        .map_err(|e| WriterError::SaveFailed {
+            path: destination.to_path_buf(),
+            source: e,
+        })?;
         embed_content_stream(&mut doc, page_id, content_bytes);
     }
 
@@ -478,7 +471,7 @@ pub fn write_overlays(
         source: lopdf::Error::IO(e),
     })?;
 
-    Ok(())
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -486,17 +479,28 @@ mod tests {
     use super::*;
     use tempfile::NamedTempFile;
 
-    /// Builds a minimal single-page PDF and saves it to `path`.
+    /// Builds a minimal single-page PDF and saves it to `path`. Its Helvetica
+    /// page font declares WinAnsiEncoding, as real-world text PDFs do.
     fn create_test_pdf(path: &Path) {
+        create_test_pdf_with_font_encoding(path, Some("WinAnsiEncoding"));
+    }
+
+    /// Builds the same PDF with `encoding` on the page's Helvetica font, or no
+    /// `/Encoding` entry at all when `None` (leaving it on StandardEncoding).
+    fn create_test_pdf_with_font_encoding(path: &Path, encoding: Option<&str>) {
         let mut doc = Document::with_version("1.5");
 
         let pages_id = doc.new_object_id();
 
-        let font_id = doc.add_object(dictionary! {
+        let mut font = dictionary! {
             "Type" => "Font",
             "Subtype" => "Type1",
             "BaseFont" => "Helvetica",
-        });
+        };
+        if let Some(encoding) = encoding {
+            font.set("Encoding", Object::Name(encoding.as_bytes().to_vec()));
+        }
+        let font_id = doc.add_object(font);
 
         let resources_id = doc.add_object(dictionary! {
             "Font" => dictionary! {
@@ -1409,123 +1413,6 @@ mod tests {
         );
     }
 
-    /// Resolve `code` through a ToUnicode CMap by parsing its bfchar and bfrange
-    /// sections, so tests assert on what a PDF reader would actually resolve
-    /// rather than on the literal text of the stream.
-    fn cmap_lookup(cmap: &str, code: u8) -> Option<u32> {
-        let hex =
-            |s: &str| u32::from_str_radix(s.trim_start_matches('<').trim_end_matches('>'), 16);
-
-        let mut in_bfchar = false;
-        let mut in_bfrange = false;
-        for line in cmap.lines() {
-            let line = line.trim();
-            match line {
-                "endbfchar" => in_bfchar = false,
-                "endbfrange" => in_bfrange = false,
-                _ if line.ends_with("beginbfchar") => in_bfchar = true,
-                _ if line.ends_with("beginbfrange") => in_bfrange = true,
-                _ if in_bfchar => {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() == 2
-                        && let (Ok(src), Ok(dst)) = (hex(parts[0]), hex(parts[1]))
-                        && src == u32::from(code)
-                    {
-                        return Some(dst);
-                    }
-                }
-                _ if in_bfrange => {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() == 3
-                        && let (Ok(lo), Ok(hi), Ok(dst)) =
-                            (hex(parts[0]), hex(parts[1]), hex(parts[2]))
-                        && (lo..=hi).contains(&u32::from(code))
-                    {
-                        return Some(dst + u32::from(code) - lo);
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
-    /// The entry count a `N begin<kind>` header declares, paired with the number
-    /// of entry lines actually present before the matching `end<kind>`.
-    fn section_entry_counts(cmap: &str, kind: &str) -> (usize, usize) {
-        let mut declared = 0;
-        let mut actual = 0;
-        let mut in_section = false;
-        for line in cmap.lines() {
-            let line = line.trim();
-            if line == format!("end{kind}") {
-                in_section = false;
-            } else if let Some(count) = line.strip_suffix(&format!(" begin{kind}")) {
-                declared = count.parse().expect("section header must declare a count");
-                in_section = true;
-            } else if in_section {
-                actual += 1;
-            }
-        }
-        (declared, actual)
-    }
-
-    #[test]
-    fn tounicode_cmap_has_required_cmap_structure() {
-        let cmap = win_ansi_to_unicode_cmap();
-
-        for required in [
-            "/CIDInit /ProcSet findresource begin",
-            "begincmap",
-            "/CMapName /Adobe-Identity-UCS def",
-            "/CMapType 2 def",
-            "begincodespacerange",
-            "<20> <FF>",
-            "endcodespacerange",
-            "endcmap",
-        ] {
-            assert!(
-                cmap.contains(required),
-                "ToUnicode CMap must contain `{required}`, got:\n{cmap}"
-            );
-        }
-
-        // A declared count that disagrees with the entries present is the mistake a
-        // hand-formatted CMap is most likely to make, and readers trust the header.
-        for (kind, expected) in [("codespacerange", 1), ("bfrange", 2), ("bfchar", 27)] {
-            let (declared, actual) = section_entry_counts(&cmap, kind);
-            assert_eq!(
-                declared, expected,
-                "`{kind}` header should declare {expected} entries"
-            );
-            assert_eq!(
-                actual, expected,
-                "`{kind}` section should contain {expected} entry lines"
-            );
-        }
-    }
-
-    #[test]
-    fn tounicode_cmap_maps_win_ansi_codes_to_unicode() {
-        let cmap = win_ansi_to_unicode_cmap();
-
-        // ASCII range maps to identical codepoints.
-        assert_eq!(cmap_lookup(&cmap, b' '), Some(0x0020));
-        assert_eq!(cmap_lookup(&cmap, b'H'), Some(0x0048));
-        assert_eq!(cmap_lookup(&cmap, b'~'), Some(0x007E));
-        // Latin-1 upper range maps to identical codepoints.
-        assert_eq!(cmap_lookup(&cmap, 0xA9), Some(0x00A9)); // copyright
-        assert_eq!(cmap_lookup(&cmap, 0xFF), Some(0x00FF)); // y with diaeresis
-        // WinAnsi's 0x80-0x9F block differs from Latin-1.
-        assert_eq!(cmap_lookup(&cmap, 0x80), Some(0x20AC)); // euro
-        assert_eq!(cmap_lookup(&cmap, 0x92), Some(0x2019)); // right single quote
-        assert_eq!(cmap_lookup(&cmap, 0x9F), Some(0x0178)); // Y with diaeresis
-        // Codes WinAnsi leaves undefined have no mapping.
-        for code in [0x81, 0x8D, 0x8F, 0x90, 0x9D] {
-            assert_eq!(cmap_lookup(&cmap, code), None);
-        }
-    }
-
     #[test]
     fn write_truetype_overlay_adds_tounicode_cmap() {
         use crate::fonts::{FontEntry, FontRegistry, PdfEmbedding, WidthTable};
@@ -1584,15 +1471,9 @@ mod tests {
         )
         .expect("CMap must be valid UTF-8");
 
-        // Every character actually shown must resolve back to its own codepoint.
-        for c in "Hello".chars() {
-            assert_eq!(
-                cmap_lookup(&cmap, c as u8),
-                Some(c as u32),
-                "CMap must map `{c}` back to U+{:04X}",
-                c as u32
-            );
-        }
+        // The stream must be the WinAnsi CMap itself, whose contents the
+        // `win_ansi` module tests in detail.
+        assert_eq!(cmap, win_ansi::to_unicode_cmap());
     }
 
     #[test]
@@ -1669,7 +1550,165 @@ mod tests {
         );
     }
 
+    #[test]
+    fn write_overlay_emits_non_ascii_text_as_win_ansi_bytes() {
+        let registry = FontRegistry::new();
+        let (_, doc) = write_one_overlay("café — €5", registry.default_font(), &registry);
+
+        assert_eq!(
+            overlay_tj_strings(&doc),
+            vec![b"caf\xE9 \x97 \x805".to_vec()],
+            "text must be shown in the encoding the font declares, not UTF-8"
+        );
+    }
+
+    #[test]
+    fn write_overlay_substitutes_question_mark_for_unencodable_characters() {
+        let registry = FontRegistry::new();
+        let (_, doc) = write_one_overlay("a中b", registry.default_font(), &registry);
+
+        assert_eq!(overlay_tj_strings(&doc), vec![b"a?b".to_vec()]);
+    }
+
+    #[test]
+    fn write_overlays_reports_characters_it_could_not_encode() {
+        let registry = FontRegistry::new();
+        let (report, _) = write_one_overlay("中 and 😀", registry.default_font(), &registry);
+
+        assert_eq!(report.unencodable_chars, vec!['中', '😀']);
+    }
+
+    #[test]
+    fn write_overlays_reports_nothing_when_all_text_is_encodable() {
+        let registry = FontRegistry::new();
+        let (report, _) = write_one_overlay("café — €5", registry.default_font(), &registry);
+
+        assert!(report.unencodable_chars.is_empty());
+    }
+
+    #[test]
+    fn write_builtin_overlay_declares_win_ansi_encoding() {
+        let registry = FontRegistry::new();
+        let font = registry.find_by_name("Helvetica").expect("Helvetica");
+        let (_, doc) = write_one_overlay("Standard", font, &registry);
+
+        assert_eq!(
+            page_font_dict(&doc, b"Helvetica").get(b"Encoding").ok(),
+            Some(&Object::Name(b"WinAnsiEncoding".to_vec())),
+            "a text font must declare the encoding its bytes are written in"
+        );
+    }
+
+    #[test]
+    fn write_overlays_does_not_reuse_a_page_font_with_a_different_encoding() {
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
+
+        // The page's Helvetica is on StandardEncoding, which would read the
+        // overlay's WinAnsi bytes as the wrong glyphs.
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf_with_font_encoding(src.path(), None);
+        let dst = NamedTempFile::new().expect("temp file");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "café".to_string(),
+            font: registry.find_by_name("Helvetica").expect("Helvetica"),
+            font_size: 12.0,
+            width: None,
+        };
+        write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let &page_id = doc.get_pages().get(&1).expect("page 1");
+        let helvetica_count = collect_page_font_names(&doc, page_id)
+            .iter()
+            .filter(|n| n.as_str() == "Helvetica")
+            .count();
+        assert_eq!(
+            helvetica_count, 2,
+            "the overlay needs its own WinAnsi-encoded Helvetica alongside the page's"
+        );
+    }
+
+    #[test]
+    fn write_symbolic_builtin_overlay_keeps_its_own_encoding() {
+        let registry = FontRegistry::new();
+        let font = registry.find_by_name("Symbol").expect("Symbol");
+        let (_, doc) = write_one_overlay("abg", font, &registry);
+
+        assert!(
+            page_font_dict(&doc, b"Symbol").get(b"Encoding").is_err(),
+            "Symbol has its own built-in encoding; WinAnsiEncoding would garble it"
+        );
+    }
+
     // --- Test helpers ---
+
+    /// Write one single-line overlay in `font` through the real writer and
+    /// return the save report alongside the reloaded document.
+    fn write_one_overlay(
+        text: &str,
+        font: crate::fonts::FontId,
+        registry: &FontRegistry,
+    ) -> (SaveReport, Document) {
+        use crate::overlay::{PdfPosition, TextOverlay};
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst = NamedTempFile::new().expect("temp file");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: text.to_string(),
+            font,
+            font_size: 12.0,
+            width: None,
+        };
+        let report =
+            write_overlays(src.path(), dst.path(), &[overlay], registry).expect("write failed");
+        (report, Document::load(dst.path()).expect("load failed"))
+    }
+
+    /// The font dictionary on page 1 whose BaseFont is `base_font`.
+    fn page_font_dict<'a>(doc: &'a Document, base_font: &[u8]) -> lopdf::Dictionary {
+        let &page_id = doc.get_pages().get(&1).expect("page 1");
+        doc.get_page_fonts(page_id)
+            .expect("get_page_fonts")
+            .values()
+            .find(|fd| matches!(fd.get(b"BaseFont"), Ok(Object::Name(n)) if n == base_font))
+            .map(|fd| (*fd).clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} not found in page fonts",
+                    String::from_utf8_lossy(base_font)
+                )
+            })
+    }
+
+    /// The operand bytes of every `Tj` in the overlay content stream (the last
+    /// stream on page 1), which is what a reader actually shows.
+    fn overlay_tj_strings(doc: &Document) -> Vec<Vec<u8>> {
+        let &page_id = doc.get_pages().get(&1).expect("page 1");
+        let overlay_stream_id = *doc.get_page_contents(page_id).last().expect("stream");
+        let stream_obj = doc.get_object(overlay_stream_id).expect("obj");
+        let content = stream_obj
+            .as_stream()
+            .expect("stream")
+            .decode_content()
+            .expect("decode");
+        content
+            .operations
+            .iter()
+            .filter(|o| o.operator == "Tj")
+            .map(|o| match o.operands.first() {
+                Some(Object::String(bytes, _)) => bytes.clone(),
+                other => panic!("Tj operand must be a string, got {other:?}"),
+            })
+            .collect()
+    }
 
     /// Collects all BaseFont names reachable from the font resources of `page_id`.
     fn collect_page_font_names(doc: &Document, page_id: lopdf::ObjectId) -> Vec<String> {

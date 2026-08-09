@@ -1152,6 +1152,60 @@ fn save_destination_sets_status_message_on_success() {
 }
 
 #[test]
+fn save_status_names_characters_the_pdf_encoding_could_not_represent() {
+    let mut app = test_app_with_document();
+    let tmp_source = make_temp_pdf();
+    let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("中".to_string()));
+    app.update(Message::DeselectOverlay);
+
+    let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
+    app.update(Message::SaveDestinationChosen(
+        tmp_dest.path().to_path_buf(),
+    ));
+
+    let (msg, _) = app.status_message.as_ref().expect("status message");
+    assert!(
+        msg.contains("Saved to"),
+        "the save still succeeded: '{msg}'"
+    );
+    assert!(
+        msg.contains('中'),
+        "the substituted character must be named: '{msg}'"
+    );
+}
+
+#[test]
+fn save_status_stays_quiet_when_every_character_encodes() {
+    let mut app = test_app_with_document();
+    let tmp_source = make_temp_pdf();
+    let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("café".to_string()));
+    app.update(Message::DeselectOverlay);
+
+    let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
+    app.update(Message::SaveDestinationChosen(
+        tmp_dest.path().to_path_buf(),
+    ));
+
+    let (msg, _) = app.status_message.as_ref().expect("status message");
+    assert!(
+        !msg.contains('?'),
+        "a losslessly encoded save must not warn: '{msg}'"
+    );
+}
+
+#[test]
 fn save_destination_sets_status_message_on_failure() {
     let mut app = test_app_with_document();
     let tmp_source = make_temp_pdf();
