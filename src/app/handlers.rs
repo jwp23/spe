@@ -98,7 +98,14 @@ impl App {
             && let Some(idx) = self.canvas.active_overlay
             && idx < doc.overlays.len()
         {
-            doc.overlays[idx].text = text;
+            doc.overlays[idx].text = text.clone();
+            // Multi-line overlays render from editor_content, not overlay.text
+            // directly (see handle_text_editor_action). Keep it in sync so the
+            // IPC `type` path converges on the same state real typing would
+            // produce (spe-jpw).
+            if self.editor_content.is_some() {
+                self.editor_content = Some(iced::widget::text_editor::Content::with_text(&text));
+            }
         }
     }
 

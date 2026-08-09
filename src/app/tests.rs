@@ -1265,6 +1265,42 @@ fn commit_text_clears_editor_content() {
     assert!(app.editor_content.is_none());
 }
 
+#[test]
+fn update_overlay_text_syncs_editor_content_for_multiline_overlay() {
+    // spe-jpw: the IPC `type` command dispatches UpdateOverlayText directly,
+    // bypassing TextEditorAction. For multi-line overlays the visible widget
+    // renders from editor_content, so editor_content must converge on the
+    // same text real typing would have produced.
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 500.0 },
+        width: Some(200.0),
+    });
+    app.update(Message::UpdateOverlayText("Hello\nWorld".to_string()));
+    let editor_text = app
+        .editor_content
+        .as_ref()
+        .expect("multi-line overlay must keep editor_content populated")
+        .text();
+    assert!(
+        editor_text.starts_with("Hello\nWorld"),
+        "editor_content should reflect the IPC-typed text, got: {editor_text:?}"
+    );
+}
+
+#[test]
+fn update_overlay_text_leaves_editor_content_none_for_singleline_overlay() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 500.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    assert!(app.editor_content.is_none());
+}
+
 // =====================================================================
 // EditOverlay tests
 // =====================================================================
