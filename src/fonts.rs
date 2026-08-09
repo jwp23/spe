@@ -271,6 +271,21 @@ fn build_ttf_width_table(font_bytes: &[u8]) -> WidthTable {
     WidthTable::Proportional { widths, default }
 }
 
+/// PDF font descriptor flag bits (PDF 32000-1 Table 123).
+const FLAG_NONSYMBOLIC: i64 = 32;
+const FLAG_ITALIC: i64 = 64;
+
+/// The `/Flags` value for a text font. Nonsymbolic is always set: these fonts
+/// are read through `/Encoding`, and a font a reader takes for symbolic is
+/// read through its own built-in encoding instead.
+fn descriptor_flags(is_italic: bool) -> i64 {
+    if is_italic {
+        FLAG_NONSYMBOLIC | FLAG_ITALIC
+    } else {
+        FLAG_NONSYMBOLIC
+    }
+}
+
 /// Extract font descriptor values from a TrueType font for PDF embedding.
 ///
 /// All metric values are normalised to 1000em units (PDF convention).
@@ -288,8 +303,7 @@ fn extract_font_descriptor(font_bytes: &[u8]) -> FontDescriptorInfo {
         descent: scale(metrics.descent),
         cap_height: scale(metrics.cap_height.unwrap_or(metrics.ascent)),
         italic_angle: metrics.italic_angle,
-        // PDF flags: bit 7 (64) = Italic, bit 6 (32) = Nonsymbolic.
-        flags: if is_italic { 64 } else { 32 },
+        flags: descriptor_flags(is_italic),
         bbox: [
             scale(bounds.x_min),
             scale(bounds.y_min),
@@ -1335,6 +1349,30 @@ mod tests {
         );
         assert_eq!(desc.flags, flags, "flags");
         assert_eq!(desc.bbox, bbox, "bbox");
+    }
+
+    #[test]
+    fn upright_font_flags_mark_it_nonsymbolic() {
+        assert_eq!(descriptor_flags(false), 32);
+    }
+
+    /// An italic font is still a text font read through /Encoding. Dropping
+    /// Nonsymbolic lets a reader treat it as symbolic and use the font's own
+    /// built-in encoding instead, showing the wrong glyphs for our bytes.
+    #[test]
+    fn italic_font_flags_keep_nonsymbolic_alongside_italic() {
+        assert_eq!(descriptor_flags(true), 96);
+    }
+
+    #[test]
+    fn every_descriptor_flag_value_marks_the_font_nonsymbolic() {
+        for is_italic in [false, true] {
+            assert_eq!(
+                descriptor_flags(is_italic) & 32,
+                32,
+                "Nonsymbolic must be set (is_italic = {is_italic})"
+            );
+        }
     }
 
     #[test]
