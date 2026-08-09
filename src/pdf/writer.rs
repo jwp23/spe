@@ -293,7 +293,8 @@ fn build_overlay_operations(
 ///
 /// Existing page content is wrapped in q/Q (a `q` stream before it, `Q` at the start
 /// of the overlay stream) so graphics-state changes it leaves active — e.g. the
-/// top-down CTM flip Skia/Google Docs emits — cannot affect the overlay.
+/// top-down CTM flip Skia/Google Docs emits — cannot affect the overlay. Assumes
+/// the original content has balanced q/Q pairs, as the spec requires.
 fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_bytes: Vec<u8>) {
     let existing = {
         let page_dict = doc
@@ -302,7 +303,12 @@ fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_by
             .as_dict()
             .expect("page object must be a dictionary");
         match page_dict.get(b"Contents") {
-            Ok(Object::Reference(id)) => vec![Object::Reference(*id)],
+            // A Reference may point to a stream or (per spec) to an array of
+            // stream references; splice the latter to keep Contents flat.
+            Ok(Object::Reference(id)) => match doc.get_object(*id) {
+                Ok(Object::Array(arr)) => arr.clone(),
+                _ => vec![Object::Reference(*id)],
+            },
             Ok(Object::Array(arr)) => arr.clone(),
             _ => vec![],
         }
@@ -312,7 +318,7 @@ fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_by
         let stream_id = doc.add_object(Stream::new(dictionary! {}, content_bytes));
         Object::Reference(stream_id)
     } else {
-        let prefix_id = doc.add_object(Stream::new(dictionary! {}, b"q".to_vec()));
+        let prefix_id = doc.add_object(Stream::new(dictionary! {}, b"q\n".to_vec()));
         let mut overlay_bytes = b"Q\n".to_vec();
         overlay_bytes.extend(content_bytes);
         let stream_id = doc.add_object(Stream::new(dictionary! {}, overlay_bytes));
@@ -541,8 +547,9 @@ mod tests {
         // Skia top-down flip) cannot affect the overlay: the first content stream
         // must be a lone `q`, and the overlay stream must begin with `Q`.
         let content_ids = doc.get_page_contents(page_id);
-        assert!(
-            content_ids.len() >= 3,
+        assert_eq!(
+            content_ids.len(),
+            3,
             "expected q-prefix, original, and overlay streams, got {} streams",
             content_ids.len()
         );
@@ -565,6 +572,19 @@ mod tests {
         );
         assert_eq!(first_ops[0].operator, "q", "prefix stream must be `q`");
 
+        // Content streams are concatenated by readers; the split must fall on a
+        // token boundary, so the prefix stream must end with whitespace.
+        let prefix_bytes = &doc
+            .get_object(content_ids[0])
+            .expect("stream obj")
+            .as_stream()
+            .expect("stream")
+            .content;
+        assert!(
+            prefix_bytes.last().is_some_and(|b| b.is_ascii_whitespace()),
+            "prefix stream must end with whitespace, got {prefix_bytes:?}"
+        );
+
         let overlay_ops = decode(*content_ids.last().expect("no streams"));
         assert_eq!(
             overlay_ops
@@ -574,6 +594,84 @@ mod tests {
             "Q",
             "overlay stream must start with `Q` to restore the default graphics state"
         );
+    }
+
+    #[test]
+    fn write_overlays_handles_contents_reference_to_array() {
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
+
+        // Build a PDF whose Contents is an indirect reference to an ARRAY of
+        // stream references (permitted by the spec) rather than to a stream.
+        let src = NamedTempFile::new().expect("temp file");
+        {
+            let mut doc = Document::with_version("1.5");
+            let pages_id = doc.new_object_id();
+
+            let content = Content {
+                operations: vec![
+                    Operation::new("re", vec![10.into(), 10.into(), 100.into(), 50.into()]),
+                    Operation::new("f", vec![]),
+                ],
+            };
+            let stream_id = doc.add_object(Stream::new(
+                dictionary! {},
+                content.encode().expect("encode"),
+            ));
+            let array_id = doc.add_object(Object::Array(vec![Object::Reference(stream_id)]));
+
+            let page_id = doc.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "Contents" => Object::Reference(array_id),
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            });
+            let pages = dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![Object::Reference(page_id)],
+                "Count" => 1_i64,
+            };
+            doc.objects.insert(pages_id, Object::Dictionary(pages));
+            let catalog_id = doc.add_object(dictionary! {
+                "Type" => "Catalog",
+                "Pages" => pages_id,
+            });
+            doc.trailer.set("Root", catalog_id);
+            doc.save(src.path()).expect("save");
+        }
+
+        let dst = NamedTempFile::new().expect("temp file");
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: None,
+        };
+        write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1");
+
+        // Every entry in the resulting Contents must resolve to a decodable
+        // stream — no array nested inside the Contents array.
+        let content_ids = doc.get_page_contents(page_id);
+        assert_eq!(
+            content_ids.len(),
+            3,
+            "expected q-prefix, original, and overlay streams, got {} streams",
+            content_ids.len()
+        );
+        for id in content_ids {
+            let obj = doc.get_object(id).expect("content entry must resolve");
+            assert!(
+                obj.as_stream().is_ok(),
+                "Contents entry {id:?} must be a stream, got {obj:?}"
+            );
+        }
     }
 
     #[test]
