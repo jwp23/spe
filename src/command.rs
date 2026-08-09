@@ -49,6 +49,20 @@ impl Command {
         matches!(self, Self::PlaceOverlay { .. } | Self::DeleteOverlay { .. })
     }
 
+    /// The overlay this command changes, or `None` for one that adds an
+    /// overlay rather than addressing an existing one.
+    pub fn target_index(&self) -> Option<usize> {
+        match self {
+            Self::PlaceOverlay { .. } => None,
+            Self::DeleteOverlay { index, .. }
+            | Self::MoveOverlay { index, .. }
+            | Self::EditText { index, .. }
+            | Self::ChangeOverlayFont { index, .. }
+            | Self::ChangeOverlayFontSize { index, .. }
+            | Self::ResizeOverlay { index, .. } => Some(*index),
+        }
+    }
+
     /// Applies this command to the overlay list.
     pub fn apply(&self, overlays: &mut Vec<TextOverlay>) {
         match self {
@@ -316,6 +330,41 @@ mod tests {
                 },
             }
             .changes_overlay_count()
+        );
+    }
+
+    #[test]
+    fn only_a_placement_addresses_no_existing_overlay() {
+        assert_eq!(
+            Command::PlaceOverlay {
+                overlay: sample_overlay()
+            }
+            .target_index(),
+            None
+        );
+        assert_eq!(
+            Command::EditText {
+                index: 3,
+                old_text: String::new(),
+                new_text: String::new(),
+            }
+            .target_index(),
+            Some(3)
+        );
+        assert_eq!(
+            Command::ResizeOverlay {
+                index: 7,
+                old_box: OverlayBox {
+                    width: 1.0,
+                    min_height: 0.0
+                },
+                new_box: OverlayBox {
+                    width: 2.0,
+                    min_height: 0.0
+                },
+            }
+            .target_index(),
+            Some(7)
         );
     }
 

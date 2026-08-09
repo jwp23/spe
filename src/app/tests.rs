@@ -3547,18 +3547,20 @@ fn replay_undo_stack(app: &App) -> Vec<TextOverlay> {
 }
 
 fn assert_history_matches_document(app: &App, context: &str) {
-    let live: Vec<(String, f32)> = app
+    /// Text, place and box shape — everything a command can change that the
+    /// history has to be able to reproduce.
+    fn describe(o: &TextOverlay) -> (String, f32, Option<f32>, Option<f32>) {
+        (o.text.clone(), o.position.x, o.width, o.min_height)
+    }
+    let live: Vec<_> = app
         .document
         .as_ref()
         .unwrap()
         .overlays
         .iter()
-        .map(|o| (o.text.clone(), o.position.x))
+        .map(describe)
         .collect();
-    let replayed: Vec<(String, f32)> = replay_undo_stack(app)
-        .iter()
-        .map(|o| (o.text.clone(), o.position.x))
-        .collect();
+    let replayed: Vec<_> = replay_undo_stack(app).iter().map(describe).collect();
     assert_eq!(
         live, replayed,
         "{context}: document diverged from its undo history"
@@ -3721,7 +3723,14 @@ fn document_always_matches_undo_history_under_arbitrary_interleavings() {
 
         for step in 0..30u64 {
             let len = app.document.as_ref().unwrap().overlays.len();
-            let msg = match next(&mut rng) % 9 {
+            let overlays = &app.document.as_ref().unwrap().overlays;
+            let resizable: Vec<usize> = overlays
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| o.width.is_some())
+                .map(|(i, _)| i)
+                .collect();
+            let msg = match next(&mut rng) % 11 {
                 0 => Message::PlaceOverlay {
                     page: 1,
                     position: PdfPosition {
@@ -3729,6 +3738,29 @@ fn document_always_matches_undo_history_under_arbitrary_interleavings() {
                         y: 700.0,
                     },
                 },
+                9 => Message::PlaceTextBox {
+                    page: 1,
+                    top_left: PdfPosition {
+                        x: (step * 7) as f32,
+                        y: 700.0,
+                    },
+                    width: 100.0 + step as f32,
+                    height: 50.0 + step as f32,
+                },
+                // Resizes read the box they are replacing off the live
+                // overlay, exactly as the canvas and IPC producers do — a
+                // stale `old_box` is a divergence neither can create.
+                10 if !resizable.is_empty() => {
+                    let index = resizable[(next(&mut rng) % resizable.len() as u64) as usize];
+                    Message::ResizeOverlay {
+                        index,
+                        old_box: crate::overlay::OverlayBox::of(&overlays[index]).unwrap(),
+                        new_box: crate::overlay::OverlayBox {
+                            width: 30.0 + step as f32,
+                            min_height: (step % 4) as f32 * 25.0,
+                        },
+                    }
+                }
                 1 => Message::UpdateOverlayText(format!("t{step}")),
                 2 => Message::UpdateOverlayText(String::new()),
                 3 => Message::CommitText,
@@ -3746,10 +3778,11 @@ fn document_always_matches_undo_history_under_arbitrary_interleavings() {
             // history has not recorded yet.
             let include_text = !app.canvas.editing;
             let describe = |o: &TextOverlay| {
+                let shape = format!("{:?}x{:?}", o.width, o.min_height);
                 if include_text {
-                    format!("{}@{}", o.text, o.position.x)
+                    format!("{}@{} {shape}", o.text, o.position.x)
                 } else {
-                    format!("@{}", o.position.x)
+                    format!("@{} {shape}", o.position.x)
                 }
             };
             let live: Vec<String> = app
@@ -4291,4 +4324,54 @@ fn a_placed_text_box_opens_an_edit_session_with_a_multiline_editor() {
         app.editor_content.is_some(),
         "a wrapping overlay is edited through the multi-line editor"
     );
+}
+
+#[test]
+fn abandoning_a_fresh_placement_keeps_history_for_other_overlays_changed_meanwhile() {
+    // Abandoning a freshly placed overlay rewinds the history to before the
+    // placement, which is only sound for commands that concern that overlay.
+    // A resize of a *different* overlay stays in the document, so throwing its
+    // command away leaves the document ahead of the history describing it.
+    let mut app = test_app_with_document();
+    app.document
+        .as_mut()
+        .unwrap()
+        .page_dimensions
+        .insert(1, (612.0, 792.0));
+
+    app.update(Message::PlaceTextBox {
+        page: 1,
+        top_left: PdfPosition { x: 100.0, y: 700.0 },
+        width: 200.0,
+        height: 80.0,
+    });
+    app.update(Message::UpdateOverlayText("established".to_string()));
+    app.update(Message::CommitText);
+
+    // A new placement opens a fresh session; resizing the established overlay
+    // records a command on top of it.
+    app.update(Message::PlaceTextBox {
+        page: 1,
+        top_left: PdfPosition { x: 300.0, y: 700.0 },
+        width: 150.0,
+        height: 60.0,
+    });
+    let established = crate::overlay::OverlayBox::of(&app.document.as_ref().unwrap().overlays[0])
+        .expect("the established overlay is a box");
+    app.update(Message::ResizeOverlay {
+        index: 0,
+        old_box: established,
+        new_box: crate::overlay::OverlayBox {
+            width: 400.0,
+            min_height: 250.0,
+        },
+    });
+
+    // Abandon the blank placement.
+    app.update(Message::CommitText);
+
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 1, "the blank placement should be discarded");
+    assert_eq!(overlays[0].width, Some(400.0), "the resize stands");
+    assert_history_matches_document(&app, "after abandoning a placement over a resize");
 }

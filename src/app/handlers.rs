@@ -560,7 +560,7 @@ impl App {
         };
         if let Some(base_len) = fresh_placement {
             doc.overlays.remove(index);
-            self.undo_stack.truncate(base_len);
+            self.discard_placement_history(base_len, index);
             // Redo entries address overlays by index, so none of them can
             // survive the list shrinking outside the command history.
             self.redo_stack.clear();
@@ -575,6 +575,25 @@ impl App {
         }
     }
 
+    /// Drop a freshly placed overlay's own history: the placement recorded at
+    /// `base_len` and any command recorded during its edit that addressed it.
+    ///
+    /// Commands recorded meanwhile that changed a *different* overlay are
+    /// kept. Their effect on the document outlives the abandoned placement, so
+    /// rewinding the whole stack left the document ahead of the history meant
+    /// to describe it — reachable by resizing or moving another overlay by
+    /// index (as IPC can) while a placement is open. Their indices survive
+    /// untouched because the placement is always appended last, so nothing
+    /// recorded before it can address a higher slot.
+    fn discard_placement_history(&mut self, base_len: usize, index: usize) {
+        let mut recorded_since = self.undo_stack.split_off(base_len);
+        if !recorded_since.is_empty() {
+            recorded_since.remove(0);
+        }
+        recorded_since.retain(|cmd| cmd.target_index() != Some(index));
+        self.undo_stack.append(&mut recorded_since);
+    }
+
     /// Remove an overlay whose text is blank, since it would only render as an
     /// empty selection box. Abandoning a freshly placed overlay leaves no undo
     /// history, including any style commands (font, font size) recorded while
@@ -586,7 +605,7 @@ impl App {
         };
         let mut overlay = doc.overlays.remove(index);
         if let Some(base_len) = self.canvas.fresh_placement.take() {
-            self.undo_stack.truncate(base_len);
+            self.discard_placement_history(base_len, index);
         } else {
             overlay.text = text_at_edit_start;
             self.undo_stack
