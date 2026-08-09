@@ -148,6 +148,10 @@ protocol does not model:
   overlay's right edge, so it is zoom-dependent and has no PDF-space equivalent.
   Use `resize`.
 - **No hover.** Hover highlighting is driven by cursor-move events.
+- **Pages of unknown size are treated as unbounded.** Page dimensions are read
+  when the document loads; before that, an off-page point cannot be recognised
+  as off-page, so `click_at` places rather than deselecting. Send `wait_ready`
+  after `open` to avoid the window entirely.
 
 ### Font Family Values
 

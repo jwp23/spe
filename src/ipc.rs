@@ -1141,6 +1141,24 @@ mod tests {
     }
 
     #[test]
+    fn click_at_on_a_page_of_unknown_size_places_instead_of_deselecting() {
+        // Page dimensions are read when a document loads, but a click can
+        // arrive before that; a page of unknown size cannot be shown to have
+        // been missed, so the click still places rather than deselecting.
+        let mut doc = test_document_with_overlay();
+        doc.page_dimensions.clear();
+        let cmd = IpcCommand::ClickAt {
+            page: 1,
+            x: 5000.0,
+            y: 5000.0,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(msg, Message::PlaceOverlay { page: 1, .. }));
+    }
+
+    #[test]
     fn click_at_while_editing_commits_the_text_first() {
         let doc = test_document_with_overlay();
         let ctx = CommandContext {
