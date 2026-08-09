@@ -1,16 +1,19 @@
 // Font family and size selection controls.
 
-use iced::widget::{button, pick_list, row, text, text_input};
+use iced::widget::{button, row, text, text_input};
 
 use crate::fonts::{FontId, FontRegistry};
+use crate::ui::font_picker::font_picker;
 use crate::ui::icons;
 
-/// Lightweight wrapper for the font pick list. Holds a FontId and display name,
-/// implementing Display for the Iced pick_list widget.
+/// One selectable family in the font picker: what to call it, and the Iced
+/// font its name is previewed in so the list shows each family in its own
+/// typeface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FontOption {
     pub id: FontId,
     pub name: String,
+    pub font: iced::Font,
 }
 
 impl std::fmt::Display for FontOption {
@@ -27,8 +30,18 @@ pub fn font_options(registry: &FontRegistry) -> Vec<FontOption> {
         .map(|e| FontOption {
             id: e.id,
             name: e.display_name.to_string(),
+            font: e.iced_font,
         })
         .collect()
+}
+
+/// The option a registry offers for `name`, as the toolbar would build it.
+#[cfg(test)]
+pub fn option_named(registry: &FontRegistry, name: &str) -> FontOption {
+    font_options(registry)
+        .into_iter()
+        .find(|o| o.name == name)
+        .unwrap_or_else(|| panic!("no font option named {name}"))
 }
 
 /// Amount the size stepper buttons/keys change the font size per press.
@@ -68,6 +81,8 @@ pub struct ToolbarState {
     /// after a submit whose GoToPage path refocuses the overlay editor
     /// instead.
     pub page_input_id: iced::widget::Id,
+    /// Whether the font picker's family list is showing.
+    pub font_picker_open: bool,
 }
 
 impl ToolbarState {
@@ -79,6 +94,7 @@ impl ToolbarState {
             page_input: "1".to_string(),
             font_size_input_id: iced::widget::Id::unique(),
             page_input_id: iced::widget::Id::unique(),
+            font_picker_open: false,
         }
     }
 }
@@ -91,6 +107,11 @@ pub enum Message {
     SaveAs,
     Undo,
     Redo,
+    /// The font picker's anchor button was pressed: show or hide the list.
+    FontPickerToggled,
+    /// The open font picker was closed without picking a family (Escape, or
+    /// a click outside the list).
+    FontPickerDismissed,
     FontSelected(FontOption),
     FontSizeInput(String),
     FontSizeSubmit,
@@ -162,9 +183,7 @@ pub fn toolbar_view<'a>(
     .spacing(2);
 
     let font_group = {
-        let selected = options.iter().find(|o| o.id == state.font).cloned();
-        let font_pick: iced::Element<'a, Message> =
-            pick_list(options.to_vec(), selected, Message::FontSelected).into();
+        let font_pick = font_picker(options, state.font, state.font_picker_open);
 
         let size_input: iced::Element<'a, Message> = if has_document {
             text_input("size", &state.font_size_input)
@@ -303,12 +322,26 @@ mod tests {
     }
 
     #[test]
+    fn font_options_carry_each_entrys_iced_font() {
+        let registry = FontRegistry::new();
+        let options = font_options(&registry);
+        for entry in registry.all() {
+            let option = options
+                .iter()
+                .find(|o| o.id == entry.id)
+                .unwrap_or_else(|| panic!("no option for {}", entry.display_name));
+            assert_eq!(
+                option.font, entry.iced_font,
+                "{} must be previewed in its own typeface",
+                entry.display_name
+            );
+        }
+    }
+
+    #[test]
     fn font_option_display() {
         let registry = FontRegistry::new();
-        let opt = FontOption {
-            id: registry.default_font(),
-            name: "Helvetica".to_string(),
-        };
+        let opt = option_named(&registry, "Helvetica");
         assert_eq!(opt.to_string(), "Helvetica");
     }
 
@@ -317,12 +350,7 @@ mod tests {
         let _ = Message::OpenFile;
         let _ = Message::Save;
         let registry = FontRegistry::new();
-        let courier_id = registry.find_by_name("Courier").unwrap();
-        let opt = FontOption {
-            id: courier_id,
-            name: "Courier".to_string(),
-        };
-        let _ = Message::FontSelected(opt);
+        let _ = Message::FontSelected(option_named(&registry, "Courier"));
         let _ = Message::FontSizeInput("14".to_string());
         let _ = Message::FontSizeIncrement;
         let _ = Message::FontSizeDecrement;
@@ -331,6 +359,42 @@ mod tests {
         let _ = Message::PageInput("5".to_string());
         let _ = Message::ToggleSidebar;
         let _ = Message::DeleteOverlay;
+    }
+
+    /// A toolbar over a loaded document, with the font picker open or closed.
+    fn toolbar_simulator(font_picker_open: bool) -> iced_test::Simulator<'static, Message> {
+        let registry = FontRegistry::new();
+        let mut state = ToolbarState::new(registry.default_font());
+        state.font_picker_open = font_picker_open;
+        let ctx = ToolbarContext {
+            has_document: true,
+            can_undo: false,
+            can_redo: false,
+            has_selection: false,
+            current_page: 1,
+            page_count: 1,
+            zoom_percent: 100,
+            sidebar_visible: false,
+        };
+        iced_test::simulator(toolbar_view(&state, &ctx, &font_options(&registry)))
+    }
+
+    #[test]
+    fn the_open_font_picker_lists_the_families() {
+        let mut toolbar = toolbar_simulator(true);
+        assert!(
+            toolbar.find("Times Roman").is_ok(),
+            "an open picker should list every family"
+        );
+    }
+
+    #[test]
+    fn the_closed_font_picker_lists_no_families() {
+        let mut toolbar = toolbar_simulator(false);
+        assert!(
+            toolbar.find("Times Roman").is_err(),
+            "a closed picker should list nothing"
+        );
     }
 
     #[test]

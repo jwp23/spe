@@ -1677,6 +1677,21 @@ mod tests {
             entry.widths.char_width('\u{2014}').round() as i64,
             "byte 0x97 is EM DASH under WinAnsiEncoding, not U+0097"
         );
+
+        // Great Vibes has real glyphs for both characters; a width equal to
+        // the table's fallback would mean the advance never made it into the
+        // font's WidthTable, not just a coincidental match with char_width.
+        let fallback = entry.widths.char_width('\u{4E2D}').round() as i64;
+        assert_ne!(
+            width_at(0x80),
+            fallback,
+            "euro sign width must be its real glyph advance, not the fallback"
+        );
+        assert_ne!(
+            width_at(0x97),
+            fallback,
+            "em dash width must be its real glyph advance, not the fallback"
+        );
     }
 
     // --- Test helpers ---

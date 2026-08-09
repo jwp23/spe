@@ -1581,6 +1581,11 @@ fn test_app_with_overlay() -> App {
     app
 }
 
+/// The font picker option for `name`, exactly as the toolbar builds it.
+fn font_option_named(app: &App, name: &str) -> toolbar::FontOption {
+    toolbar::option_named(&app.font_registry, name)
+}
+
 /// An app with a single selected overlay whose font size has been set to
 /// `size`. Shared setup for the font-size stepper/arrow-key tests below,
 /// which otherwise only differ in which message they dispatch next.
@@ -2266,15 +2271,10 @@ fn change_font_while_editing_returns_focus_task() {
 #[test]
 fn change_font_via_toolbar_message_returns_focus_task() {
     let mut app = test_app_with_overlay();
-    let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::EditOverlay(0));
+    let courier = font_option_named(&app, "Courier");
 
-    let task = app.update(Message::Toolbar(toolbar::Message::FontSelected(
-        crate::ui::toolbar::FontOption {
-            id: courier,
-            name: "Courier".to_string(),
-        },
-    )));
+    let task = app.update(Message::Toolbar(toolbar::Message::FontSelected(courier)));
 
     let debug = format!("{task:?}");
     assert!(
@@ -4015,6 +4015,86 @@ fn selecting_a_different_overlay_ends_the_multiline_edit_session() {
         "the multiline editor must not outlive the session that owns it"
     );
     assert_history_matches_document(&app, "after selecting away from a multiline edit");
+}
+
+// =====================================================================
+// spe-9gt.6.1: custom font picker open/close behaviour
+// =====================================================================
+
+#[test]
+fn font_picker_starts_closed() {
+    let (app, _) = App::new(false);
+    assert!(!app.toolbar.font_picker_open);
+}
+
+#[test]
+fn toggling_the_font_picker_opens_then_closes_it() {
+    let mut app = test_app_with_document();
+
+    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+    assert!(app.toolbar.font_picker_open, "first toggle should open it");
+
+    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+    assert!(
+        !app.toolbar.font_picker_open,
+        "second toggle should close it"
+    );
+}
+
+#[test]
+fn selecting_a_font_closes_the_picker() {
+    let mut app = test_app_with_document();
+    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+    let courier = font_option_named(&app, "Courier");
+
+    app.update(Message::Toolbar(toolbar::Message::FontSelected(courier)));
+
+    assert!(!app.toolbar.font_picker_open);
+    assert_eq!(
+        app.toolbar.font,
+        app.font_registry.find_by_name("Courier").unwrap()
+    );
+}
+
+#[test]
+fn dismissing_the_font_picker_leaves_the_font_unchanged() {
+    let mut app = test_app_with_document();
+    let before = app.toolbar.font;
+    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+
+    app.update(Message::Toolbar(toolbar::Message::FontPickerDismissed));
+
+    assert!(!app.toolbar.font_picker_open);
+    assert_eq!(app.toolbar.font, before);
+}
+
+#[test]
+fn dismissing_the_font_picker_while_editing_returns_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+
+    let task = app.update(Message::Toolbar(toolbar::Message::FontPickerDismissed));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "dismissing the picker should hand focus back to the edit, got: {debug}"
+    );
+}
+
+#[test]
+fn opening_the_font_picker_does_not_steal_focus() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "opening the picker must not yank focus back to the editor, got: {debug}"
+    );
 }
 
 // =====================================================================
