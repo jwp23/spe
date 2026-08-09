@@ -50,6 +50,7 @@ riskiest rendering paths — the ones most likely to break silently if a
 | `committed_tint` | An overlay after commit (deselected): the tint-rectangle-behind-text workaround with nothing else drawn on top |
 | `selected_overlay` | An overlay with its selection box: the selection-box-over-tint layering |
 | `multiline_overlay` | A drag-created multiline overlay (IPC `type` with `\n` drives multi-line text on current main): text spanning several lines within one tint rectangle |
+| `editing_multiline` | The same overlay reopened in the floating editor: the editor's line height must match the canvas's, or text jumps vertically on entering edit mode |
 
 Adding a scenario: write a new `scenario_<name>` function following the
 existing ones (open + `wait_ready` + `zoom_reset` + `wait_ready` are handled
