@@ -616,7 +616,7 @@ impl App {
             let result =
                 crate::pdf::writer::write_overlays(&source, &dest, &overlays, &self.font_registry);
             self.set_save_result(result, &dest);
-            return iced::Task::none();
+            return self.refocus_editing_widget();
         }
         self.handle_save_as()
     }
@@ -658,13 +658,13 @@ impl App {
         )
     }
 
-    pub(super) fn handle_save_destination(&mut self, path: PathBuf) {
+    pub(super) fn handle_save_destination(&mut self, path: PathBuf) -> iced::Task<Message> {
         if let Some(doc) = &mut self.document {
             // Prevent saving over the source file to avoid data loss on
             // write failure (the source would already be truncated).
             if denotes_same_file(&path, &doc.source_path) {
                 self.set_save_result(Err::<(), _>("cannot overwrite the source file"), &path);
-                return;
+                return self.refocus_editing_widget();
             }
             let source = doc.source_path.clone();
             let overlays = doc.overlays.clone();
@@ -676,6 +676,7 @@ impl App {
                 self.document.as_mut().unwrap().save_path = Some(path);
             }
         }
+        self.refocus_editing_widget()
     }
 
     /// Render all pages in the visible range (plus 1-page buffer) that are not cached.
@@ -811,13 +812,16 @@ impl App {
         } else {
             0.0
         };
-        iced::widget::operation::scroll_to(
-            self.scrollable_id.clone(),
-            iced::widget::scrollable::AbsoluteOffset {
-                x: 0.0,
-                y: target_y,
-            },
-        )
+        iced::Task::batch([
+            iced::widget::operation::scroll_to(
+                self.scrollable_id.clone(),
+                iced::widget::scrollable::AbsoluteOffset {
+                    x: 0.0,
+                    y: target_y,
+                },
+            ),
+            self.refocus_editing_widget(),
+        ])
     }
 
     // --- Toast handler ---
@@ -893,6 +897,14 @@ impl App {
     }
 
     // --- Sidebar handlers ---
+
+    /// Toggle sidebar visibility. Preserves an in-progress overlay edit and
+    /// hands focus back to the floating text widget, since showing or
+    /// hiding the sidebar doesn't touch document or edit-session state.
+    pub(super) fn handle_toggle_sidebar(&mut self) -> iced::Task<Message> {
+        self.sidebar.visible = !self.sidebar.visible;
+        self.refocus_editing_widget()
+    }
 
     pub(super) fn handle_sidebar_drag_start(&mut self) {
         self.sidebar.dragging = true;
@@ -1034,7 +1046,7 @@ impl App {
     /// feedback (scaled by draw_image) until the debounce fires.
     pub(super) fn apply_zoom_change(&mut self) -> iced::Task<Message> {
         self.canvas.zoom_generation += 1;
-        self.schedule_zoom_render()
+        iced::Task::batch([self.schedule_zoom_render(), self.refocus_editing_widget()])
     }
 
     /// Schedule a debounced re-render after zoom changes.

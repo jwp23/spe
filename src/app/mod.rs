@@ -360,7 +360,7 @@ impl App {
                 return self.handle_save_as();
             }
             Message::SaveDestinationChosen(path) => {
-                self.handle_save_destination(path);
+                return self.handle_save_destination(path);
             }
 
             // --- Page navigation (scroll to target page) ---
@@ -416,7 +416,7 @@ impl App {
             }
 
             // --- Sidebar ---
-            Message::ToggleSidebar => self.sidebar.visible = !self.sidebar.visible,
+            Message::ToggleSidebar => return self.handle_toggle_sidebar(),
             Message::ThumbnailBatchRendered(batch, generation) => {
                 return self.handle_thumbnail_batch_rendered(batch, generation);
             }
