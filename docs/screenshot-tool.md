@@ -76,6 +76,22 @@ Every command returns a JSON response:
 - `{"ok": true}` on success
 - `{"ok": false, "error": "description"}` on failure
 
+`ok: true` means the action actually happened. A command whose preconditions
+are not met is rejected before it runs rather than silently doing nothing, so
+automation can assert on the reply:
+
+| Situation | Reply |
+|-----------|-------|
+| Any command needing a document, with none open | `no document is loaded` |
+| `click` / `drag` on a page the document doesn't have | `page number is out of range` |
+| `type` with no overlay selected or being edited | `no overlay is active` |
+| `select` / `edit` / `move` / `resize` with a bad index | `overlay index is out of range` |
+| `resize` on a single-line overlay | `overlay is not resizable (no width set)` |
+| `font` with an unrecognized family | `unknown font: <name>` |
+
+Commands that can only fail while doing their work — `open` and `save` — report
+the real filesystem error the same way.
+
 ### Commands
 
 | Command | JSON |

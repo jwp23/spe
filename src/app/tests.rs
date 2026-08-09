@@ -984,7 +984,7 @@ fn handle_file_opened_with_bad_path_records_load_error() {
     let _ = app.handle_file_opened(PathBuf::from("/nonexistent/does-not-exist.pdf"));
     assert!(app.document.is_none());
     assert!(
-        app.last_open_error.is_some(),
+        app.last_command_error.is_some(),
         "a failed open should record an error message"
     );
 }
@@ -992,11 +992,11 @@ fn handle_file_opened_with_bad_path_records_load_error() {
 #[test]
 fn handle_file_opened_success_clears_previous_load_error() {
     let (mut app, _) = App::new(false);
-    app.last_open_error = Some("stale error from a previous failed open".to_string());
+    app.last_command_error = Some("stale error from a previous failed open".to_string());
     let tmp = make_temp_pdf();
     let _ = app.handle_file_opened(tmp.path().to_path_buf());
     assert!(app.document.is_some());
-    assert!(app.last_open_error.is_none());
+    assert!(app.last_command_error.is_none());
 }
 
 #[test]
@@ -1007,7 +1007,7 @@ fn ipc_open_command_dispatch_leaves_document_unset_on_bad_path() {
     // this harness doesn't drive it (unlike deliver_ipc_response_writes_to_channel,
     // which calls the async fn directly). The response *contract* — that a
     // failed load reports ok:false with an error — is covered directly by
-    // open_command_response_reports_failure_when_load_failed below.
+    // command_response_reports_failure_when_load_failed below.
     let (mut app, _) = App::new(true);
     let _rx = attach_ipc_response_sender(&mut app);
     let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::Command(
@@ -1019,23 +1019,23 @@ fn ipc_open_command_dispatch_leaves_document_unset_on_bad_path() {
 }
 
 #[test]
-fn open_command_response_reports_failure_when_load_failed() {
+fn command_response_reports_failure_when_load_failed() {
     let (mut app, _) = App::new(false);
     let _ = app.handle_file_opened(PathBuf::from("/nonexistent/does-not-exist.pdf"));
-    let response = app.open_command_response(crate::ipc::IpcResponse {
+    let response = app.command_response(crate::ipc::IpcResponse {
         ok: true,
         error: None,
     });
     assert!(!response.ok, "a failed load must not report ok:true");
     assert!(response.error.is_some());
     assert!(
-        app.last_open_error.is_none(),
+        app.last_command_error.is_none(),
         "the error should be consumed once reported, so it doesn't leak into the next command"
     );
 }
 
 #[test]
-fn open_command_response_reports_success_when_load_succeeded() {
+fn command_response_reports_success_when_load_succeeded() {
     let (mut app, _) = App::new(false);
     let tmp = make_temp_pdf();
     let _ = app.handle_file_opened(tmp.path().to_path_buf());
@@ -1043,7 +1043,7 @@ fn open_command_response_reports_success_when_load_succeeded() {
         ok: true,
         error: None,
     };
-    let response = app.open_command_response(ok_response);
+    let response = app.command_response(ok_response);
     assert!(response.ok);
     assert!(response.error.is_none());
 }
@@ -2052,6 +2052,86 @@ fn ipc_command_with_error_does_not_apply_a_message() {
         },
     )));
     assert!(app.document.as_ref().unwrap().overlays.is_empty());
+}
+
+// =====================================================================
+// spe-749: every IPC command's response reflects whether it acted.
+// `run_ipc_command` returns the response synchronously, so these assert on
+// the reply the client would receive without driving the async delivery task.
+// =====================================================================
+
+#[test]
+fn ipc_type_without_active_overlay_reports_failure() {
+    let mut app = test_app_with_document();
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Hello".to_string(),
+    });
+    assert!(
+        !response.ok,
+        "typing with nothing selected must not report ok"
+    );
+    assert!(response.error.unwrap().contains("no overlay is active"));
+}
+
+#[test]
+fn ipc_click_without_document_reports_failure() {
+    let (mut app, _) = App::new(true);
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 10.0,
+        y: 10.0,
+    });
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("no document"));
+}
+
+#[test]
+fn ipc_select_with_out_of_range_index_reports_failure() {
+    let mut app = test_app_with_document();
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Select { index: 3 });
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("out of range"));
+}
+
+#[test]
+fn ipc_type_after_click_reports_success_and_applies_the_text() {
+    let mut app = test_app_with_document();
+    let _ = app.run_ipc_command(crate::ipc::IpcCommand::Click {
+        page: 1,
+        x: 100.0,
+        y: 700.0,
+    });
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Type {
+        text: "Hello".to_string(),
+    });
+    assert!(response.ok, "typing into a fresh overlay must succeed");
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+}
+
+#[test]
+fn ipc_open_failure_is_reported_through_the_shared_command_outcome() {
+    // The same mechanism that reports a failed open reports any handler-recorded
+    // failure — there is no per-command branch in the response path.
+    let (mut app, _) = App::new(true);
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Open {
+        path: PathBuf::from("/nonexistent/does-not-exist.pdf"),
+    });
+    assert!(!response.ok);
+    assert!(response.error.unwrap().contains("failed to open"));
+}
+
+#[test]
+fn ipc_command_error_does_not_leak_into_the_next_command() {
+    let (mut app, _) = App::new(true);
+    let (failed, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Open {
+        path: PathBuf::from("/nonexistent/does-not-exist.pdf"),
+    });
+    assert!(!failed.ok);
+    let (next, _task) = app.run_ipc_command(crate::ipc::IpcCommand::ZoomIn);
+    assert!(
+        next.ok,
+        "a later command must not inherit the earlier error"
+    );
 }
 
 #[test]
