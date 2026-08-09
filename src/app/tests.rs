@@ -1554,6 +1554,102 @@ fn edit_multiline_overlay_returns_focus_task() {
 }
 
 // =====================================================================
+// spe-0g1: font picker returns focus to the text editor
+// =====================================================================
+
+#[test]
+fn change_font_while_editing_returns_focus_task() {
+    let mut app = test_app_with_overlay();
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::ChangeFont(courier));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "ChangeFont while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn change_font_via_toolbar_message_returns_focus_task() {
+    let mut app = test_app_with_overlay();
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::Toolbar(toolbar::Message::FontSelected(
+        crate::ui::toolbar::FontOption {
+            id: courier,
+            name: "Courier".to_string(),
+        },
+    )));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "Toolbar font selection while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn change_font_when_not_editing_returns_no_focus_task() {
+    let mut app = test_app_with_overlay();
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::SelectOverlay(0));
+
+    let task = app.update(Message::ChangeFont(courier));
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "ChangeFont without an active edit must not steal focus, got: {debug}"
+    );
+}
+
+#[test]
+fn change_font_without_document_returns_no_focus_task() {
+    let (mut app, _) = App::new(false);
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+
+    let task = app.update(Message::ChangeFont(courier));
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "ChangeFont without a document must not focus anything, got: {debug}"
+    );
+}
+
+#[test]
+fn change_font_size_while_editing_returns_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::ChangeFontSize(18.0));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "ChangeFontSize while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn change_font_size_when_not_editing_returns_no_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+
+    let task = app.update(Message::ChangeFontSize(18.0));
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "ChangeFontSize without an active edit must not steal focus, got: {debug}"
+    );
+}
+
+// =====================================================================
 // spe-zr9: text_input has matching font size and zero padding
 // =====================================================================
 
