@@ -163,12 +163,14 @@ fn build_font_mapping(
 
 /// Vertical spacing between overlay lines, as a multiple of font size.
 ///
-/// Defined *as* `crate::ui::canvas::TEXT_LINE_HEIGHT_RATIO` rather than merely
-/// equal to it: the canvas lays overlay lines out at that ratio while editing,
-/// so the saved PDF's `Td` leading must reproduce the same spacing or a
-/// multiline overlay's lines land at different offsets when the file is
-/// reopened elsewhere (spe-5xe).
-const LINE_SPACING_RATIO: f32 = crate::ui::canvas::TEXT_LINE_HEIGHT_RATIO;
+/// Defined *as* `crate::overlay::TEXT_LINE_HEIGHT_RATIO` rather than merely
+/// equal to it: `ui::canvas` lays overlay lines out at that ratio while
+/// editing, so the saved PDF's `Td` leading must reproduce the same spacing or
+/// a multiline overlay's lines land at different offsets when the file is
+/// reopened elsewhere. Both layers read the one constant from the shared
+/// overlay data model rather than the backend depending on the presentation
+/// layer (spe-5xe).
+const LINE_SPACING_RATIO: f32 = crate::overlay::TEXT_LINE_HEIGHT_RATIO;
 
 /// The `/Encoding` a Standard 14 font must declare so its bytes are read as
 /// WinAnsi, or `None` for the two symbolic fonts (Symbol and ZapfDingbats),
@@ -550,15 +552,12 @@ mod tests {
 
     /// The writer's line spacing must stay in lockstep with the canvas's, or a
     /// saved PDF's lines land at different offsets than they were edited at
-    /// (spe-5xe). `LINE_SPACING_RATIO` is defined *as* the canvas constant
-    /// rather than merely equal to it, so this test can only ever fail if that
-    /// direct link is ever replaced with an independent literal.
+    /// (spe-5xe). `LINE_SPACING_RATIO` is defined *as* the shared overlay
+    /// constant rather than merely equal to it, so this test can only ever
+    /// fail if that direct link is ever replaced with an independent literal.
     #[test]
-    fn line_spacing_ratio_is_the_canvas_text_line_height_ratio() {
-        assert_eq!(
-            LINE_SPACING_RATIO,
-            crate::ui::canvas::TEXT_LINE_HEIGHT_RATIO
-        );
+    fn line_spacing_ratio_is_the_overlay_text_line_height_ratio() {
+        assert_eq!(LINE_SPACING_RATIO, crate::overlay::TEXT_LINE_HEIGHT_RATIO);
     }
 
     /// Builds a minimal single-page PDF and saves it to `path`. Its Helvetica
