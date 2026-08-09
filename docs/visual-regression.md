@@ -194,26 +194,31 @@ diffing every consecutive pair plus the first-vs-last pair with
 
 | Scenario | comparisons | pixels different |
 |---|---|---|
-| `committed_tint` | 6 (10 runs) | 0 (0) every pair |
+| `committed_tint` | 10 (10 runs) | 0 (0) every pair |
 | `selected_overlay` | 5 (5 runs) | 0 (0) every pair |
 | `multiline_overlay` | 5 (5 runs) | 0 (0) every pair |
 | `editing_multiline` | 5 (5 runs) | 0 (0) every pair |
 
 25/25 comparisons pixel-identical — no ~85px antialiasing wobble and no
-230-315px drift this time. Both of those were symptoms of the two races
+230-315px drift this time. Both of those were symptoms of the three races
 above (fit-width-vs-resize, `wait_ready`'s pre-frame-signal blind spot, and
 now the zoom-generation staleness gap); with all three closed, this
 environment's variance floor measures as zero. `TOLERANCE_PIXELS` was
 lowered from 150 to 40 (`scripts/visual-regression.sh`) — a margin over that
 zero floor for whatever residual AA jitter a longer run might still turn up,
-without weakening the check: 40 is still five orders of magnitude below the
-~700k+-pixel deltas a real regression produces.
+without weakening the check: 40 is still more than four orders of magnitude
+(~17,500x) below the ~700k+-pixel deltas a real regression produces.
 
 This measurement is from one machine. If variance reappears elsewhere,
-that's this environment's font/GPU rendering rather than a returned race —
-see "References" above for how to tell an intended-change diff (localized to
-the affected widget) from noise, and regenerate references locally rather
-than loosening the tolerance to paper over a cross-machine offset.
+first confirm it reproduces consistently on that machine (not a one-off) and
+check whether the diff is localized to a specific widget or spread across
+the frame — a localized diff is more likely a real regression than font/GPU
+drift. Only once a reproducible, non-localized diff is confirmed should it be
+attributed to this environment's font/GPU rendering rather than a returned
+race — see "References" above for how to tell an intended-change diff
+(localized to the affected widget) from noise, and regenerate references
+locally rather than loosening the tolerance to paper over a cross-machine
+offset.
 
 ### Staleness window: which commands are safe before `wait_frame`
 
