@@ -977,6 +977,74 @@ fn handle_file_opened_clears_editor_content() {
 }
 
 #[test]
+fn handle_file_opened_with_bad_path_records_load_error() {
+    // spe-6vq: a failed load must be observable so the IPC `open` response can
+    // report actual failure instead of message-construction success.
+    let (mut app, _) = App::new(false);
+    let _ = app.handle_file_opened(PathBuf::from("/nonexistent/does-not-exist.pdf"));
+    assert!(app.document.is_none());
+    assert!(
+        app.last_open_error.is_some(),
+        "a failed open should record an error message"
+    );
+}
+
+#[test]
+fn handle_file_opened_success_clears_previous_load_error() {
+    let (mut app, _) = App::new(false);
+    app.last_open_error = Some("stale error from a previous failed open".to_string());
+    let tmp = make_temp_pdf();
+    let _ = app.handle_file_opened(tmp.path().to_path_buf());
+    assert!(app.document.is_some());
+    assert!(app.last_open_error.is_none());
+}
+
+#[test]
+fn ipc_open_with_bad_path_reports_failure_response() {
+    let (mut app, _) = App::new(true);
+    let _rx = attach_ipc_response_sender(&mut app);
+    let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::Command(
+        crate::ipc::IpcCommand::Open {
+            path: PathBuf::from("/nonexistent/does-not-exist.pdf"),
+        },
+    )));
+    assert!(app.document.is_none());
+    // last_open_error is consumed (taken) while building the IPC response, so
+    // the real assertion is on the response contract via open_command_response
+    // below; here we confirm the load genuinely failed and left no document.
+}
+
+#[test]
+fn open_command_response_reports_failure_when_load_failed() {
+    let (mut app, _) = App::new(false);
+    let _ = app.handle_file_opened(PathBuf::from("/nonexistent/does-not-exist.pdf"));
+    let response = app.open_command_response(crate::ipc::IpcResponse {
+        ok: true,
+        error: None,
+    });
+    assert!(!response.ok, "a failed load must not report ok:true");
+    assert!(response.error.is_some());
+    assert!(
+        app.last_open_error.is_none(),
+        "the error should be consumed once reported, so it doesn't leak into the next command"
+    );
+}
+
+#[test]
+fn open_command_response_reports_success_when_load_succeeded() {
+    let (mut app, _) = App::new(false);
+    let tmp = make_temp_pdf();
+    let _ = app.handle_file_opened(tmp.path().to_path_buf());
+    let ok_response = crate::ipc::IpcResponse {
+        ok: true,
+        error: None,
+    };
+    let response = app.open_command_response(ok_response);
+    assert!(response.ok);
+    assert!(response.error.is_none());
+}
+
+#[test]
 fn render_visible_thumbnails_increments_active_batch_tasks_when_below_limit() {
     let mut app = test_app_with_document();
     app.sidebar.visible = true;

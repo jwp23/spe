@@ -367,6 +367,7 @@ impl App {
     pub(super) fn handle_file_opened(&mut self, path: PathBuf) -> iced::Task<Message> {
         match lopdf::Document::load(&path) {
             Ok(doc) => {
+                self.last_open_error = None;
                 let page_dims = crate::pdf::page_dimensions(&doc);
                 let page_count = doc.get_pages().len() as u32;
                 self.document = Some(DocumentState {
@@ -417,7 +418,9 @@ impl App {
                 iced::Task::batch([scroll_reset, page_task, thumb_task])
             }
             Err(e) => {
+                let message = format!("failed to open {}: {e}", path.display());
                 eprintln!("Failed to open PDF: {e}");
+                self.last_open_error = Some(message);
                 iced::Task::none()
             }
         }
