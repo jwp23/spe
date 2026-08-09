@@ -98,7 +98,22 @@ impl App {
             && let Some(idx) = self.canvas.active_overlay
             && idx < doc.overlays.len()
         {
-            doc.overlays[idx].text = text;
+            doc.overlays[idx].text = text.clone();
+            // Multi-line overlays render from editor_content, not overlay.text
+            // directly (see handle_text_editor_action). Keep it in sync so the
+            // IPC `type` path converges on the same state real typing would
+            // produce (spe-jpw). Gate on the *target* overlay's own
+            // multiline-ness (width.is_some()), not on whether editor_content
+            // happens to be populated: editor_content can still hold a
+            // previously edited multiline overlay's text after selection
+            // moves to a different, single-line overlay (handle_select_overlay
+            // doesn't touch editor_content), so `.is_some()` would clobber it
+            // with unrelated text. `idx` is already the target overlay (it's
+            // derived from active_overlay above and bounds-checked), so no
+            // separate idx == active_overlay check is needed.
+            if doc.overlays[idx].width.is_some() {
+                self.editor_content = Some(iced::widget::text_editor::Content::with_text(&text));
+            }
         }
     }
 
@@ -360,6 +375,7 @@ impl App {
     pub(super) fn handle_file_opened(&mut self, path: PathBuf) -> iced::Task<Message> {
         match lopdf::Document::load(&path) {
             Ok(doc) => {
+                self.last_open_error = None;
                 let page_dims = crate::pdf::page_dimensions(&doc);
                 let page_count = doc.get_pages().len() as u32;
                 self.document = Some(DocumentState {
@@ -410,7 +426,9 @@ impl App {
                 iced::Task::batch([scroll_reset, page_task, thumb_task])
             }
             Err(e) => {
+                let message = format!("failed to open {}: {e}", path.display());
                 eprintln!("Failed to open PDF: {e}");
+                self.last_open_error = Some(message);
                 iced::Task::none()
             }
         }

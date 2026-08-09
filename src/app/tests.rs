@@ -977,6 +977,78 @@ fn handle_file_opened_clears_editor_content() {
 }
 
 #[test]
+fn handle_file_opened_with_bad_path_records_load_error() {
+    // spe-6vq: a failed load must be observable so the IPC `open` response can
+    // report actual failure instead of message-construction success.
+    let (mut app, _) = App::new(false);
+    let _ = app.handle_file_opened(PathBuf::from("/nonexistent/does-not-exist.pdf"));
+    assert!(app.document.is_none());
+    assert!(
+        app.last_open_error.is_some(),
+        "a failed open should record an error message"
+    );
+}
+
+#[test]
+fn handle_file_opened_success_clears_previous_load_error() {
+    let (mut app, _) = App::new(false);
+    app.last_open_error = Some("stale error from a previous failed open".to_string());
+    let tmp = make_temp_pdf();
+    let _ = app.handle_file_opened(tmp.path().to_path_buf());
+    assert!(app.document.is_some());
+    assert!(app.last_open_error.is_none());
+}
+
+#[test]
+fn ipc_open_command_dispatch_leaves_document_unset_on_bad_path() {
+    // This exercises the full Command(Open) dispatch path (message
+    // construction, update(), handle_file_opened) but does not inspect the
+    // IPC response itself: send_ipc_response's returned Task is async and
+    // this harness doesn't drive it (unlike deliver_ipc_response_writes_to_channel,
+    // which calls the async fn directly). The response *contract* — that a
+    // failed load reports ok:false with an error — is covered directly by
+    // open_command_response_reports_failure_when_load_failed below.
+    let (mut app, _) = App::new(true);
+    let _rx = attach_ipc_response_sender(&mut app);
+    let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::Command(
+        crate::ipc::IpcCommand::Open {
+            path: PathBuf::from("/nonexistent/does-not-exist.pdf"),
+        },
+    )));
+    assert!(app.document.is_none());
+}
+
+#[test]
+fn open_command_response_reports_failure_when_load_failed() {
+    let (mut app, _) = App::new(false);
+    let _ = app.handle_file_opened(PathBuf::from("/nonexistent/does-not-exist.pdf"));
+    let response = app.open_command_response(crate::ipc::IpcResponse {
+        ok: true,
+        error: None,
+    });
+    assert!(!response.ok, "a failed load must not report ok:true");
+    assert!(response.error.is_some());
+    assert!(
+        app.last_open_error.is_none(),
+        "the error should be consumed once reported, so it doesn't leak into the next command"
+    );
+}
+
+#[test]
+fn open_command_response_reports_success_when_load_succeeded() {
+    let (mut app, _) = App::new(false);
+    let tmp = make_temp_pdf();
+    let _ = app.handle_file_opened(tmp.path().to_path_buf());
+    let ok_response = crate::ipc::IpcResponse {
+        ok: true,
+        error: None,
+    };
+    let response = app.open_command_response(ok_response);
+    assert!(response.ok);
+    assert!(response.error.is_none());
+}
+
+#[test]
 fn render_visible_thumbnails_increments_active_batch_tasks_when_below_limit() {
     let mut app = test_app_with_document();
     app.sidebar.visible = true;
@@ -1263,6 +1335,102 @@ fn commit_text_clears_editor_content() {
     assert!(app.editor_content.is_some());
     app.update(Message::CommitText);
     assert!(app.editor_content.is_none());
+}
+
+#[test]
+fn update_overlay_text_syncs_editor_content_for_multiline_overlay() {
+    // spe-jpw: the IPC `type` command dispatches UpdateOverlayText directly,
+    // bypassing TextEditorAction. For multi-line overlays the visible widget
+    // renders from editor_content, so editor_content must converge on the
+    // same text real typing would have produced.
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 500.0 },
+        width: Some(200.0),
+    });
+    app.update(Message::UpdateOverlayText("Hello\nWorld".to_string()));
+    let editor_text = app
+        .editor_content
+        .as_ref()
+        .expect("multi-line overlay must keep editor_content populated")
+        .text();
+    assert!(
+        editor_text.starts_with("Hello\nWorld"),
+        "editor_content should reflect the IPC-typed text, got: {editor_text:?}"
+    );
+}
+
+#[test]
+fn update_overlay_text_leaves_editor_content_none_for_singleline_overlay() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 500.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    assert!(app.editor_content.is_none());
+}
+
+#[test]
+fn update_overlay_text_does_not_clobber_editor_content_for_unrelated_singleline_overlay() {
+    // Review-traced hazard: the sync guard must key on the *target* overlay's
+    // own multiline-ness (width.is_some()), not merely on whether
+    // editor_content happens to be populated from a previously edited
+    // overlay. Reproduces the exact sequence: multiline overlay 0 is being
+    // edited (editor_content populated) -> Select single-line overlay 1
+    // (handle_select_overlay changes active_overlay without touching
+    // editor_content) -> Type into overlay 1 must not stomp overlay 0's
+    // editor_content with overlay 1's unrelated text.
+    let mut app = test_app_with_document();
+    let font = app.toolbar.font;
+    let font_size = app.toolbar.font_size;
+    {
+        let doc = app.document.as_mut().unwrap();
+        doc.overlays.push(TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 500.0 },
+            text: String::new(),
+            font,
+            font_size,
+            width: Some(200.0), // multiline
+        });
+        doc.overlays.push(TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 150.0, y: 600.0 },
+            text: String::new(),
+            font,
+            font_size,
+            width: None, // single-line
+        });
+    }
+    // Simulate overlay 0 (multiline) having just been dragged into edit mode.
+    app.canvas.active_overlay = Some(0);
+    app.canvas.editing = true;
+    app.editor_content = Some(iced::widget::text_editor::Content::with_text(""));
+
+    app.update(Message::UpdateOverlayText("AAA".to_string()));
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "AAA");
+
+    // IPC `select` targets overlay 1 (single-line).
+    app.update(Message::SelectOverlay(1));
+    assert_eq!(app.canvas.active_overlay, Some(1));
+
+    // IPC `type` now targets overlay 1.
+    app.update(Message::UpdateOverlayText("BBB".to_string()));
+    assert_eq!(app.document.as_ref().unwrap().overlays[1].text, "BBB");
+
+    let editor_text = app
+        .editor_content
+        .as_ref()
+        .expect("editor_content should still hold overlay 0's multiline text")
+        .text();
+    assert!(
+        editor_text.starts_with("AAA"),
+        "editor_content must not be clobbered by typing into an unrelated \
+         single-line overlay, got: {editor_text:?}"
+    );
 }
 
 // =====================================================================
