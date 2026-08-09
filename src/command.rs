@@ -1,7 +1,7 @@
 // Undo/redo command model: each variant captures enough state to apply and reverse the operation.
 
 use crate::fonts::FontId;
-use crate::overlay::{PdfPosition, TextOverlay};
+use crate::overlay::{OverlayBox, PdfPosition, TextOverlay};
 
 /// A reversible editing operation on the overlay list.
 #[derive(Debug, Clone)]
@@ -35,8 +35,8 @@ pub enum Command {
     },
     ResizeOverlay {
         index: usize,
-        old_width: f32,
-        new_width: f32,
+        old_box: OverlayBox,
+        new_box: OverlayBox,
     },
 }
 
@@ -68,11 +68,7 @@ impl Command {
             } => {
                 overlays[*index].font_size = *new_size;
             }
-            Self::ResizeOverlay {
-                index, new_width, ..
-            } => {
-                overlays[*index].width = Some(*new_width);
-            }
+            Self::ResizeOverlay { index, new_box, .. } => new_box.apply_to(&mut overlays[*index]),
         }
     }
 
@@ -95,11 +91,7 @@ impl Command {
             } => {
                 overlays[*index].font_size = *old_size;
             }
-            Self::ResizeOverlay {
-                index, old_width, ..
-            } => {
-                overlays[*index].width = Some(*old_width);
-            }
+            Self::ResizeOverlay { index, old_box, .. } => old_box.apply_to(&mut overlays[*index]),
         }
     }
 }
@@ -314,8 +306,14 @@ mod tests {
         assert!(
             !Command::ResizeOverlay {
                 index: 0,
-                old_width: 1.0,
-                new_width: 2.0,
+                old_box: OverlayBox {
+                    width: 1.0,
+                    min_height: 0.0
+                },
+                new_box: OverlayBox {
+                    width: 2.0,
+                    min_height: 0.0
+                },
             }
             .changes_overlay_count()
         );
@@ -328,12 +326,47 @@ mod tests {
         let mut overlays = vec![overlay];
         let cmd = Command::ResizeOverlay {
             index: 0,
-            old_width: 200.0,
-            new_width: 300.0,
+            old_box: OverlayBox {
+                width: 200.0,
+                min_height: 0.0,
+            },
+            new_box: OverlayBox {
+                width: 300.0,
+                min_height: 120.0,
+            },
         };
         cmd.apply(&mut overlays);
-        assert!((overlays[0].width.unwrap() - 300.0).abs() < f32::EPSILON);
+        assert_eq!(overlays[0].width, Some(300.0));
+        assert_eq!(overlays[0].min_height, Some(120.0));
         cmd.reverse(&mut overlays);
-        assert!((overlays[0].width.unwrap() - 200.0).abs() < f32::EPSILON);
+        assert_eq!(overlays[0].width, Some(200.0));
+        assert_eq!(overlays[0].min_height, Some(0.0));
+    }
+
+    #[test]
+    fn resize_overlay_reverses_a_height_only_change() {
+        // Dragging the bottom edge leaves the width alone, and undo must put
+        // the height back without disturbing it.
+        let mut overlay = sample_overlay();
+        overlay.width = Some(200.0);
+        overlay.min_height = Some(50.0);
+        let mut overlays = vec![overlay];
+        let cmd = Command::ResizeOverlay {
+            index: 0,
+            old_box: OverlayBox {
+                width: 200.0,
+                min_height: 50.0,
+            },
+            new_box: OverlayBox {
+                width: 200.0,
+                min_height: 300.0,
+            },
+        };
+        cmd.apply(&mut overlays);
+        assert_eq!(overlays[0].min_height, Some(300.0));
+        assert_eq!(overlays[0].width, Some(200.0));
+        cmd.reverse(&mut overlays);
+        assert_eq!(overlays[0].min_height, Some(50.0));
+        assert_eq!(overlays[0].width, Some(200.0));
     }
 }

@@ -7,6 +7,7 @@ use super::{
 };
 
 use crate::command::Command as UndoCommand;
+use crate::overlay::OverlayBox;
 use crate::pdf::renderer::PdftoppmRenderer;
 use crate::ui::canvas;
 use crate::ui::toolbar;
@@ -212,14 +213,19 @@ impl App {
         }
     }
 
-    pub(super) fn handle_resize_overlay(&mut self, index: usize, old_width: f32, new_width: f32) {
+    pub(super) fn handle_resize_overlay(
+        &mut self,
+        index: usize,
+        old_box: OverlayBox,
+        new_box: OverlayBox,
+    ) {
         if let Some(doc) = &self.document
             && index < doc.overlays.len()
         {
             let cmd = UndoCommand::ResizeOverlay {
                 index,
-                old_width,
-                new_width,
+                old_box,
+                new_box,
             };
             self.execute_command(cmd);
         }

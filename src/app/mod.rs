@@ -15,7 +15,7 @@ use iced::widget::image::Handle;
 use crate::command::Command as UndoCommand;
 use crate::config::AppConfig;
 use crate::fonts::{FontId, FontRegistry};
-use crate::overlay::{PdfPosition, TextOverlay};
+use crate::overlay::{OverlayBox, PdfPosition, TextOverlay};
 use crate::ui::canvas::CanvasState;
 use crate::ui::sidebar::SidebarState;
 use crate::ui::toolbar::{self, ToolbarState};
@@ -185,8 +185,8 @@ pub enum Message {
 
     ResizeOverlay {
         index: usize,
-        old_width: f32,
-        new_width: f32,
+        old_box: OverlayBox,
+        new_box: OverlayBox,
     },
 
     // Undo/Redo
@@ -442,9 +442,9 @@ impl App {
             }
             Message::ResizeOverlay {
                 index,
-                old_width,
-                new_width,
-            } => self.handle_resize_overlay(index, old_width, new_width),
+                old_box,
+                new_box,
+            } => self.handle_resize_overlay(index, old_box, new_box),
             Message::ChangeFont(font) => return self.handle_change_font(font),
             Message::ChangeFontSize(size) => return self.handle_change_font_size(size),
             Message::FontSizeArrowPressed(increment) => {

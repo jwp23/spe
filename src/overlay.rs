@@ -30,10 +30,101 @@ pub struct TextOverlay {
     pub min_height: Option<f32>,
 }
 
+/// The dimensions of a wrapping overlay's box, in PDF points.
+///
+/// `min_height` is stored flat rather than as an `Option` because a resize
+/// always produces a definite height, and zero — "no more room than the text
+/// needs" — is exactly what an absent minimum already means.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverlayBox {
+    pub width: f32,
+    pub min_height: f32,
+}
+
+impl OverlayBox {
+    /// The box `overlay` currently occupies, or `None` for a single-line
+    /// overlay, which has no box to resize.
+    pub fn of(overlay: &TextOverlay) -> Option<Self> {
+        Some(Self {
+            width: overlay.width?,
+            min_height: overlay.min_height.unwrap_or(0.0),
+        })
+    }
+
+    /// Resize `overlay` to these dimensions.
+    pub fn apply_to(&self, overlay: &mut TextOverlay) {
+        overlay.width = Some(self.width);
+        overlay.min_height = Some(self.min_height);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fonts::FontRegistry;
+
+    #[test]
+    fn a_single_line_overlay_has_no_box() {
+        let registry = FontRegistry::new();
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: None,
+            min_height: None,
+        };
+        assert_eq!(OverlayBox::of(&overlay), None);
+    }
+
+    #[test]
+    fn an_overlay_box_round_trips_through_an_overlay() {
+        let registry = FontRegistry::new();
+        let mut overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: Some(200.0),
+            min_height: Some(90.0),
+        };
+        let original = OverlayBox::of(&overlay).unwrap();
+        assert_eq!(
+            original,
+            OverlayBox {
+                width: 200.0,
+                min_height: 90.0
+            }
+        );
+
+        OverlayBox {
+            width: 300.0,
+            min_height: 45.0,
+        }
+        .apply_to(&mut overlay);
+        assert_eq!(overlay.width, Some(300.0));
+        assert_eq!(overlay.min_height, Some(45.0));
+
+        original.apply_to(&mut overlay);
+        assert_eq!(OverlayBox::of(&overlay), Some(original));
+    }
+
+    #[test]
+    fn an_absent_minimum_height_reads_as_no_extra_room() {
+        let registry = FontRegistry::new();
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: Some(200.0),
+            min_height: None,
+        };
+        assert_eq!(OverlayBox::of(&overlay).unwrap().min_height, 0.0);
+    }
 
     #[test]
     fn pdf_position_construction() {

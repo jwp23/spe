@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use crate::app::{DocumentState, Message};
 use crate::fonts::FontRegistry;
-use crate::overlay::PdfPosition;
+use crate::overlay::{OverlayBox, PdfPosition};
 use crate::ui::canvas::hit_test_pdf;
 
 /// Errors that can occur when translating an IpcCommand to a Message.
@@ -169,6 +169,10 @@ pub enum IpcCommand {
     Resize {
         index: usize,
         width: f32,
+        /// New minimum box height in PDF points. Omitted leaves the height the
+        /// overlay already has, so existing scripts resize width alone.
+        #[serde(default)]
+        height: Option<f32>,
     },
     Move {
         index: usize,
@@ -311,13 +315,20 @@ impl IpcCommand {
                     height: (y2 - y1).abs(),
                 })
             }
-            IpcCommand::Resize { index, width } => {
+            IpcCommand::Resize {
+                index,
+                width,
+                height,
+            } => {
                 let doc = ctx.require_overlay(index)?;
-                let old_width = doc.overlays[index].width.ok_or(IpcError::NotResizable)?;
+                let old_box = OverlayBox::of(&doc.overlays[index]).ok_or(IpcError::NotResizable)?;
                 Ok(Message::ResizeOverlay {
                     index,
-                    old_width,
-                    new_width: width,
+                    old_box,
+                    new_box: OverlayBox {
+                        width,
+                        min_height: height.unwrap_or(old_box.min_height),
+                    },
                 })
             }
             IpcCommand::Move { index, x, y } => {
@@ -799,15 +810,54 @@ mod tests {
         let cmd = IpcCommand::Resize {
             index: 0,
             width: 300.0,
+            height: None,
         };
         let msg = cmd
             .to_message(&context_with_document(&doc), &test_registry())
             .unwrap();
         assert!(matches!(
             msg,
-            Message::ResizeOverlay { index: 0, old_width, new_width }
-            if (old_width - 200.0).abs() < f32::EPSILON
-                && (new_width - 300.0).abs() < f32::EPSILON
+            Message::ResizeOverlay { index: 0, old_box, new_box }
+            if (old_box.width - 200.0).abs() < f32::EPSILON
+                && (new_box.width - 300.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn resize_without_a_height_keeps_the_one_the_overlay_has() {
+        let mut doc = test_document_with_overlay();
+        doc.overlays[0].min_height = Some(80.0);
+        let cmd = IpcCommand::Resize {
+            index: 0,
+            width: 300.0,
+            height: None,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(
+            msg,
+            Message::ResizeOverlay { new_box, .. }
+            if (new_box.min_height - 80.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn resize_with_a_height_resizes_both_dimensions() {
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Resize {
+            index: 0,
+            width: 300.0,
+            height: Some(150.0),
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(
+            msg,
+            Message::ResizeOverlay { new_box, .. }
+            if (new_box.width - 300.0).abs() < f32::EPSILON
+                && (new_box.min_height - 150.0).abs() < f32::EPSILON
         ));
     }
 
@@ -816,6 +866,7 @@ mod tests {
         let cmd = IpcCommand::Resize {
             index: 0,
             width: 300.0,
+            height: None,
         };
         let result = cmd.to_message(&CommandContext::default(), &test_registry());
         assert!(matches!(result, Err(IpcError::NoDocument)));
@@ -827,6 +878,7 @@ mod tests {
         let cmd = IpcCommand::Resize {
             index: 99,
             width: 300.0,
+            height: None,
         };
         let result = cmd.to_message(&context_with_document(&doc), &test_registry());
         assert!(matches!(result, Err(IpcError::IndexOutOfRange)));
@@ -839,6 +891,7 @@ mod tests {
         let cmd = IpcCommand::Resize {
             index: 0,
             width: 300.0,
+            height: None,
         };
         let result = cmd.to_message(&context_with_document(&doc), &test_registry());
         assert!(matches!(result, Err(IpcError::NotResizable)));
@@ -970,7 +1023,16 @@ mod tests {
         let json = r#"{"cmd": "resize", "index": 0, "width": 200.0}"#;
         let cmd: IpcCommand = serde_json::from_str(json).unwrap();
         assert!(
-            matches!(cmd, IpcCommand::Resize { index: 0, width } if (width - 200.0).abs() < f32::EPSILON)
+            matches!(cmd, IpcCommand::Resize { index: 0, width, height: None } if (width - 200.0).abs() < f32::EPSILON)
+        );
+    }
+
+    #[test]
+    fn parse_resize_command_with_a_height() {
+        let json = r#"{"cmd": "resize", "index": 0, "width": 200.0, "height": 90.0}"#;
+        let cmd: IpcCommand = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(cmd, IpcCommand::Resize { height: Some(h), .. } if (h - 90.0).abs() < f32::EPSILON)
         );
     }
 

@@ -17,7 +17,7 @@ use iced::widget::canvas;
 
 use crate::coordinate::{ConversionParams, pdf_to_screen};
 use crate::fonts::FontRegistry;
-use crate::overlay::{PdfPosition, TextOverlay};
+use crate::overlay::{OverlayBox, PdfPosition, TextOverlay};
 
 /// Time window for double-click detection (milliseconds).
 pub(crate) const DOUBLE_CLICK_TIMEOUT_MS: u128 = 500;
@@ -158,7 +158,9 @@ impl OverlayAnchor {
 pub struct ResizeDragState {
     pub overlay_index: usize,
     pub anchor: OverlayAnchor,
-    pub initial_width: f32,
+    /// Which handle was grabbed, and so which dimensions the drag changes.
+    pub edge: ResizeEdge,
+    pub initial_box: OverlayBox,
 }
 
 /// Tracks an in-progress placement drag (click-and-drag to create a multi-line overlay).
@@ -359,23 +361,104 @@ pub(crate) fn overlay_text_box_contains_pdf(
 /// Half-width of the resize handle hit area in screen pixels.
 pub(crate) const RESIZE_HANDLE_HIT_RADIUS: f32 = 4.0;
 
-/// Return true if a screen-space click lands on the resize handle of a multi-line overlay.
+/// Which handle of an overlay's box a resize drag grabbed, and therefore which
+/// dimensions the drag changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResizeEdge {
+    /// The right edge: width only.
+    Right,
+    /// The bottom edge: height only.
+    Bottom,
+    /// The bottom-right corner: both at once.
+    Corner,
+}
+
+impl ResizeEdge {
+    /// Whether dragging this handle changes the box's width.
+    pub fn resizes_width(self) -> bool {
+        matches!(self, Self::Right | Self::Corner)
+    }
+
+    /// Whether dragging this handle changes the box's height.
+    pub fn resizes_height(self) -> bool {
+        matches!(self, Self::Bottom | Self::Corner)
+    }
+
+    /// The pointer shape that says which way this handle moves.
+    pub fn mouse_interaction(self) -> iced::mouse::Interaction {
+        match self {
+            Self::Right => iced::mouse::Interaction::ResizingHorizontally,
+            Self::Bottom => iced::mouse::Interaction::ResizingVertically,
+            Self::Corner => iced::mouse::Interaction::ResizingDiagonallyDown,
+        }
+    }
+}
+
+/// Which resize handle of a multi-line overlay a screen-space click lands on,
+/// if any.
 ///
-/// The handle runs down the whole right edge of the overlay's text box, so the
-/// hit area is derived from the same box the handle is drawn against.
+/// The handles run down the right edge and along the bottom edge of the
+/// overlay's text box, meeting at a corner that resizes both. The hit areas are
+/// derived from the same box the handles are drawn against, and the corner is
+/// tested first so the shared pixels resize diagonally rather than picking
+/// whichever edge happened to be checked first.
 pub(crate) fn resize_handle_hit(
     screen_x: f32,
     screen_y: f32,
     overlay: &TextOverlay,
     params: &ConversionParams,
     registry: &FontRegistry,
-) -> bool {
+) -> Option<ResizeEdge> {
+    overlay.width?;
     let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
     let text_box = overlay_text_box(overlay, sx, sy, params.scale(), registry);
-    let handle_x = text_box.x + text_box.width;
-    (screen_x - handle_x).abs() <= RESIZE_HANDLE_HIT_RADIUS
-        && screen_y >= text_box.y
-        && screen_y <= text_box.y + text_box.height
+    let on_right = (screen_x - (text_box.x + text_box.width)).abs() <= RESIZE_HANDLE_HIT_RADIUS;
+    let on_bottom = (screen_y - (text_box.y + text_box.height)).abs() <= RESIZE_HANDLE_HIT_RADIUS;
+    let within_rows = screen_y >= text_box.y
+        && screen_y <= text_box.y + text_box.height + RESIZE_HANDLE_HIT_RADIUS;
+    let within_columns = screen_x >= text_box.x
+        && screen_x <= text_box.x + text_box.width + RESIZE_HANDLE_HIT_RADIUS;
+
+    match (on_right && within_rows, on_bottom && within_columns) {
+        (true, true) => Some(ResizeEdge::Corner),
+        (true, false) => Some(ResizeEdge::Right),
+        (false, true) => Some(ResizeEdge::Bottom),
+        (false, false) => None,
+    }
+}
+
+/// Smallest box either resize handle can produce, in PDF points. A box dragged
+/// to nothing would be impossible to grab again.
+pub(crate) const MIN_BOX_DIMENSION: f32 = 20.0;
+
+/// The box `overlay` would occupy if a resize of `edge` finished with the
+/// cursor at the PDF-space point (`pdf_x`, `pdf_y`).
+///
+/// Shared by the release handler and the live preview so the rectangle drawn
+/// during the drag is the rectangle the release commits.
+pub(crate) fn resized_box(
+    overlay: &TextOverlay,
+    edge: ResizeEdge,
+    pdf_x: f32,
+    pdf_y: f32,
+) -> Option<OverlayBox> {
+    let current = OverlayBox::of(overlay)?;
+    // The box's top edge sits one font size above the first baseline, matching
+    // `overlay_text_box`, so a height dragged out here means the same height
+    // the box draws.
+    let box_top = overlay.position.y + overlay.font_size;
+    Some(OverlayBox {
+        width: if edge.resizes_width() {
+            (pdf_x - overlay.position.x).max(MIN_BOX_DIMENSION)
+        } else {
+            current.width
+        },
+        min_height: if edge.resizes_height() {
+            (box_top - pdf_y).max(MIN_BOX_DIMENSION)
+        } else {
+            current.min_height
+        },
+    })
 }
 
 /// Minimum drag distance in pixels to initiate a resize. Clicks below this distance are treated as single-line overlays.
