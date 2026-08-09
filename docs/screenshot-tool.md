@@ -69,7 +69,16 @@ spe --ipc
 
 Without this flag, no socket is created and no subscription runs. The harness script passes `--ipc` automatically. There is no compile-time feature gate — a single binary serves both uses.
 
-The Unix socket is created at `$XDG_RUNTIME_DIR/spe-ipc.sock` (fallback: `/tmp/spe-ipc.sock`).
+The Unix socket is created at `$XDG_RUNTIME_DIR/spe-ipc.sock`, and is chmod'd
+to 0600 so only its owner can drive the app.
+
+There is no `/tmp` fallback: a predictable socket name in a world-writable
+directory lets anyone on the machine race the unlink-then-bind, either wedging
+IPC permanently or redirecting where the socket gets created. If
+`XDG_RUNTIME_DIR` is unset, `--ipc` exits with an error telling you to set it
+rather than starting without a working socket. The harness always supplies its
+own private 0700 runtime directory, so this only affects launching `spe --ipc`
+by hand outside a login session.
 
 ## IPC Command Protocol
 

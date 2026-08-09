@@ -183,12 +183,42 @@ pub enum IpcCommand {
 /// forever on a command that will never respond (see spe-z6v).
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Returns the IPC socket path.
-pub fn socket_path() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(dir).join("spe-ipc.sock")
-    } else {
-        PathBuf::from("/tmp/spe-ipc.sock")
+/// No per-user runtime directory is available, so no IPC socket can be placed.
+#[derive(Debug, PartialEq)]
+pub struct MissingRuntimeDir;
+
+impl fmt::Display for MissingRuntimeDir {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "XDG_RUNTIME_DIR is not set, so there is no private directory for the IPC socket. \
+             Set XDG_RUNTIME_DIR to a directory only you can write to (a desktop login session \
+             normally provides one) and start the app again."
+        )
+    }
+}
+
+/// Returns the IPC socket path, or refuses when there is nowhere private to
+/// put it.
+///
+/// There is deliberately no `/tmp` fallback. A predictable socket name in a
+/// world-writable directory means the unlink-then-bind in [`ipc_stream`] races
+/// against anyone on the machine: a plain file recreated at the path turns the
+/// bind into a permanent silent failure, and a symlink planted there makes
+/// `bind` create the socket wherever the attacker points it. Chmodding the
+/// socket to 0600 afterwards protects the channel but not the creation step,
+/// so the only sound answer is to require a private directory (spe-85p).
+pub fn socket_path() -> Result<PathBuf, MissingRuntimeDir> {
+    socket_path_in(std::env::var("XDG_RUNTIME_DIR").ok().as_deref())
+}
+
+/// The socket path for a given runtime directory. Split out from
+/// [`socket_path`] so the refusal can be tested without mutating process
+/// environment shared with every other test.
+fn socket_path_in(runtime_dir: Option<&str>) -> Result<PathBuf, MissingRuntimeDir> {
+    match runtime_dir {
+        Some(dir) if !dir.is_empty() => Ok(PathBuf::from(dir).join("spe-ipc.sock")),
+        _ => Err(MissingRuntimeDir),
     }
 }
 
@@ -498,7 +528,15 @@ fn ipc_stream() -> impl iced::futures::Stream<Item = IpcEvent> {
     iced::stream::channel(32, async |mut output| {
         use iced::futures::SinkExt;
 
-        let path = socket_path();
+        let path = match socket_path() {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("IPC: {e}");
+                // Park forever — subscription produces no events.
+                std::future::pending::<()>().await;
+                unreachable!();
+            }
+        };
 
         // Remove stale socket file if it exists.
         let _ = std::fs::remove_file(&path);
@@ -939,9 +977,34 @@ mod tests {
     }
 
     #[test]
-    fn socket_path_ends_with_expected_filename() {
-        let path = socket_path();
-        assert!(path.to_str().unwrap().ends_with("spe-ipc.sock"));
+    fn socket_path_lives_in_the_runtime_dir() {
+        let path = socket_path_in(Some("/run/user/1000")).expect("a runtime dir is enough");
+        assert_eq!(path, PathBuf::from("/run/user/1000/spe-ipc.sock"));
+    }
+
+    #[test]
+    fn socket_path_is_refused_without_a_runtime_dir() {
+        // There is deliberately no /tmp fallback: a predictable name in a
+        // world-writable directory is a remove-then-bind race.
+        assert_eq!(socket_path_in(None), Err(MissingRuntimeDir));
+    }
+
+    #[test]
+    fn missing_runtime_dir_error_says_how_to_fix_it() {
+        let message = MissingRuntimeDir.to_string();
+        assert!(
+            message.contains("XDG_RUNTIME_DIR"),
+            "the error must name the variable to set, got: {message}"
+        );
+    }
+
+    #[test]
+    fn refused_socket_path_creates_no_socket() {
+        assert!(socket_path_in(None).is_err());
+        assert!(
+            !std::path::Path::new("/tmp/spe-ipc.sock").exists(),
+            "refusing must not fall back to creating a socket in /tmp"
+        );
     }
 
     // --- precondition checks: every command reports whether it acted (spe-749) ---
