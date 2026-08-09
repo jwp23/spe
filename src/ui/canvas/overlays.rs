@@ -76,8 +76,13 @@ impl OverlayCanvasProgram<'_> {
         if !bounds.contains(cursor_pos) {
             return None;
         }
+        let canvas_x = cursor_pos.x - bounds.x;
         let canvas_y = cursor_pos.y - bounds.y;
-        self.page_at_canvas_y(canvas_y, bounds.width)
+        let (page, rect) = self.page_at_canvas_y(canvas_y, bounds.width)?;
+        if canvas_x < rect.x || canvas_x >= rect.x + rect.width {
+            return None; // in horizontal margin beside the page
+        }
+        Some((page, rect))
     }
 
     /// Resolve the page under the cursor and its PDF conversion params.
@@ -832,6 +837,62 @@ fn draw_resize_handles(frame: &mut canvas::Frame, text_box: iced::Rectangle) {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    fn narrow_page_program<'a>(
+        dims: &'a HashMap<u32, (f32, f32)>,
+        registry: &'a FontRegistry,
+    ) -> OverlayCanvasProgram<'a> {
+        let layout = super::super::page_layout(dims, 1, 1.0, 72.0);
+        OverlayCanvasProgram {
+            page_layout: layout,
+            page_dimensions: dims,
+            scroll_y: 0.0,
+            viewport_height: 800.0,
+            overlays: &[],
+            zoom: 1.0,
+            dpi: 72.0,
+            active_overlay: None,
+            editing: false,
+            overlay_color: [0.0, 0.0, 1.0, 1.0],
+            font_registry: registry,
+        }
+    }
+
+    #[test]
+    fn page_hit_in_horizontal_margin_returns_none() {
+        // Page is 100x200 at scale 1.0, centered in a 400-wide canvas: page
+        // spans x in [150, 250). A cursor at x=10 sits in the left margin
+        // but at a y that falls within the page's vertical range.
+        let dims = HashMap::from([(1, (100.0, 200.0))]);
+        let registry = FontRegistry::new();
+        let program = narrow_page_program(&dims, &registry);
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 800.0,
+        };
+        let cursor_in_margin = iced::Point::new(10.0, 50.0);
+
+        assert_eq!(program.page_hit(cursor_in_margin, bounds), None);
+    }
+
+    #[test]
+    fn page_hit_inside_page_returns_page() {
+        let dims = HashMap::from([(1, (100.0, 200.0))]);
+        let registry = FontRegistry::new();
+        let program = narrow_page_program(&dims, &registry);
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 800.0,
+        };
+        let cursor_on_page = iced::Point::new(200.0, 50.0);
+
+        let hit = program.page_hit(cursor_on_page, bounds);
+        assert_eq!(hit.map(|(page, _)| page), Some(1));
+    }
 
     #[test]
     fn overlay_program_can_be_constructed() {
