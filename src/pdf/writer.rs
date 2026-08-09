@@ -1521,7 +1521,9 @@ mod tests {
         assert_eq!(cmap_lookup(&cmap, 0x92), Some(0x2019)); // right single quote
         assert_eq!(cmap_lookup(&cmap, 0x9F), Some(0x0178)); // Y with diaeresis
         // Codes WinAnsi leaves undefined have no mapping.
-        assert_eq!(cmap_lookup(&cmap, 0x81), None);
+        for code in [0x81, 0x8D, 0x8F, 0x90, 0x9D] {
+            assert_eq!(cmap_lookup(&cmap, code), None);
+        }
     }
 
     #[test]

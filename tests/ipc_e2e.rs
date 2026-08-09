@@ -338,6 +338,11 @@ fn ipc_cursive_overlay_text_is_extractable_by_pdftotext() {
             .arg("-")
             .output()
             .expect("pdftotext must be installed (poppler-utils)");
+        assert!(
+            output.status.success(),
+            "pdftotext failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         String::from_utf8_lossy(&output.stdout).into_owned()
     });
     let _ = std::fs::remove_dir_all(&runtime_dir);
