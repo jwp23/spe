@@ -306,6 +306,7 @@ impl App {
             editing: self.canvas.editing,
             undo_depth: self.undo_stack.len(),
             redo_depth: self.redo_stack.len(),
+            session_redo_depth: self.canvas.session_history.redo_depth(),
         }
     }
 
@@ -390,11 +391,28 @@ impl App {
         }
     }
 
+    /// Whether an undo keystroke would change anything: a step of the open
+    /// edit session, the session itself, or a command in the history. An open
+    /// session always counts, because closing it is the keystroke's change.
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty() || self.canvas.editing
+    }
+
+    /// Whether a redo keystroke would change anything.
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty() || self.canvas.session_history.redo_depth() > 0
+    }
+
     fn execute_command(&mut self, cmd: UndoCommand) {
         if let Some(doc) = &mut self.document {
             cmd.apply(&mut doc.overlays);
             self.undo_stack.push(cmd);
             self.redo_stack.clear();
+            // A command made inside an open session is a session step too, so
+            // undo walks the session's own edits in the order they were made.
+            if self.canvas.editing {
+                self.canvas.session_history.record_document();
+            }
         }
     }
 

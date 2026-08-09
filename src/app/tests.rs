@@ -1742,13 +1742,7 @@ fn edit_overlay_syncs_toolbar_font_and_size() {
 #[test]
 fn undo_font_change_syncs_toolbar_to_active_overlay() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
-    });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
+    place_committed_overlay(&mut app, 100.0, "Hello");
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::ChangeFont(courier));
 
@@ -2004,13 +1998,7 @@ fn font_size_arrow_key_result_decrements_when_focused() {
 #[test]
 fn redo_font_change_syncs_toolbar_to_active_overlay() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
-    });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
+    place_committed_overlay(&mut app, 100.0, "Hello");
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::ChangeFont(courier));
     app.update(Message::Undo);
@@ -2156,19 +2144,7 @@ fn commit_text_no_command_when_text_unchanged() {
 #[test]
 fn undo_after_text_edit_restores_previous_text() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
-    });
-
-    // Type text
-    let overlay = &mut app.document.as_mut().unwrap().overlays[0];
-    overlay.text = "Hello".to_string();
-
-    // Commit
-    let _ = app.update(Message::CommitText);
-    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+    place_and_commit_raw_text(&mut app, "Hello");
 
     // Undo
     let _ = app.update(Message::Undo);
@@ -2180,19 +2156,7 @@ fn undo_after_text_edit_restores_previous_text() {
 #[test]
 fn redo_after_undo_restores_edited_text() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
-    });
-
-    // Type text
-    let overlay = &mut app.document.as_mut().unwrap().overlays[0];
-    overlay.text = "Hello".to_string();
-
-    // Commit
-    let _ = app.update(Message::CommitText);
-    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+    place_and_commit_raw_text(&mut app, "Hello");
 
     // Undo
     let _ = app.update(Message::Undo);
@@ -3689,6 +3653,20 @@ fn editing_font_for_multiline_overlay_matches_selected_font() {
 // =====================================================================
 
 /// Place an overlay, type `text` into it, and commit the edit session.
+/// Place an overlay and commit `text` into it by writing the overlay field
+/// directly, bypassing `UpdateOverlayText` so that the commit path alone is
+/// what records the edit in the history.
+fn place_and_commit_raw_text(app: &mut App, text: &str) {
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.document.as_mut().unwrap().overlays[0].text = text.to_string();
+    let _ = app.update(Message::CommitText);
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, text);
+}
+
 fn place_committed_overlay(app: &mut App, x: f32, text: &str) {
     app.update(Message::PlaceOverlay {
         page: 1,
@@ -3707,6 +3685,105 @@ fn replay_undo_stack(app: &App) -> Vec<TextOverlay> {
         cmd.apply(&mut overlays);
     }
     overlays
+}
+
+/// Deterministic xorshift, so a property failure is reproducible from its seed.
+fn xorshift(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+/// Render an overlay into the key the history oracle compares. Position
+/// identifies the overlay. Text is left out while an edit session is open,
+/// which legitimately holds text the history has not recorded yet. Style is
+/// included only for pools that actually change it — it stays on the document
+/// history even mid-session, so it is always safe to compare when present.
+fn describe_overlay(app: &App, index: usize, overlay: &TextOverlay, include_style: bool) -> String {
+    let style = if include_style {
+        format!("#{:?}/{}", overlay.font, overlay.font_size)
+    } else {
+        String::new()
+    };
+    if app.canvas.editing && app.canvas.active_overlay == Some(index) {
+        format!("@{}{style}", overlay.position.x)
+    } else {
+        format!("{}@{}{style}", overlay.text, overlay.position.x)
+    }
+}
+
+/// The message pool both property checks draw from, indexed by `draw` in
+/// `0..9`: placement, typing, blanking, commit, deletion, selection, re-entry
+/// and undo/redo. Selection cases fall through to undo when the document is
+/// empty, so there is always a message to send.
+fn core_interleaving_message(app: &App, rng: &mut u64, step: u64, draw: u64) -> Message {
+    let len = app.document.as_ref().unwrap().overlays.len();
+    match draw {
+        0 => Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition {
+                x: (step * 7) as f32,
+                y: 700.0,
+            },
+            width: None,
+        },
+        1 => Message::UpdateOverlayText(format!("t{step}")),
+        2 => Message::UpdateOverlayText(String::new()),
+        3 => Message::CommitText,
+        4 => Message::DeleteOverlay,
+        5 if len > 0 => Message::SelectOverlay((xorshift(rng) % len as u64) as usize),
+        6 if len > 0 => Message::EditOverlay((xorshift(rng) % len as u64) as usize),
+        7 => Message::Undo,
+        8 => Message::Redo,
+        _ => Message::Undo,
+    }
+}
+
+/// Drive pseudo-random message sequences through a fresh app and assert, after
+/// every single message, that the document still agrees with the command
+/// history that is supposed to describe it.
+///
+/// `pick` draws the next message from the app's state, and `include_style`
+/// widens the oracle for pools that change font or size. The failure message
+/// replays the whole sequence, so a divergence names the exact interleaving.
+fn assert_history_tracks_document(
+    seeds: std::ops::Range<u64>,
+    include_style: bool,
+    pick: impl Fn(&App, &mut u64, u64) -> Message,
+) {
+    for seed in seeds {
+        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut app = test_app_with_document();
+        let mut log: Vec<String> = Vec::new();
+
+        for step in 0..30u64 {
+            let msg = pick(&app, &mut rng, step);
+            log.push(format!("{msg:?}"));
+            app.update(msg);
+
+            let live: Vec<String> = app
+                .document
+                .as_ref()
+                .unwrap()
+                .overlays
+                .iter()
+                .enumerate()
+                .map(|(i, o)| describe_overlay(&app, i, o, include_style))
+                .collect();
+            let replayed: Vec<String> = replay_undo_stack(&app)
+                .iter()
+                .enumerate()
+                .map(|(i, o)| describe_overlay(&app, i, o, include_style))
+                .collect();
+            assert_eq!(
+                live,
+                replayed,
+                "seed {seed} step {step}: document diverged from history\n{}",
+                log.join("\n")
+            );
+        }
+    }
 }
 
 fn assert_history_matches_document(app: &App, context: &str) {
@@ -3794,6 +3871,12 @@ fn undo_while_editing_an_existing_overlay_restores_its_pre_edit_text() {
     let overlays = &app.document.as_ref().unwrap().overlays;
     assert_eq!(overlays.len(), 1);
     assert_eq!(overlays[0].text, "original");
+    assert!(
+        app.canvas.editing,
+        "the typing is undone as a session step, which leaves the box open; \
+         closing the session is the next undo down the gradient"
+    );
+    app.update(Message::Undo);
     assert!(!app.canvas.editing);
 }
 
@@ -3875,88 +3958,32 @@ fn stale_edit_session_cannot_discard_an_unrelated_overlay() {
 /// command history that is supposed to describe it.
 #[test]
 fn document_always_matches_undo_history_under_arbitrary_interleavings() {
-    // Deterministic xorshift so failures are reproducible.
-    fn next(state: &mut u64) -> u64 {
-        *state ^= *state << 13;
-        *state ^= *state >> 7;
-        *state ^= *state << 17;
-        *state
-    }
-
-    for seed in 1..2000u64 {
-        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-        let mut app = test_app_with_document();
-        let mut log: Vec<String> = Vec::new();
-
-        for step in 0..30u64 {
-            let len = app.document.as_ref().unwrap().overlays.len();
-            let msg = match next(&mut rng) % 9 {
-                0 => Message::PlaceOverlay {
-                    page: 1,
-                    position: PdfPosition {
-                        x: (step * 7) as f32,
-                        y: 700.0,
-                    },
-                    width: None,
-                },
-                1 => Message::UpdateOverlayText(format!("t{step}")),
-                2 => Message::UpdateOverlayText(String::new()),
-                3 => Message::CommitText,
-                4 => Message::DeleteOverlay,
-                5 if len > 0 => Message::SelectOverlay((next(&mut rng) % len as u64) as usize),
-                6 if len > 0 => Message::EditOverlay((next(&mut rng) % len as u64) as usize),
-                7 => Message::Undo,
-                _ => Message::Redo,
-            };
-            log.push(format!("{msg:?}"));
-            app.update(msg);
-
-            // Positions identify overlays. Text is compared too, except while
-            // an edit session is open, which legitimately holds text the
-            // history has not recorded yet.
-            let include_text = !app.canvas.editing;
-            let describe = |o: &TextOverlay| {
-                if include_text {
-                    format!("{}@{}", o.text, o.position.x)
-                } else {
-                    format!("@{}", o.position.x)
-                }
-            };
-            let live: Vec<String> = app
-                .document
-                .as_ref()
-                .unwrap()
-                .overlays
-                .iter()
-                .map(describe)
-                .collect();
-            let replayed: Vec<String> = replay_undo_stack(&app).iter().map(describe).collect();
-            assert_eq!(
-                live,
-                replayed,
-                "seed {seed} step {step}: document diverged from history\n{}",
-                log.join("\n")
-            );
-        }
-    }
+    assert_history_tracks_document(1..2000, false, |app, rng, step| {
+        let draw = xorshift(rng) % 9;
+        core_interleaving_message(app, rng, step, draw)
+    });
 }
 
 #[test]
-fn undo_while_editing_without_changes_falls_through_to_the_history() {
+fn undo_while_editing_without_changes_closes_the_session_before_the_history() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "first");
     place_committed_overlay(&mut app, 200.0, "second");
 
-    // Open an edit session but change nothing, so cancelling it is invisible.
+    // Open an edit session but change nothing, so closing it is the only
+    // change the keystroke makes.
     app.update(Message::EditOverlay(1));
     app.update(Message::Undo);
 
-    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert!(!app.canvas.editing, "the keystroke closes the box");
     assert_eq!(
-        overlays[1].text, "",
-        "a no-op edit session must not swallow the undo keystroke"
+        app.document.as_ref().unwrap().overlays[1].text,
+        "second",
+        "closing the box is change enough; the history waits for the next keystroke"
     );
-    assert!(!app.canvas.editing);
+
+    app.update(Message::Undo);
+    assert_eq!(app.document.as_ref().unwrap().overlays[1].text, "");
 }
 
 #[test]
@@ -4309,4 +4336,275 @@ fn check_ipc_frame_wait_keeps_pending_when_not_yet_presented() {
     app.pending_frame_wait = Some(app.state_generation + 1);
     let _ = app.check_ipc_frame_wait();
     assert!(app.pending_frame_wait.is_some());
+}
+
+// --- Session-granular undo (spe-5d1) ---
+//
+// While an edit box is open, Ctrl+Z steps back through the edits made inside
+// that session before it reaches the last step of the gradient: cancelling the
+// session, and then the document history.
+
+/// Type `text` one character at a time, the way a real keyboard drives
+/// `UpdateOverlayText` — each keystroke sends the whole accumulated string.
+fn type_text(app: &mut App, text: &str) {
+    let mut typed = app
+        .document
+        .as_ref()
+        .and_then(|doc| doc.overlays.get(app.canvas.active_overlay?))
+        .map_or_else(String::new, |o| o.text.clone());
+    for c in text.chars() {
+        typed.push(c);
+        app.update(Message::UpdateOverlayText(typed.clone()));
+    }
+}
+
+fn overlay_text(app: &App) -> String {
+    app.document.as_ref().unwrap().overlays[app.canvas.active_overlay.unwrap()]
+        .text
+        .clone()
+}
+
+#[test]
+fn consecutive_typing_coalesces_into_one_session_undo_step() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "start");
+    app.update(Message::EditOverlay(0));
+    type_text(&mut app, "abc");
+
+    app.update(Message::Undo);
+
+    assert_eq!(
+        overlay_text(&app),
+        "start",
+        "an unbroken run of typing undoes as a single burst"
+    );
+    assert!(app.canvas.editing, "the session stays open");
+}
+
+#[test]
+fn a_font_change_breaks_the_typing_burst_into_separate_session_steps() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "S");
+    app.update(Message::EditOverlay(0));
+    type_text(&mut app, "ab");
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::ChangeFont(courier));
+    type_text(&mut app, "cd");
+
+    app.update(Message::Undo);
+    assert_eq!(overlay_text(&app), "Sab", "the second burst undoes alone");
+
+    app.update(Message::Undo);
+    assert_eq!(
+        app.document.as_ref().unwrap().overlays[0].font,
+        app.font_registry.default_font(),
+        "the font change is its own session step"
+    );
+    assert_eq!(overlay_text(&app), "Sab");
+
+    app.update(Message::Undo);
+    assert_eq!(overlay_text(&app), "S", "the first burst undoes last");
+    assert!(app.canvas.editing);
+}
+
+#[test]
+fn session_undo_of_a_font_size_change_restores_the_previous_size() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "text");
+    app.update(Message::EditOverlay(0));
+    let original = app.document.as_ref().unwrap().overlays[0].font_size;
+    app.update(Message::ChangeFontSize(original + 10.0));
+
+    app.update(Message::Undo);
+
+    assert!(
+        (app.document.as_ref().unwrap().overlays[0].font_size - original).abs() < f32::EPSILON,
+        "a size change made mid-session undoes as a session step"
+    );
+    assert!(app.canvas.editing);
+    assert!(
+        (app.toolbar.font_size - original).abs() < f32::EPSILON,
+        "the toolbar resyncs to the restored size"
+    );
+}
+
+#[test]
+fn exhausting_the_session_history_cancels_the_session_then_reaches_the_document() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "committed");
+    app.update(Message::EditOverlay(0));
+    type_text(&mut app, "X");
+
+    // Step 1: the typing burst.
+    app.update(Message::Undo);
+    assert_eq!(overlay_text(&app), "committed");
+    assert!(app.canvas.editing);
+
+    // Step 2: the session itself. It changed nothing once the burst was
+    // undone, so it falls through to the document history, exactly as today.
+    app.update(Message::Undo);
+    assert!(!app.canvas.editing, "the session closes");
+    assert_history_matches_document(&app, "after the session history ran out");
+}
+
+#[test]
+fn session_redo_reapplies_a_session_undo_without_closing_the_session() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "start");
+    app.update(Message::EditOverlay(0));
+    type_text(&mut app, "more");
+    app.update(Message::Undo);
+    assert_eq!(overlay_text(&app), "start");
+
+    app.update(Message::Redo);
+
+    assert_eq!(overlay_text(&app), "startmore", "session redo restores it");
+    assert!(app.canvas.editing, "redo must not close the session");
+}
+
+#[test]
+fn typing_after_a_session_undo_clears_the_session_redo() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "start");
+    app.update(Message::EditOverlay(0));
+    type_text(&mut app, "abc");
+    app.update(Message::Undo);
+    type_text(&mut app, "z");
+
+    app.update(Message::Redo);
+
+    assert_eq!(
+        overlay_text(&app),
+        "startz",
+        "a new session edit discards what redo would have reapplied"
+    );
+}
+
+#[test]
+fn committing_after_a_session_undo_records_only_the_net_change() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "start");
+    let depth_before = app.undo_stack.len();
+    app.update(Message::EditOverlay(0));
+    type_text(&mut app, "abc");
+    app.update(Message::Undo);
+    app.update(Message::CommitText);
+
+    assert_eq!(
+        app.undo_stack.len(),
+        depth_before,
+        "a session undone back to its start records nothing"
+    );
+    assert_history_matches_document(&app, "after committing a self-cancelling session");
+}
+
+#[test]
+fn session_undo_inside_a_fresh_placement_stops_at_the_placement() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    type_text(&mut app, "draft");
+
+    // The typing burst goes first, leaving the blank fresh placement.
+    app.update(Message::Undo);
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
+    assert_eq!(overlay_text(&app), "");
+
+    // The next undo cancels the placement itself.
+    app.update(Message::Undo);
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+    assert!(app.undo_stack.is_empty());
+    assert!(!app.canvas.editing);
+}
+
+#[test]
+fn undo_is_offered_while_a_session_has_steps_to_step_back_through() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "start");
+    while app.can_undo() {
+        app.update(Message::Undo);
+    }
+    assert!(!app.can_undo(), "nothing left anywhere");
+
+    while app.can_redo() {
+        app.update(Message::Redo);
+    }
+    app.update(Message::EditOverlay(0));
+    assert!(
+        !app.can_redo(),
+        "an open session with no steps has nothing to redo"
+    );
+
+    type_text(&mut app, "x");
+    assert!(app.can_undo(), "the typing burst is undoable");
+    app.update(Message::Undo);
+    assert!(app.can_redo(), "the undone burst is redoable");
+}
+
+#[test]
+fn document_always_matches_undo_history_under_session_undo_interleavings() {
+    // Widens the pool with the style changes that are reachable mid-session,
+    // and the oracle with the font and size they move.
+    assert_history_tracks_document(1..1500, true, |app, rng, step| {
+        let courier = app.font_registry.find_by_name("Courier").unwrap();
+        let helvetica = app.font_registry.default_font();
+        match xorshift(rng) % 11 {
+            7 => Message::ChangeFont(if step % 2 == 0 { courier } else { helvetica }),
+            8 => Message::ChangeFontSize(10.0 + (step % 5) as f32),
+            9 => core_interleaving_message(app, rng, step, 7),
+            10 => core_interleaving_message(app, rng, step, 8),
+            draw => core_interleaving_message(app, rng, step, draw),
+        }
+    });
+}
+
+#[test]
+fn closing_the_session_is_its_own_undo_keystroke() {
+    // The reviewer's probe: with the session's own edits undone, the next
+    // Ctrl+Z must spend itself closing the box. Letting it close the box AND
+    // reverse a document command in one keystroke reverted an unrelated
+    // overlay the user never touched.
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "first");
+    place_committed_overlay(&mut app, 200.0, "second");
+
+    app.update(Message::EditOverlay(0));
+    type_text(&mut app, "X");
+
+    // 1: the typing burst, leaving the session open and changed nothing.
+    app.update(Message::Undo);
+    assert_eq!(overlay_text(&app), "first");
+    assert!(app.canvas.editing);
+
+    // 2: the session itself, and nothing else.
+    app.update(Message::Undo);
+    assert!(!app.canvas.editing, "the box closes");
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 2, "no document command may be undone too");
+    assert_eq!(
+        overlays[1].text, "second",
+        "another overlay's text must survive the keystroke that closed the box"
+    );
+
+    // 3: only now does the document history move.
+    app.update(Message::Undo);
+    assert_eq!(app.document.as_ref().unwrap().overlays[1].text, "");
+}
+
+#[test]
+fn an_open_session_is_always_undoable_because_closing_it_is_work() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "text");
+    app.update(Message::EditOverlay(0));
+    // Isolate the session: with the document history emptied, only the open
+    // box can be the thing undo would act on.
+    app.undo_stack.clear();
+
+    assert!(
+        app.can_undo(),
+        "the box is open, so undo has the close to spend itself on"
+    );
 }

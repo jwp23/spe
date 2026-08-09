@@ -74,6 +74,8 @@ pub struct CommandContext<'a> {
     pub undo_depth: usize,
     /// Number of commands available to redo.
     pub redo_depth: usize,
+    /// Number of session edits redo could reapply.
+    pub session_redo_depth: usize,
 }
 
 impl<'a> CommandContext<'a> {
@@ -320,8 +322,10 @@ impl IpcCommand {
             }
             IpcCommand::Undo => {
                 ctx.require_document()?;
-                // An in-progress edit is itself undoable: undo cancels the
-                // session before it reaches the command history.
+                // An in-progress edit is itself undoable: undo steps back
+                // through the edits made inside the session, then closes it,
+                // before it reaches the command history. `editing` therefore
+                // covers every session step on its own.
                 if ctx.undo_depth == 0 && !ctx.editing {
                     return Err(IpcError::NothingToUndo);
                 }
@@ -329,15 +333,21 @@ impl IpcCommand {
             }
             IpcCommand::Redo => {
                 ctx.require_document()?;
-                // The mirror image of Undo's rule above, not an oversight.
-                // Undo cancels an open edit session, so a session is itself
-                // something to undo. Redo instead *commits* the session
-                // first, and committing clears the redo stack — so by the
-                // time the redo would run there is truthfully nothing left to
-                // reapply. Refusing here keeps the reply honest and, unlike
-                // reading a post-commit depth, needs no state the context
-                // cannot see. The GUI's Ctrl+Shift+Z keeps its own behaviour;
-                // this is an IPC precondition only.
+                // A session that has steps to reapply is redone in place: the
+                // step is put back without committing, so the redo does real
+                // work and the reply is honest.
+                if ctx.session_redo_depth > 0 {
+                    return Ok(Message::Redo);
+                }
+                // Without one, this is the mirror image of Undo's rule above,
+                // not an oversight. Undo steps back into an open edit session,
+                // so a session is itself something to undo. Redo that reaches
+                // past the session *commits* it first, and committing clears
+                // the redo stack — so by the time the redo would run there is
+                // truthfully nothing left to reapply. Refusing here keeps the
+                // reply honest and, unlike reading a post-commit depth, needs
+                // no state the context cannot see. The GUI's Ctrl+Shift+Z
+                // keeps its own behaviour; this is an IPC precondition only.
                 if ctx.editing {
                     return Err(IpcError::RedoWhileEditing);
                 }
@@ -1402,6 +1412,23 @@ mod tests {
         };
         let result = IpcCommand::Redo.to_message(&ctx, &test_registry());
         assert!(matches!(result, Err(IpcError::RedoWhileEditing)));
+    }
+
+    #[test]
+    fn redo_while_editing_is_allowed_when_the_session_has_a_step_to_reapply() {
+        // A session redo step is reapplied in place, without committing, so
+        // there really is something to redo — the reason the editing case is
+        // otherwise refused does not apply.
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            active_overlay: Some(0),
+            editing: true,
+            session_redo_depth: 1,
+            ..CommandContext::default()
+        };
+        let msg = IpcCommand::Redo.to_message(&ctx, &test_registry()).unwrap();
+        assert!(matches!(msg, Message::Redo));
     }
 
     #[test]

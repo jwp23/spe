@@ -54,6 +54,10 @@ pub struct CanvasState {
     /// ends for any reason: committed with text, cancelled, or superseded by
     /// another overlay becoming active.
     pub fresh_placement: Option<usize>,
+    /// Undo/redo history of the edits made inside the open edit session, so
+    /// an edit in progress can be stepped back through without disturbing the
+    /// document history. Empty whenever no session is open.
+    pub session_history: crate::command::SessionHistory,
     /// Counter incremented on each zoom change; used to debounce re-renders.
     pub zoom_generation: u64,
     /// The `zoom_generation` the currently cached `page_images` are being
@@ -77,6 +81,7 @@ impl Default for CanvasState {
             editing: false,
             edit_start_text: None,
             fresh_placement: None,
+            session_history: crate::command::SessionHistory::default(),
             zoom_generation: 0,
             rendered_generation: 0,
             scroll_y: 0.0,
