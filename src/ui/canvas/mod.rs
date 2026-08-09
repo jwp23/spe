@@ -133,6 +133,17 @@ pub(crate) fn should_draw_overlay_text(
     !(editing && active_overlay == Some(index))
 }
 
+/// Whether to draw the selection box and resize handle for a given overlay.
+/// Returns false while the overlay is being edited, because the floating text
+/// widget draws its own border and a second box would render on top of it.
+pub(crate) fn should_draw_selection_box(
+    editing: bool,
+    active_overlay: Option<usize>,
+    index: usize,
+) -> bool {
+    active_overlay == Some(index) && !editing
+}
+
 /// Draw overlay text at a screen position on the canvas frame.
 pub(crate) fn draw_overlay_text(
     frame: &mut canvas::Frame,

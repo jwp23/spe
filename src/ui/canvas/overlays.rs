@@ -13,8 +13,8 @@ use super::{
     OVERLAY_TINT_ALPHA, OVERLAY_TINT_HOVER_ALPHA, OVERLAY_TINT_HOVER_BORDER_ALPHA, PageLayout,
     PlacementDragState, ProgramState, ResizeDragState, SELECTION_BORDER_WIDTH,
     SELECTION_BOX_PADDING, SELECTION_COLOR, draw_overlay_text, hit_test, page_rect_in_canvas,
-    resize_handle_hit, should_draw_overlay_text, tint_size_for_overlay, to_screen_rect,
-    visible_pages,
+    resize_handle_hit, should_draw_overlay_text, should_draw_selection_box, tint_size_for_overlay,
+    to_screen_rect, visible_pages,
 };
 
 /// Canvas program that renders text overlays using native Iced drawing primitives.
@@ -407,7 +407,7 @@ impl OverlayCanvasProgram<'_> {
             );
         }
 
-        if self.active_overlay == Some(index) {
+        if should_draw_selection_box(self.editing, self.active_overlay, index) {
             draw_selection_box(
                 frame,
                 &overlay.text,
