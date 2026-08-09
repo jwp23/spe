@@ -103,7 +103,7 @@ mod tests {
     use super::*;
     use crate::fonts::FontRegistry;
     use crate::ui::test_harness::{Harness, Screenshot, load_bundled_fonts};
-    use crate::ui::toolbar::font_options;
+    use crate::ui::toolbar::{font_options, option_named};
     use iced_test::simulator;
 
     const VIEWPORT: iced::Size = iced::Size::new(320.0, 400.0);
@@ -112,16 +112,9 @@ mod tests {
     const LIST_REGION: iced::Rectangle = iced::Rectangle {
         x: 0.0,
         y: ANCHOR_HEIGHT + crate::ui::popover::PANEL_GAP,
-        width: PICKER_WIDTH,
+        width: LIST_WIDTH,
         height: 200.0,
     };
-
-    fn option_named(registry: &FontRegistry, name: &str) -> FontOption {
-        font_options(registry)
-            .into_iter()
-            .find(|o| o.name == name)
-            .unwrap_or_else(|| panic!("no font option named {name}"))
-    }
 
     /// Helvetica and Courier, in that order — two families the pixel and
     /// selector tests can tell apart.

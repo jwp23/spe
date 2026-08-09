@@ -1505,10 +1505,7 @@ fn test_app_with_overlay() -> App {
 
 /// The font picker option for `name`, exactly as the toolbar builds it.
 fn font_option_named(app: &App, name: &str) -> toolbar::FontOption {
-    toolbar::font_options(&app.font_registry)
-        .into_iter()
-        .find(|o| o.name == name)
-        .unwrap_or_else(|| panic!("no font option named {name}"))
+    toolbar::option_named(&app.font_registry, name)
 }
 
 /// An app with a single selected overlay whose font size has been set to

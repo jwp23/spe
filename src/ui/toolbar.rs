@@ -35,6 +35,15 @@ pub fn font_options(registry: &FontRegistry) -> Vec<FontOption> {
         .collect()
 }
 
+/// The option a registry offers for `name`, as the toolbar would build it.
+#[cfg(test)]
+pub fn option_named(registry: &FontRegistry, name: &str) -> FontOption {
+    font_options(registry)
+        .into_iter()
+        .find(|o| o.name == name)
+        .unwrap_or_else(|| panic!("no font option named {name}"))
+}
+
 /// Amount the size stepper buttons/keys change the font size per press.
 const FONT_SIZE_STEP: f32 = 1.0;
 /// The single floor every font-size input path enforces: the stepper
@@ -327,14 +336,6 @@ mod tests {
                 entry.display_name
             );
         }
-    }
-
-    /// The option a registry offers for `name`, as the toolbar would build it.
-    fn option_named(registry: &FontRegistry, name: &str) -> FontOption {
-        font_options(registry)
-            .into_iter()
-            .find(|o| o.name == name)
-            .unwrap_or_else(|| panic!("no font option named {name}"))
     }
 
     #[test]
