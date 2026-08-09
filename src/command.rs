@@ -405,6 +405,92 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_text_changes_become_one_step() {
+        let mut history = SessionHistory::default();
+        history.record_text("", "a");
+        history.record_text("a", "ab");
+        history.record_text("ab", "abc");
+
+        assert_eq!(history.undo_depth(), 1);
+        assert_eq!(
+            history.undo(),
+            Some(SessionStep::Text {
+                old: String::new(),
+                new: "abc".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_document_step_breaks_the_run_of_typing() {
+        let mut history = SessionHistory::default();
+        history.record_text("", "a");
+        history.record_document();
+        history.record_text("a", "ab");
+
+        assert_eq!(history.undo_depth(), 3);
+        assert_eq!(
+            history.undo(),
+            Some(SessionStep::Text {
+                old: "a".to_string(),
+                new: "ab".to_string(),
+            })
+        );
+        assert_eq!(history.undo(), Some(SessionStep::Document));
+    }
+
+    #[test]
+    fn an_undo_breaks_the_run_of_typing() {
+        let mut history = SessionHistory::default();
+        history.record_text("", "a");
+        history.record_document();
+        history.record_text("a", "ab");
+        history.undo();
+        history.redo();
+        // Typing resumed after stepping around must not fold back into the
+        // burst that was already walked over.
+        history.record_text("ab", "abc");
+
+        assert_eq!(history.undo_depth(), 4);
+    }
+
+    #[test]
+    fn a_text_change_that_changes_nothing_is_not_a_step() {
+        let mut history = SessionHistory::default();
+        history.record_text("same", "same");
+
+        assert_eq!(
+            history.undo_depth(),
+            0,
+            "undo must never spend a keystroke doing nothing visible"
+        );
+    }
+
+    #[test]
+    fn undone_steps_are_redoable_until_a_new_edit_arrives() {
+        let mut history = SessionHistory::default();
+        history.record_text("", "a");
+        history.undo();
+        assert_eq!(history.redo_depth(), 1);
+
+        history.record_text("", "z");
+        assert_eq!(
+            history.redo_depth(),
+            0,
+            "a new session edit discards the redo side"
+        );
+    }
+
+    #[test]
+    fn an_empty_history_has_nothing_to_step_through() {
+        let mut history = SessionHistory::default();
+        assert_eq!(history.undo(), None);
+        assert_eq!(history.redo(), None);
+        assert_eq!(history.undo_depth(), 0);
+        assert_eq!(history.redo_depth(), 0);
+    }
+
+    #[test]
     fn resize_overlay_round_trip() {
         let mut overlay = sample_overlay();
         overlay.width = Some(200.0);
