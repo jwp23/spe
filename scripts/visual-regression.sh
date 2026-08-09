@@ -53,14 +53,19 @@ list_scenario_names() {
     declare -F | awk '{print $3}' | grep '^scenario_' | sed 's/^scenario_//'
 }
 
-run_scenario() {
-    local name="$1" output="$2"
+validate_scenario() {
+    local name="$1"
     local fn="scenario_$name"
     if ! declare -F "$fn" >/dev/null; then
         echo "Unknown scenario: $name" >&2
         echo "Available scenarios: $(list_scenario_names | tr '\n' ' ')" >&2
         exit 1
     fi
+}
+
+run_scenario() {
+    local name="$1" output="$2"
+    validate_scenario "$name"
 
     "$SCREENSHOT_SH" start >&2
     trap '"$SCREENSHOT_SH" stop >&2 || true' EXIT
@@ -103,6 +108,7 @@ do_capture() {
 
 do_compare() {
     local name="${1:?Usage: $0 compare <scenario> [reference]}"
+    validate_scenario "$name"
     local reference="${2:-$REFERENCE_DIR/$name.png}"
 
     if [[ ! -f "$reference" ]]; then

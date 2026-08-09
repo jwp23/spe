@@ -11,6 +11,15 @@ Not wired into CI — cage requires a real (if headless) Wayland compositor,
 which CI doesn't have, matching the existing e2e-test skip pattern. This is a
 local dev tool, same as `scripts/screenshot.sh` itself.
 
+## Prerequisites
+
+Everything `docs/screenshot-tool.md` requires (cage, grim, socat), plus
+ImageMagick for `compare` — used by `compare` to diff captures against
+references. `scripts/visual-regression.sh` doesn't preflight-check for it;
+install it yourself before running `compare`.
+
+Quick install (Arch): `sudo pacman -S imagemagick`
+
 ## Quick Start
 
 ```bash
@@ -114,8 +123,10 @@ hitting, not scenario-script luck:
    showing a blank page. There's no IPC signal for "frame presented" to poll
    on instead, so `scripts/visual-regression.sh` sleeps 300ms before
    capturing — a fixed settle, not a condition-poll, because no condition to
-   poll exists yet. Verified 10/10 pixel-identical captures with it in
-   place.
+   poll exists yet. Verified 10/10 non-blank captures with it in place,
+   eliminating the intermittent blank-page grab; the occasional ~85-pixel
+   antialiasing variance described above is a separate, much smaller effect
+   that this settle doesn't touch.
 
 ### Possible follow-ups (not done here)
 
