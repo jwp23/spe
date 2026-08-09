@@ -6,4 +6,6 @@ pub mod fonts;
 pub mod ipc;
 pub mod overlay;
 pub mod pdf;
+#[cfg(test)]
+pub(crate) mod test_render;
 pub mod ui;
