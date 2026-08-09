@@ -6,6 +6,8 @@ use crate::coordinate::{ConversionParams, pdf_to_screen, render_scale};
 use crate::fonts::FontRegistry;
 use crate::overlay::TextOverlay;
 
+use super::overlay_text_box;
+
 /// Gap between pages in continuous scrolling mode (pixels).
 pub const PAGE_GAP: f32 = 16.0;
 
@@ -181,13 +183,8 @@ pub fn hit_test(
             continue;
         }
         let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
-        let bbox = registry.overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size);
-        let scale = params.scale();
-        let w = bbox.width * scale;
-        let h = bbox.height * scale;
-        // In screen space, the overlay baseline is at sy.
-        // Text extends upward from baseline, so the hit box is [sy - h, sy].
-        if screen_x >= sx && screen_x <= sx + w && screen_y >= sy - h && screen_y <= sy {
+        let text_box = overlay_text_box(overlay, sx, sy, params.scale(), registry);
+        if text_box.contains(iced::Point::new(screen_x, screen_y)) {
             return Some(i);
         }
     }
