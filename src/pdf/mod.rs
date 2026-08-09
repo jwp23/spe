@@ -1,4 +1,5 @@
 pub mod renderer;
+pub mod win_ansi;
 pub mod writer;
 
 use std::collections::HashMap;

@@ -3,11 +3,10 @@ use crate::app::Message;
 use crate::coordinate::ConversionParams;
 use crate::fonts::FontRegistry;
 use crate::overlay::{OverlayBox, PdfPosition, TextOverlay};
-use crate::test_render::{RENDER_SIZE, RenderedCanvas, render_element};
+use crate::ui::test_harness::{Harness, RENDER_SIZE, Screenshot};
 use iced::event;
 use iced::mouse;
 use iced::widget::canvas;
-use iced::widget::image::Handle;
 use std::collections::HashMap;
 
 // --- PageLayout tests ---
@@ -1086,6 +1085,31 @@ fn update_click_outside_page_deselects() {
     let (msg, status, _state) = press_on(&overlays, None, cursor_at(50.0, 50.0));
     assert_eq!(status, event::Status::Captured);
     assert!(matches!(msg, Some(Message::DeselectOverlay)));
+}
+
+#[test]
+fn update_click_on_page_missing_dimensions_is_ignored_not_deselected() {
+    // Page 1 exists in the layout (so the click lands on a page, not a gap)
+    // but page_dimensions lacks an entry for it, so conversion params can't
+    // be built. This must be distinct from "no page under the cursor": a
+    // page-hit-but-no-params click is simply ignored, it does not deselect.
+    let overlays: Vec<TextOverlay> = vec![];
+    let registry = FontRegistry::new();
+    let layout_dims = test_page_dimensions();
+    let empty_dims: HashMap<u32, (f32, f32)> = HashMap::new();
+    let program = OverlayCanvasProgram {
+        page_layout: page_layout(&layout_dims, 1, TEST_ZOOM, TEST_DPI),
+        page_dimensions: &empty_dims,
+        ..test_program(&overlays, &empty_dims, &registry)
+    };
+    let mut state = ProgramState::default();
+    let bounds = test_canvas_bounds();
+    let cursor = cursor_at(300.0, 200.0); // inside page 1's rect
+
+    let action = program.update(&mut state, &left_press_event(), bounds, cursor);
+    let (msg, status) = decompose(action);
+    assert!(msg.is_none());
+    assert_eq!(status, event::Status::Ignored);
 }
 
 #[test]
@@ -2389,7 +2413,6 @@ fn should_draw_selection_box_false_when_nothing_selected() {
 // these prove it actually reaches the screen.
 // =====================================================================
 
-/// Size of the headless render surface, in logical pixels.
 /// Render an overlay canvas program over a white page, headlessly.
 ///
 /// When `cursor` is given it is delivered as a real cursor-moved event first,
@@ -2397,12 +2420,21 @@ fn should_draw_selection_box_false_when_nothing_selected() {
 fn render_overlay_canvas(
     program: OverlayCanvasProgram<'_>,
     cursor: Option<iced::Point>,
-) -> RenderedCanvas {
+) -> Screenshot {
     let element: iced::Element<Message> = iced::widget::canvas(program)
         .width(iced::Length::Fill)
         .height(iced::Length::Fill)
         .into();
     render_element(element, cursor)
+}
+
+/// Render an arbitrary widget over a white background, headlessly.
+fn render_element(element: iced::Element<'_, Message>, cursor: Option<iced::Point>) -> Screenshot {
+    let mut harness = Harness::new(element, RENDER_SIZE);
+    if let Some(position) = cursor {
+        let _ = harness.move_cursor(position);
+    }
+    harness.screenshot()
 }
 
 /// Screen-space baseline of an overlay inside the rendered canvas.
@@ -2654,15 +2686,15 @@ fn resize_handle_hit_area_covers_the_last_line_of_a_multiline_overlay() {
 // canvas, so text does not jump when an edit session starts or ends
 // =====================================================================
 
-impl RenderedCanvas {
-    /// Top row of each horizontal band of ink, scanning the whole surface.
-    /// A band is a run of consecutive rows containing at least one pixel
-    /// darker than `threshold`, so one band is one line of text.
-    fn ink_band_tops(&self, threshold: f32) -> Vec<u32> {
+/// Top row of each horizontal band of ink in `shot`, scanning the whole
+/// surface. A band is a run of consecutive rows containing at least one pixel
+/// darker than `threshold`, so one band is one line of text.
+fn ink_band_tops(shot: &Screenshot, threshold: f32) -> Vec<u32> {
+    {
         let mut tops = Vec::new();
         let mut in_band = false;
-        for y in 0..self.height() {
-            let inked = (0..self.width).any(|x| self.darkening(x, y) >= threshold);
+        for y in 0..shot.height {
+            let inked = (0..shot.width).any(|x| shot.darkening(x, y) >= threshold);
             if inked && !in_band {
                 tops.push(y);
             }
@@ -2688,7 +2720,7 @@ fn editor_line_tops(font_size: f32) -> Vec<u32> {
             selection: iced::Color::TRANSPARENT,
         })
         .into();
-    render_element(editor, None).ink_band_tops(100.0)
+    ink_band_tops(&render_element(editor, None), 100.0)
 }
 
 #[test]
@@ -2834,16 +2866,14 @@ fn overlay_with_font(font_name: &str, font_size: f32, text: &str) -> TextOverlay
     }
 }
 
-impl RenderedCanvas {
-    /// Rightmost column holding glyph ink between `top` and `bottom`.
-    ///
-    /// The threshold sits far above the overlay tint's darkening (~51 on a
-    /// white page) so only the near-black text counts.
-    fn rightmost_ink_column(&self, top: u32, bottom: u32) -> Option<u32> {
-        (0..self.width)
-            .filter(|x| (top..=bottom).any(|y| self.darkening(*x, y) >= 150.0))
-            .next_back()
-    }
+/// Rightmost column of `shot` holding glyph ink between `top` and `bottom`.
+///
+/// The threshold sits far above the overlay tint's darkening (~51 on a
+/// white page) so only the near-black text counts.
+fn rightmost_ink_column(shot: &Screenshot, top: u32, bottom: u32) -> Option<u32> {
+    (0..shot.width)
+        .filter(|x| (top..=bottom).any(|y| shot.darkening(*x, y) >= 150.0))
+        .next_back()
 }
 
 #[test]
@@ -2865,9 +2895,12 @@ fn the_text_box_covers_every_glyph_of_a_proportional_font_overlay() {
         crate::coordinate::render_scale(TEST_ZOOM, TEST_DPI),
         &registry,
     );
-    let rightmost = canvas
-        .rightmost_ink_column(text_box.y as u32, (text_box.y + text_box.height) as u32)
-        .expect("the overlay text should have been rendered");
+    let rightmost = rightmost_ink_column(
+        &canvas,
+        text_box.y as u32,
+        (text_box.y + text_box.height) as u32,
+    )
+    .expect("the overlay text should have been rendered");
 
     let box_right = text_box.x + text_box.width;
     assert!(
@@ -2968,8 +3001,7 @@ fn text_input_first_line_top(
     if let Some(line_height) = line_height {
         input = input.line_height(line_height);
     }
-    *render_element(input.into(), None)
-        .ink_band_tops(100.0)
+    *ink_band_tops(&render_element(input.into(), None), 100.0)
         .first()
         .expect("the input should render its text")
 }
@@ -3284,23 +3316,12 @@ fn resize_preview_bounds(
         .width(iced::Length::Fill)
         .height(iced::Length::Fill)
         .into();
-    let grab = iced::Point::new(grab_x, grab_y);
-    let to = iced::Point::new(x, y);
-    let steps = [
-        (
-            iced::Event::Mouse(mouse::Event::CursorMoved { position: grab }),
-            grab,
-        ),
-        (
-            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
-            grab,
-        ),
-        (
-            iced::Event::Mouse(mouse::Event::CursorMoved { position: to }),
-            to,
-        ),
-    ];
-    crate::test_render::render_element_after(element, &steps, Some(to))
+    let mut harness = Harness::new(element, RENDER_SIZE);
+    harness.move_cursor(iced::Point::new(grab_x, grab_y));
+    harness.press_left();
+    harness.move_cursor(iced::Point::new(x, y));
+    harness
+        .screenshot()
         .selection_blue_bounds()
         .expect("a resize in flight must draw the box it would commit")
 }
@@ -3371,9 +3392,12 @@ fn committed_text_wraps_inside_the_box_it_was_given() {
         crate::coordinate::render_scale(TEST_ZOOM, TEST_DPI),
         &registry,
     );
-    let rightmost = canvas
-        .rightmost_ink_column(text_box.y as u32, (text_box.y + text_box.height) as u32)
-        .expect("the overlay text should have been rendered");
+    let rightmost = rightmost_ink_column(
+        &canvas,
+        text_box.y as u32,
+        (text_box.y + text_box.height) as u32,
+    )
+    .expect("the overlay text should have been rendered");
 
     let box_right = text_box.x + text_box.width;
     assert!(

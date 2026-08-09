@@ -1143,6 +1143,83 @@ fn save_destination_sets_status_message_on_success() {
     assert!(msg.contains("Saved to"), "expected 'Saved to' in '{msg}'");
 }
 
+/// Place a single overlay containing `text` on page 1, save it, and return the
+/// resulting status toast.
+fn save_with_text(text: &str) -> String {
+    let mut app = test_app_with_document();
+    let tmp_source = make_temp_pdf();
+    let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        // No wrap width, so the text reaches the writer exactly as typed —
+        // embedded newlines included.
+    });
+    app.update(Message::UpdateOverlayText(text.to_string()));
+    app.update(Message::DeselectOverlay);
+
+    let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
+    app.update(Message::SaveDestinationChosen(
+        tmp_dest.path().to_path_buf(),
+    ));
+    app.status_message
+        .as_ref()
+        .expect("status message")
+        .0
+        .clone()
+}
+
+#[test]
+fn save_status_names_characters_the_pdf_encoding_could_not_represent() {
+    let msg = save_with_text("\u{4e2d}");
+
+    assert!(
+        msg.contains("Saved to"),
+        "the save still succeeded: '{msg}'"
+    );
+    assert!(
+        msg.contains("'\u{4e2d}' (U+4E2D)"),
+        "the substituted character must be named with its codepoint: '{msg}'"
+    );
+}
+
+/// A newline reaches the writer intact on the unwrapped path and is dropped by
+/// the encoding. Printing it raw would disclose nothing — which is the whole
+/// point of naming substitutions — so it must be described by codepoint alone.
+#[test]
+fn save_status_describes_an_invisible_character_without_emitting_it() {
+    let msg = save_with_text("a\nb");
+
+    assert!(
+        msg.contains("(U+000A)"),
+        "the dropped newline must be named by codepoint: '{msg}'"
+    );
+    assert!(
+        !msg.contains('\n'),
+        "a control character must never be written raw into the toast: '{msg}'"
+    );
+}
+
+#[test]
+fn save_status_caps_a_long_list_of_unencodable_characters() {
+    let msg = save_with_text("\u{4e2d}\u{1f600}\u{100}\u{4e00}\u{4e8c}\u{4e09}\u{56db}");
+
+    assert!(
+        msg.contains("and 2 more"),
+        "only the first few characters belong in a toast: '{msg}'"
+    );
+}
+
+#[test]
+fn save_status_stays_quiet_when_every_character_encodes() {
+    let msg = save_with_text("caf\u{e9}");
+
+    assert!(
+        !msg.contains('?'),
+        "a losslessly encoded save must not warn: '{msg}'"
+    );
+}
+
 #[test]
 fn save_destination_sets_status_message_on_failure() {
     let mut app = test_app_with_document();
@@ -1491,6 +1568,11 @@ fn test_app_with_overlay() -> App {
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::CommitText);
     app
+}
+
+/// The font picker option for `name`, exactly as the toolbar builds it.
+fn font_option_named(app: &App, name: &str) -> toolbar::FontOption {
+    toolbar::option_named(&app.font_registry, name)
 }
 
 /// An app with a single selected overlay whose font size has been set to
@@ -2169,15 +2251,10 @@ fn change_font_while_editing_returns_focus_task() {
 #[test]
 fn change_font_via_toolbar_message_returns_focus_task() {
     let mut app = test_app_with_overlay();
-    let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::EditOverlay(0));
+    let courier = font_option_named(&app, "Courier");
 
-    let task = app.update(Message::Toolbar(toolbar::Message::FontSelected(
-        crate::ui::toolbar::FontOption {
-            id: courier,
-            name: "Courier".to_string(),
-        },
-    )));
+    let task = app.update(Message::Toolbar(toolbar::Message::FontSelected(courier)));
 
     let debug = format!("{task:?}");
     assert!(
@@ -3886,6 +3963,86 @@ fn selecting_a_different_overlay_ends_the_multiline_edit_session() {
 }
 
 // =====================================================================
+// spe-9gt.6.1: custom font picker open/close behaviour
+// =====================================================================
+
+#[test]
+fn font_picker_starts_closed() {
+    let (app, _) = App::new(false);
+    assert!(!app.toolbar.font_picker_open);
+}
+
+#[test]
+fn toggling_the_font_picker_opens_then_closes_it() {
+    let mut app = test_app_with_document();
+
+    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+    assert!(app.toolbar.font_picker_open, "first toggle should open it");
+
+    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+    assert!(
+        !app.toolbar.font_picker_open,
+        "second toggle should close it"
+    );
+}
+
+#[test]
+fn selecting_a_font_closes_the_picker() {
+    let mut app = test_app_with_document();
+    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+    let courier = font_option_named(&app, "Courier");
+
+    app.update(Message::Toolbar(toolbar::Message::FontSelected(courier)));
+
+    assert!(!app.toolbar.font_picker_open);
+    assert_eq!(
+        app.toolbar.font,
+        app.font_registry.find_by_name("Courier").unwrap()
+    );
+}
+
+#[test]
+fn dismissing_the_font_picker_leaves_the_font_unchanged() {
+    let mut app = test_app_with_document();
+    let before = app.toolbar.font;
+    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+
+    app.update(Message::Toolbar(toolbar::Message::FontPickerDismissed));
+
+    assert!(!app.toolbar.font_picker_open);
+    assert_eq!(app.toolbar.font, before);
+}
+
+#[test]
+fn dismissing_the_font_picker_while_editing_returns_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+    app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+
+    let task = app.update(Message::Toolbar(toolbar::Message::FontPickerDismissed));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "dismissing the picker should hand focus back to the edit, got: {debug}"
+    );
+}
+
+#[test]
+fn opening_the_font_picker_does_not_steal_focus() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::Toolbar(toolbar::Message::FontPickerToggled));
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "opening the picker must not yank focus back to the editor, got: {debug}"
+    );
+}
+
+// =====================================================================
 // spe-xqb: wait_frame — a signal for "a frame reflecting the latest
 // state has been presented", replacing the visual-regression settle sleep.
 // =====================================================================
@@ -4005,9 +4162,11 @@ fn edit_widget_and_text_box(overlay: crate::overlay::TextOverlay) -> (iced::Size
     let dpi = canvas::effective_dpi(app.canvas.zoom);
     let layout = canvas::page_layout(&doc.page_dimensions, doc.page_count, app.canvas.zoom, dpi);
     let element = app.stack_overlay_element(doc, &layout);
-    let (left, top, right, bottom) = crate::test_render::render_element(element, None)
-        .selection_blue_bounds()
-        .expect("the floating editor outlines itself in the selection color");
+    let (left, top, right, bottom) =
+        crate::ui::test_harness::Harness::new(element, crate::ui::test_harness::RENDER_SIZE)
+            .screenshot()
+            .selection_blue_bounds()
+            .expect("the floating editor outlines itself in the selection color");
 
     let text_box = canvas::overlay_text_box(
         &overlay,

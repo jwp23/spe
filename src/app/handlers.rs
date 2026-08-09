@@ -12,6 +12,49 @@ use crate::pdf::renderer::PdftoppmRenderer;
 use crate::ui::canvas;
 use crate::ui::toolbar;
 
+/// How many substituted characters a toast names before summarising the rest.
+const MAX_LISTED_UNENCODABLE: usize = 5;
+
+/// True for characters that would leave no mark of their own in a status
+/// message: controls, whitespace, zero-width formatting characters, and
+/// combining marks, which attach to whatever precedes them.
+fn is_invisible(c: char) -> bool {
+    c.is_control()
+        || c.is_whitespace()
+        || matches!(u32::from(c),
+            0x0300..=0x036F
+            | 0x1AB0..=0x1AFF
+            | 0x1DC0..=0x1DFF
+            | 0x200B..=0x200F
+            | 0x20D0..=0x20FF
+            | 0x2060..=0x206F
+            | 0xFE20..=0xFE2F)
+}
+
+/// Name the characters a save could not encode. Each is given with its
+/// codepoint — and invisible ones by codepoint alone, since writing them raw
+/// would disclose nothing and could smuggle a control character into the
+/// toast. Long lists are summarised rather than filling the message.
+fn describe_unencodable(chars: &[char]) -> String {
+    let mut listed: Vec<String> = chars
+        .iter()
+        .take(MAX_LISTED_UNENCODABLE)
+        .map(|&c| {
+            let code = u32::from(c);
+            if is_invisible(c) {
+                format!("(U+{code:04X})")
+            } else {
+                format!("'{c}' (U+{code:04X})")
+            }
+        })
+        .collect();
+    let hidden = chars.len().saturating_sub(MAX_LISTED_UNENCODABLE);
+    if hidden > 0 {
+        listed.push(format!("and {hidden} more"));
+    }
+    listed.join(", ")
+}
+
 impl App {
     // --- Page navigation handlers ---
 
@@ -562,7 +605,15 @@ impl App {
             toolbar::Message::SaveAs => return self.update(Message::SaveAs),
             toolbar::Message::Undo => return self.update(Message::Undo),
             toolbar::Message::Redo => return self.update(Message::Redo),
+            toolbar::Message::FontPickerToggled => {
+                self.toolbar.font_picker_open = !self.toolbar.font_picker_open;
+            }
+            toolbar::Message::FontPickerDismissed => {
+                self.toolbar.font_picker_open = false;
+                return self.refocus_editing_widget();
+            }
             toolbar::Message::FontSelected(option) => {
+                self.toolbar.font_picker_open = false;
                 return self.update(Message::ChangeFont(option.id));
             }
             toolbar::Message::FontSizeInput(input) => {
@@ -688,14 +739,26 @@ impl App {
 
     fn set_save_result(
         &mut self,
-        result: Result<(), impl std::fmt::Display>,
+        result: Result<crate::pdf::writer::SaveReport, impl std::fmt::Display>,
         dest: &std::path::Path,
     ) {
         match result {
-            Ok(()) => {
+            Ok(report) => {
                 let filename = dest.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-                self.status_message =
-                    Some((format!("Saved to {filename}"), std::time::Instant::now()));
+                // Characters the PDF text encoding cannot represent are written
+                // as `?`, which is silent data loss unless it is named here.
+                let substitutions = if report.unencodable_chars.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " — replaced with '?': {}",
+                        describe_unencodable(&report.unencodable_chars)
+                    )
+                };
+                self.status_message = Some((
+                    format!("Saved to {filename}{substitutions}"),
+                    std::time::Instant::now(),
+                ));
                 self.last_command_error = None;
             }
             Err(e) => {
@@ -728,7 +791,10 @@ impl App {
             // Prevent saving over the source file to avoid data loss on
             // write failure (the source would already be truncated).
             if denotes_same_file(&path, &doc.source_path) {
-                self.set_save_result(Err::<(), _>("cannot overwrite the source file"), &path);
+                self.set_save_result(
+                    Err::<crate::pdf::writer::SaveReport, _>("cannot overwrite the source file"),
+                    &path,
+                );
             } else {
                 let source = doc.source_path.clone();
                 let overlays = doc.overlays.clone();
