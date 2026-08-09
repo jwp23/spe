@@ -57,6 +57,13 @@ scenario_multiline_overlay() {
     send '{"cmd": "deselect"}'
 }
 
+scenario_editing_multiline() {
+    send '{"cmd": "drag", "page": 1, "x1": 100, "y1": 500, "x2": 300, "y2": 500}'
+    send '{"cmd": "type", "text": "Line one\nLine two\nLine three"}'
+    send '{"cmd": "deselect"}'
+    send '{"cmd": "edit", "index": 0}'
+}
+
 list_scenario_names() {
     declare -F | awk '{print $3}' | grep '^scenario_' | sed 's/^scenario_//'
 }
