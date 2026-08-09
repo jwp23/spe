@@ -1,6 +1,7 @@
 // IPC protocol: command parsing, command-to-Message translation, subscription.
 
 use std::fmt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -303,6 +304,24 @@ async fn handle_connection(
     true
 }
 
+/// Bind the IPC listener and restrict the socket to its owner.
+///
+/// The socket is a full remote-control channel for the app, and the fallback
+/// path lives in world-writable `/tmp`, so it is chmod'd to 0600 immediately
+/// after bind. A failure to lock it down is fatal to the bind: the socket is
+/// removed and the error propagated rather than left readable by other users.
+/// (The window between `bind` and `set_permissions` is unavoidable with
+/// `UnixListener::bind`; the harness mitigates it by placing the socket in a
+/// 0700 per-instance directory.)
+fn bind_listener(path: &std::path::Path) -> std::io::Result<tokio::net::UnixListener> {
+    let listener = tokio::net::UnixListener::bind(path)?;
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        let _ = std::fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(listener)
+}
+
 fn ipc_stream() -> impl iced::futures::Stream<Item = IpcEvent> {
     iced::stream::channel(32, async |mut output| {
         use iced::futures::SinkExt;
@@ -312,7 +331,7 @@ fn ipc_stream() -> impl iced::futures::Stream<Item = IpcEvent> {
         // Remove stale socket file if it exists.
         let _ = std::fs::remove_file(&path);
 
-        let listener = match tokio::net::UnixListener::bind(&path) {
+        let listener = match bind_listener(&path) {
             Ok(l) => l,
             Err(e) => {
                 eprintln!("IPC: failed to bind {}: {e}", path.display());
@@ -721,6 +740,34 @@ mod tests {
     fn socket_path_ends_with_expected_filename() {
         let path = socket_path();
         assert!(path.to_str().unwrap().ends_with("spe-ipc.sock"));
+    }
+
+    // --- socket permissions (spe-85p) ---
+
+    #[test]
+    fn bind_listener_restricts_socket_to_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        run_async(async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("spe-ipc.sock");
+            let _listener = bind_listener(&path).expect("bind should succeed in a writable dir");
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "the IPC control socket must not be reachable by other users"
+            );
+        });
+    }
+
+    #[test]
+    fn bind_listener_reports_error_when_socket_cannot_be_created() {
+        run_async(async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("no-such-subdir").join("spe-ipc.sock");
+            let err = bind_listener(&path).expect_err("bind into a missing directory must fail");
+            assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        });
     }
 
     // --- process_line robustness (async) ---
