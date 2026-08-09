@@ -578,6 +578,26 @@ fn hit_test_ignores_overlays_on_other_pages() {
 }
 
 #[test]
+fn hit_test_finds_explicit_width_overlay_beyond_its_glyphs() {
+    let params = default_params();
+    let registry = FontRegistry::new();
+    // "Hi" is only 2 * 7.2 = 14.4px wide at Courier 12pt, but the overlay's
+    // explicit width (200pt) makes the tinted, clickable area much wider —
+    // the same area draw_single_overlay paints via overlay_text_box.
+    let overlays = vec![TextOverlay {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 720.0 },
+        text: "Hi".to_string(),
+        font: registry.find_by_name("Courier").unwrap(),
+        font_size: 12.0,
+        width: Some(200.0),
+    }];
+    // Click well past the glyphs but still inside the explicit-width box.
+    let result = hit_test(150.0, 65.0, &overlays, 1, &params, &registry);
+    assert_eq!(result, Some(0));
+}
+
+#[test]
 fn zoom_in_steps_up() {
     assert!((zoom_in(1.0) - 1.25).abs() < 0.01);
     assert!((zoom_in(0.5) - 0.75).abs() < 0.01);
@@ -2167,7 +2187,17 @@ struct RenderedCanvas {
 }
 
 impl RenderedCanvas {
+    fn height(&self) -> u32 {
+        (self.rgba.len() as u32 / 4) / self.width
+    }
+
     fn pixel(&self, x: u32, y: u32) -> (u8, u8, u8) {
+        assert!(
+            x < self.width && y < self.height(),
+            "sample ({x}, {y}) is outside the {}x{} render surface",
+            self.width,
+            self.height()
+        );
         let i = ((y * self.width + x) * 4) as usize;
         (self.rgba[i], self.rgba[i + 1], self.rgba[i + 2])
     }
@@ -2348,10 +2378,16 @@ fn multiline_tint_covers_the_rows_its_text_occupies() {
 impl RenderedCanvas {
     /// Pixels painted in a strong, saturated blue — the selection border and
     /// resize handle, which are opaque, unlike the pale overlay tint.
+    ///
+    /// The threshold is derived from `SELECTION_COLOR` itself (halfway to its
+    /// blue/red channel gap) so it tracks the renderer's actual selection
+    /// color instead of a magic number that could silently fall out of sync.
     fn selection_blue_pixels(&self) -> usize {
+        let blue_red_gap = (super::SELECTION_COLOR.b - super::SELECTION_COLOR.r) * 255.0;
+        let threshold = blue_red_gap / 2.0;
         self.rgba
             .chunks_exact(4)
-            .filter(|p| p[2] as i32 - p[0] as i32 > 120)
+            .filter(|p| p[2] as f32 - p[0] as f32 > threshold)
             .count()
     }
 }
