@@ -280,23 +280,23 @@ fn ipc_open_place_type_save_round_trip() {
     );
 }
 
-/// spe-9gt.7.1: the full user workflow with a bundled cursive font — open, pick
-/// the font, place, type, save — must produce a PDF whose text a reader can
-/// extract, which is what the ToUnicode CMap on the embedded TrueType font buys.
-#[test]
-#[ignore]
-fn ipc_cursive_overlay_text_is_extractable_by_pdftotext() {
+/// Drive the full workflow — open, pick `font_family`, place, type `text`,
+/// save — and extract the saved PDF's text with `pdftotext`. Returns the
+/// command log and the extracted text, or `None` when `cage` is unavailable.
+fn type_in_font_and_extract_text(
+    name: &str,
+    font_family: &str,
+    text: &str,
+) -> Option<(CommandLog, String)> {
     if !cage_available() {
-        eprintln!(
-            "SKIP ipc_cursive_overlay_text_is_extractable_by_pdftotext: `cage` not available"
-        );
-        return;
+        eprintln!("SKIP {name}: `cage` not available");
+        return None;
     }
 
-    let runtime_dir = make_test_runtime_dir("cursive-extract");
+    let runtime_dir = make_test_runtime_dir(name);
     let socket = socket_path(&runtime_dir);
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/single-page.pdf");
-    let dest = runtime_dir.join("cursive.pdf");
+    let dest = runtime_dir.join("typed.pdf");
     let mut child = launch_app(&runtime_dir, &socket);
 
     let outcome = (|| -> Result<CommandLog, String> {
@@ -316,8 +316,14 @@ fn ipc_cursive_overlay_text_is_extractable_by_pdftotext() {
             "click",
             send(r#"{"cmd": "click", "page": 1, "x": 100, "y": 700}"#),
         ));
-        results.push(("font", send(r#"{"cmd": "font", "family": "Great Vibes"}"#)));
-        results.push(("type", send(r#"{"cmd": "type", "text": "Ada Lovelace"}"#)));
+        results.push((
+            "font",
+            send(&format!(r#"{{"cmd": "font", "family": "{font_family}"}}"#)),
+        ));
+        results.push((
+            "type",
+            send(&format!(r#"{{"cmd": "type", "text": "{text}"}}"#)),
+        ));
         results.push(("deselect", send(r#"{"cmd": "deselect"}"#)));
         results.push((
             "save",
@@ -328,9 +334,6 @@ fn ipc_cursive_overlay_text_is_extractable_by_pdftotext() {
         ));
         Ok(results)
     })();
-
-    let _ = child.kill();
-    let _ = child.wait();
 
     let extracted = dest.exists().then(|| {
         let output = Command::new("pdftotext")
@@ -345,16 +348,63 @@ fn ipc_cursive_overlay_text_is_extractable_by_pdftotext() {
         );
         String::from_utf8_lossy(&output.stdout).into_owned()
     });
+
+    let _ = child.kill();
+    let _ = child.wait();
     let _ = std::fs::remove_dir_all(&runtime_dir);
 
     let results = outcome.expect("IPC sequence setup failed");
+    Some((results, extracted.expect("save must have written a PDF")))
+}
+
+/// spe-9gt.7.1: the full user workflow with a bundled cursive font — open, pick
+/// the font, place, type, save — must produce a PDF whose text a reader can
+/// extract, which is what the ToUnicode CMap on the embedded TrueType font buys.
+#[test]
+#[ignore]
+fn ipc_cursive_overlay_text_is_extractable_by_pdftotext() {
+    let Some((results, extracted)) =
+        type_in_font_and_extract_text("cursive-extract", "Great Vibes", "Ada Lovelace")
+    else {
+        return;
+    };
+
     for (label, reply) in &results {
         assert_ok(label, reply);
     }
-    let extracted = extracted.expect("save must have written a PDF");
     assert!(
         extracted.contains("Ada Lovelace"),
         "cursive overlay text must be extractable from the saved PDF, got:\n{extracted}"
+    );
+}
+
+/// spe-d8v: non-ASCII overlay text must be written in the encoding the font
+/// declares, so a reader extracts exactly what was typed — accented letters,
+/// curly quotes, an em dash and the euro sign all round-trip rather than
+/// arriving as mojibake.
+///
+/// Scope: `pdftotext` reads the ToUnicode CMap, not page geometry, so this test
+/// says nothing about how the text is laid out. The 27 characters WinAnsi maps
+/// outside Latin-1 — including the em dash and euro sign typed here — still get
+/// the wrong advance width in `/Widths`, because `WidthTable` is keyed by
+/// Unicode scalar rather than WinAnsi code (spe-gah). Extraction is green while
+/// that rendering defect is live; do not read this test as covering it.
+#[test]
+#[ignore]
+fn ipc_non_ascii_overlay_text_round_trips_through_pdftotext() {
+    let typed = "caf\u{e9} \u{2014} \u{2018}quotes\u{2019} \u{20ac}5";
+    let Some((results, extracted)) =
+        type_in_font_and_extract_text("win-ansi-extract", "Great Vibes", typed)
+    else {
+        return;
+    };
+
+    for (label, reply) in &results {
+        assert_ok(label, reply);
+    }
+    assert!(
+        extracted.contains(typed),
+        "expected the exact typed text `{typed}` in the extraction, got:\n{extracted}"
     );
 }
 
