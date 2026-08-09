@@ -3576,13 +3576,13 @@ fn xorshift(state: &mut u64) -> u64 {
 /// which legitimately holds text the history has not recorded yet. Style is
 /// included only for pools that actually change it — it stays on the document
 /// history even mid-session, so it is always safe to compare when present.
-fn describe_overlay(app: &App, overlay: &TextOverlay, include_style: bool) -> String {
+fn describe_overlay(app: &App, index: usize, overlay: &TextOverlay, include_style: bool) -> String {
     let style = if include_style {
         format!("#{:?}/{}", overlay.font, overlay.font_size)
     } else {
         String::new()
     };
-    if app.canvas.editing {
+    if app.canvas.editing && app.canvas.active_overlay == Some(index) {
         format!("@{}{style}", overlay.position.x)
     } else {
         format!("{}@{}{style}", overlay.text, overlay.position.x)
@@ -3644,11 +3644,13 @@ fn assert_history_tracks_document(
                 .unwrap()
                 .overlays
                 .iter()
-                .map(|o| describe_overlay(&app, o, include_style))
+                .enumerate()
+                .map(|(i, o)| describe_overlay(&app, i, o, include_style))
                 .collect();
             let replayed: Vec<String> = replay_undo_stack(&app)
                 .iter()
-                .map(|o| describe_overlay(&app, o, include_style))
+                .enumerate()
+                .map(|(i, o)| describe_overlay(&app, i, o, include_style))
                 .collect();
             assert_eq!(
                 live,
