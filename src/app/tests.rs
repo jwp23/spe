@@ -1000,7 +1000,14 @@ fn handle_file_opened_success_clears_previous_load_error() {
 }
 
 #[test]
-fn ipc_open_with_bad_path_reports_failure_response() {
+fn ipc_open_command_dispatch_leaves_document_unset_on_bad_path() {
+    // This exercises the full Command(Open) dispatch path (message
+    // construction, update(), handle_file_opened) but does not inspect the
+    // IPC response itself: send_ipc_response's returned Task is async and
+    // this harness doesn't drive it (unlike deliver_ipc_response_writes_to_channel,
+    // which calls the async fn directly). The response *contract* — that a
+    // failed load reports ok:false with an error — is covered directly by
+    // open_command_response_reports_failure_when_load_failed below.
     let (mut app, _) = App::new(true);
     let _rx = attach_ipc_response_sender(&mut app);
     let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::Command(
@@ -1009,9 +1016,6 @@ fn ipc_open_with_bad_path_reports_failure_response() {
         },
     )));
     assert!(app.document.is_none());
-    // last_open_error is consumed (taken) while building the IPC response, so
-    // the real assertion is on the response contract via open_command_response
-    // below; here we confirm the load genuinely failed and left no document.
 }
 
 #[test]
