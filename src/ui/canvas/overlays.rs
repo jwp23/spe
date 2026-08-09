@@ -548,6 +548,14 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
         // Determine visible pages
         let (first, last) = visible_pages(&self.page_layout, self.scroll_y, self.viewport_height);
 
+        // The overlay being dragged is drawn at the cursor instead of in place.
+        // Resolved once here rather than per overlay, which would scan the list
+        // for every entry drawn.
+        let dragged = state
+            .drag
+            .as_ref()
+            .and_then(|drag| drag.anchor.resolve(self.overlays, drag.overlay_index));
+
         // Draw overlays for each visible page
         for page in first..=last {
             let page_rect = page_rect_in_canvas(&self.page_layout, page, bounds.width);
@@ -568,10 +576,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                 if overlay.page != page {
                     continue;
                 }
-                let is_dragging = state.drag.as_ref().is_some_and(|drag| {
-                    drag.anchor.resolve(self.overlays, drag.overlay_index) == Some(i)
-                });
-                if is_dragging {
+                if dragged == Some(i) {
                     continue;
                 }
                 self.draw_single_overlay(

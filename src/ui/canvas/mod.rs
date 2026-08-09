@@ -115,6 +115,11 @@ impl Default for ProgramState {
 pub struct OverlayAnchor {
     pub page: u32,
     pub position: PdfPosition,
+    /// The overlay's wrap width, so a drag can only ever resolve onto a box of
+    /// the same shape. Without it a resize could land on a single-line overlay
+    /// and convert it into a wrapped one, or replay an `old_width` that the
+    /// overlay it lands on never had.
+    pub width: Option<f32>,
 }
 
 impl OverlayAnchor {
@@ -122,15 +127,20 @@ impl OverlayAnchor {
         Self {
             page: overlay.page,
             position: overlay.position,
+            width: overlay.width,
         }
     }
 
-    /// The anchored overlay's current index, or `None` if it is no longer in
-    /// the list. `last_known` is checked first so the common case — nothing
-    /// changed — costs one comparison.
+    /// The current index of an overlay matching this anchor, or `None` if none
+    /// does. `last_known` is checked first so the common case — nothing changed
+    /// — costs one comparison.
     ///
-    /// Two overlays anchored identically are drawn on top of each other, so
-    /// picking either one is indistinguishable to the user.
+    /// The guarantee is that the result is an overlay of the same shape sitting
+    /// where the drag grabbed, not that it is the same overlay: several
+    /// overlays can share a page, position and width, and nothing in the model
+    /// tells them apart. Stacked that way they are drawn on top of each other,
+    /// so the search runs back to front to return the one on top — the same one
+    /// `hit_test` would report, and therefore the one the drag started on.
     pub fn resolve(&self, overlays: &[TextOverlay], last_known: usize) -> Option<usize> {
         if overlays
             .get(last_known)
@@ -140,7 +150,7 @@ impl OverlayAnchor {
         }
         overlays
             .iter()
-            .position(|overlay| Self::of(overlay) == *self)
+            .rposition(|overlay| Self::of(overlay) == *self)
     }
 }
 

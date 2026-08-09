@@ -296,6 +296,7 @@ fn state_with_drag() -> ProgramState {
             anchor: OverlayAnchor {
                 page: 1,
                 position: PdfPosition { x: 72.0, y: 720.0 },
+                width: None,
             },
             grab_offset_x: 4.0,
             grab_offset_y: 6.0,
@@ -357,6 +358,7 @@ fn local_drag_state_construction() {
         anchor: OverlayAnchor {
             page: 1,
             position: PdfPosition { x: 100.0, y: 500.0 },
+            width: None,
         },
         grab_offset_x: 5.0,
         grab_offset_y: 10.0,
@@ -1554,6 +1556,7 @@ fn resize_drag_state_construction() {
         anchor: OverlayAnchor {
             page: 1,
             position: PdfPosition { x: 72.0, y: 720.0 },
+            width: None,
         },
         initial_width: 150.0,
     };
@@ -2895,6 +2898,7 @@ fn overlay_anchor_follows_its_overlay_to_a_new_index() {
     let anchor = OverlayAnchor {
         page: 1,
         position: PdfPosition { x: 72.0, y: 600.0 },
+        width: None,
     };
     assert_eq!(anchor.resolve(&overlays, 1), Some(0));
 }
@@ -2905,6 +2909,7 @@ fn overlay_anchor_does_not_resolve_once_its_overlay_is_gone() {
     let anchor = OverlayAnchor {
         page: 1,
         position: PdfPosition { x: 72.0, y: 720.0 },
+        width: None,
     };
     assert!(anchor.resolve(&overlays, 0).is_none());
 }
@@ -2917,6 +2922,7 @@ fn overlay_anchor_distinguishes_overlays_on_different_pages() {
     let anchor = OverlayAnchor {
         page: 1,
         position: PdfPosition { x: 72.0, y: 720.0 },
+        width: None,
     };
     assert!(anchor.resolve(&overlays, 0).is_none());
 }
@@ -2976,5 +2982,102 @@ fn the_text_box_covers_every_glyph_of_a_proportional_font_overlay() {
     assert!(
         rightmost as f32 <= box_right,
         "text reaches column {rightmost} but the box ends at {box_right}"
+    );
+}
+
+// =====================================================================
+// spe-01a: anchors must not retarget onto a different overlay that
+// happens to sit at the same place
+// =====================================================================
+
+#[test]
+fn anchor_resolves_to_the_topmost_of_two_overlays_stacked_at_one_spot() {
+    // Clicking the same spot twice leaves two overlays sharing a position.
+    // hit_test picks the topmost, so the drag that started is the topmost
+    // one's, and re-resolving must pick the same one back.
+    let stacked_below = overlay_at(72.0, 720.0, "below");
+    let stacked_above = overlay_at(72.0, 720.0, "above");
+    let before = vec![
+        overlay_at(72.0, 600.0, "elsewhere"),
+        stacked_below.clone(),
+        stacked_above.clone(),
+    ];
+    let anchor = OverlayAnchor::of(&before[2]);
+
+    // An IPC delete removes the unrelated overlay, shifting the stack down.
+    let after = vec![stacked_below, stacked_above];
+    assert_eq!(
+        anchor.resolve(&after, 2),
+        Some(1),
+        "resolve must match hit_test's topmost-wins order"
+    );
+}
+
+#[test]
+fn anchor_does_not_resolve_onto_an_overlay_of_a_different_shape() {
+    // A multi-line overlay's drag must never land on a single-line overlay:
+    // resizing one would silently convert it into a wrapped box.
+    let multiline = multiline_overlay_at(72.0, 720.0, 150.0, "text");
+    let single_line = overlay_at(72.0, 720.0, "text");
+    let anchor = OverlayAnchor::of(&multiline);
+
+    assert!(
+        anchor.resolve(&[single_line], 0).is_none(),
+        "a single-line overlay cannot stand in for a multi-line one"
+    );
+}
+
+#[test]
+fn anchor_does_not_resolve_onto_a_box_of_a_different_width() {
+    // Widths differ, so the recorded old_width would restore a size this
+    // overlay never had if undo replayed the resize.
+    let dragged = multiline_overlay_at(72.0, 720.0, 150.0, "text");
+    let other = multiline_overlay_at(72.0, 720.0, 300.0, "text");
+    let anchor = OverlayAnchor::of(&dragged);
+
+    assert!(anchor.resolve(&[other], 0).is_none());
+}
+
+#[test]
+fn resize_release_does_not_reshape_a_single_line_overlay_that_took_the_index() {
+    let registry = FontRegistry::new();
+    let dims = test_page_dimensions();
+    let before = vec![
+        multiline_overlay_at(72.0, 720.0, 150.0, "wrapped"),
+        overlay_at(72.0, 720.0, "plain"),
+    ];
+    let program = OverlayCanvasProgram {
+        active_overlay: Some(0),
+        ..test_program(&before, &dims, &registry)
+    };
+    let mut state = ProgramState::default();
+    let bounds = test_canvas_bounds();
+
+    program.update(
+        &mut state,
+        &left_press_event(),
+        bounds,
+        cursor_at(416.0, 75.0),
+    );
+    assert!(state.resize_drag.is_some(), "press should start a resize");
+
+    // The wrapped overlay is deleted mid-drag; the single-line one inherits
+    // index 0 and sits at the same position.
+    let after = vec![overlay_at(72.0, 720.0, "plain")];
+    let program = OverlayCanvasProgram {
+        active_overlay: Some(0),
+        ..test_program(&after, &dims, &registry)
+    };
+    let action = program.update(
+        &mut state,
+        &left_release_event(),
+        bounds,
+        cursor_at(516.0, 75.0),
+    );
+
+    let (msg, _) = decompose(action);
+    assert!(
+        !matches!(msg, Some(Message::ResizeOverlay { .. })),
+        "resizing must not turn a single-line overlay into a wrapped one, got {msg:?}"
     );
 }
