@@ -67,7 +67,7 @@ See [docs/screenshot-tool.md](docs/screenshot-tool.md) for system dependencies, 
 
 ## Project Structure
 
-The app is organized into `src/` modules for the UI, PDF rendering/writing, overlay model, and IPC — see [docs/architecture.md](docs/architecture.md) for the module map and data flow.
+The app is organized into `src/` modules for the UI, PDF rendering/writing, overlay model, and IPC — see [docs/architecture.md](docs/architecture.md) for the module map.
 
 Tests live in `tests/` (integration/E2E) and co-located `#[cfg(test)]` modules (unit).
 
