@@ -547,8 +547,12 @@ fn key_to_message(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<
     match key {
         keyboard::Key::Named(named) => match (named, modifiers.command(), modifiers.shift()) {
             (Named::Delete, false, false) => Some(Message::DeleteOverlay),
-            (Named::Escape, false, false) => Some(Message::DeselectOverlay),
-            (Named::Enter, true, false) => Some(Message::CommitText),
+            // Ctrl+Enter commits multi-line edits the same way Escape does:
+            // both funnel through DeselectOverlay, which commits (if editing)
+            // and then clears the selection.
+            (Named::Escape, false, false) | (Named::Enter, true, false) => {
+                Some(Message::DeselectOverlay)
+            }
             (Named::PageUp, false, false) => Some(Message::PreviousPage),
             (Named::PageDown, false, false) => Some(Message::NextPage),
             (Named::F9, false, false) => Some(Message::ToggleSidebar),
