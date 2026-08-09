@@ -10,8 +10,8 @@ impl App {
     pub fn view(&self) -> iced::Element<'_, Message> {
         let toolbar_ctx = ToolbarContext {
             has_document: self.document.is_some(),
-            can_undo: !self.undo_stack.is_empty(),
-            can_redo: !self.redo_stack.is_empty(),
+            can_undo: self.can_undo(),
+            can_redo: self.can_redo(),
             has_selection: self.canvas.active_overlay.is_some(),
             current_page: self.document.as_ref().map_or(0, |d| d.current_page),
             page_count: self.document.as_ref().map_or(0, |d| d.page_count),

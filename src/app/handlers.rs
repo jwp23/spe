@@ -6,7 +6,7 @@ use super::{
     PdfPosition, SCROLLBAR_MARGIN, SIDEBAR_PAGE_BUFFER, THUMBNAIL_BATCH_SIZE, TextOverlay,
 };
 
-use crate::command::Command as UndoCommand;
+use crate::command::{Command as UndoCommand, SessionStep};
 use crate::pdf::renderer::PdftoppmRenderer;
 use crate::ui::canvas;
 use crate::ui::toolbar;
@@ -133,6 +133,7 @@ impl App {
             self.canvas.editing = true;
             self.canvas.edit_start_text = Some(String::new());
             self.canvas.fresh_placement = Some(fresh_placement_base);
+            self.canvas.session_history = Default::default();
             if width.is_some() {
                 self.editor_content = Some(iced::widget::text_editor::Content::with_text(""));
             }
@@ -156,6 +157,9 @@ impl App {
             && let Some(idx) = self.canvas.active_overlay
             && idx < doc.overlays.len()
         {
+            self.canvas
+                .session_history
+                .record_text(&doc.overlays[idx].text, &text);
             doc.overlays[idx].text = text.clone();
             // Multi-line overlays render from editor_content, not overlay.text
             // directly (see handle_text_editor_action). Keep it in sync so the
@@ -190,6 +194,7 @@ impl App {
         };
         self.canvas.edit_start_text = Some(overlay.text.clone());
         self.canvas.fresh_placement = None;
+        self.canvas.session_history = Default::default();
         self.canvas.editing = true;
         true
     }
@@ -202,6 +207,9 @@ impl App {
                 && let Some(idx) = self.canvas.active_overlay
                 && idx < doc.overlays.len()
             {
+                self.canvas
+                    .session_history
+                    .record_text(&doc.overlays[idx].text, &new_text);
                 doc.overlays[idx].text = new_text;
             }
         }
@@ -399,6 +407,7 @@ impl App {
             self.canvas.editing = false;
             self.canvas.fresh_placement = None;
             self.canvas.edit_start_text = None;
+            self.canvas.session_history = Default::default();
             self.sync_toolbar_to_active_overlay();
         }
         task
@@ -433,6 +442,7 @@ impl App {
             self.canvas.editing = true;
             self.canvas.fresh_placement = None;
             self.canvas.edit_start_text = Some(doc.overlays[index].text.clone());
+            self.canvas.session_history = Default::default();
             let width_is_some = doc.overlays[index].width.is_some();
             let text = doc.overlays[index].text.clone();
             self.sync_toolbar_to_active_overlay();
@@ -483,6 +493,7 @@ impl App {
         self.canvas.editing = false;
         self.canvas.edit_start_text = None;
         self.canvas.fresh_placement = None;
+        self.canvas.session_history = Default::default();
         self.editor_content = None;
         iced::Task::none()
     }
@@ -495,6 +506,7 @@ impl App {
         self.canvas.active_overlay = None;
         self.canvas.edit_start_text = None;
         self.canvas.fresh_placement = None;
+        self.canvas.session_history = Default::default();
         self.editor_content = None;
     }
 
@@ -1077,54 +1089,133 @@ impl App {
 
     // --- Undo/Redo handlers ---
 
-    /// Undo the in-progress edit if there is one, otherwise reverse the most
-    /// recent command. Cancelling the edit first keeps the session from
-    /// outliving the overlay it addresses, and gives one visible change per
-    /// keystroke: an edit that changed nothing falls through to the history.
+    /// Undo one step of the gradient: an edit made inside the open session,
+    /// then the session itself, then the document history. Stepping through
+    /// the session first keeps uncommitted state out of the command history
+    /// while still giving one visible change per keystroke — a session step
+    /// that changed nothing is never recorded, and an edit session that
+    /// changed nothing falls through to the history.
     pub(super) fn handle_undo(&mut self) {
+        if self.canvas.editing && self.undo_session_step() {
+            return;
+        }
         if self.cancel_edit_session() {
             return;
         }
-        if let Some(cmd) = self.undo_stack.pop()
-            && let Some(doc) = &mut self.document
-        {
-            cmd.reverse(&mut doc.overlays);
-            // A selection is an index, so it only survives commands that leave
-            // the list's length intact. Placing or deleting can strand it on a
-            // removed or shifted overlay, so the selection goes; an in-place
-            // change (text, font, size, position, width) leaves it addressing
-            // the same overlay, and the toolbar resyncs to the restored values.
-            let changes_count = cmd.changes_overlay_count();
-            self.redo_stack.push(cmd);
-            if changes_count {
-                self.clear_edit_session();
-            }
-            self.sync_toolbar_to_active_overlay();
-        }
+        self.undo_document_command();
     }
 
-    /// Reapply the most recently undone command. An in-progress edit is
-    /// committed rather than cancelled, because redo must never move the
-    /// document backwards; committing also invalidates the redo stack whenever
-    /// it records a command, which is what a new action should do.
+    /// Reverse the newest edit made inside the open session. Returns whether
+    /// there was one.
+    fn undo_session_step(&mut self) -> bool {
+        let Some(step) = self.canvas.session_history.undo() else {
+            return false;
+        };
+        match step {
+            SessionStep::Text { old, .. } => self.set_session_text(&old),
+            SessionStep::Document => {
+                self.undo_document_command();
+            }
+        }
+        true
+    }
+
+    /// Reverse the most recent command in the document history. Returns
+    /// whether there was one.
+    fn undo_document_command(&mut self) -> bool {
+        let Some(cmd) = self.undo_stack.pop() else {
+            return false;
+        };
+        let Some(doc) = &mut self.document else {
+            return false;
+        };
+        cmd.reverse(&mut doc.overlays);
+        // A selection is an index, so it only survives commands that leave
+        // the list's length intact. Placing or deleting can strand it on a
+        // removed or shifted overlay, so the selection goes; an in-place
+        // change (text, font, size, position, width) leaves it addressing
+        // the same overlay, and the toolbar resyncs to the restored values.
+        let changes_count = cmd.changes_overlay_count();
+        self.redo_stack.push(cmd);
+        if changes_count {
+            self.clear_edit_session();
+        }
+        self.sync_toolbar_to_active_overlay();
+        true
+    }
+
+    /// Redo one step of the gradient, mirroring [`App::handle_undo`]: a
+    /// session step first, then the document history. Reaching the document
+    /// history commits the in-progress edit rather than cancelling it,
+    /// because redo must never move the document backwards; committing also
+    /// invalidates the redo stack whenever it records a command, which is what
+    /// a new action should do.
     pub(super) fn handle_redo(&mut self) -> iced::Task<Message> {
+        if self.canvas.editing && self.redo_session_step() {
+            return iced::Task::none();
+        }
         let task = if self.canvas.editing {
             self.handle_commit_text()
         } else {
             iced::Task::none()
         };
-        if let Some(cmd) = self.redo_stack.pop()
-            && let Some(doc) = &mut self.document
-        {
-            cmd.apply(&mut doc.overlays);
-            let changes_count = cmd.changes_overlay_count();
-            self.undo_stack.push(cmd);
-            if changes_count {
-                self.clear_edit_session();
-            }
-            self.sync_toolbar_to_active_overlay();
-        }
+        self.redo_document_command();
         task
+    }
+
+    /// Reapply the most recently undone edit from the open session. Returns
+    /// whether there was one.
+    fn redo_session_step(&mut self) -> bool {
+        let Some(step) = self.canvas.session_history.redo() else {
+            return false;
+        };
+        match step {
+            SessionStep::Text { new, .. } => self.set_session_text(&new),
+            SessionStep::Document => {
+                self.redo_document_command();
+            }
+        }
+        true
+    }
+
+    /// Reapply the most recently undone command in the document history.
+    /// Returns whether there was one.
+    fn redo_document_command(&mut self) -> bool {
+        let Some(cmd) = self.redo_stack.pop() else {
+            return false;
+        };
+        let Some(doc) = &mut self.document else {
+            return false;
+        };
+        cmd.apply(&mut doc.overlays);
+        let changes_count = cmd.changes_overlay_count();
+        self.undo_stack.push(cmd);
+        if changes_count {
+            self.clear_edit_session();
+        }
+        self.sync_toolbar_to_active_overlay();
+        true
+    }
+
+    /// Put `text` into the overlay being edited without recording it, since
+    /// session undo/redo moves through steps the history already holds. The
+    /// multi-line editor renders from its own content rather than the overlay,
+    /// so it is kept in step (see [`App::handle_update_overlay_text`]).
+    fn set_session_text(&mut self, text: &str) {
+        let Some(doc) = &mut self.document else {
+            return;
+        };
+        let Some(index) = self
+            .canvas
+            .active_overlay
+            .filter(|i| *i < doc.overlays.len())
+        else {
+            return;
+        };
+        doc.overlays[index].text = text.to_string();
+        if doc.overlays[index].width.is_some() {
+            self.editor_content = Some(iced::widget::text_editor::Content::with_text(text));
+        }
     }
 
     /// Common post-zoom logic: increment generation and schedule a debounced

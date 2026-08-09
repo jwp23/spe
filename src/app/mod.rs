@@ -364,11 +364,50 @@ impl App {
         }
     }
 
+    /// Whether an undo keystroke would change anything: a step of the open
+    /// edit session, the session itself, or a command in the history.
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+            || self.canvas.session_history.undo_depth() > 0
+            || self.edit_session_is_cancellable()
+    }
+
+    /// Whether a redo keystroke would change anything.
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty() || self.canvas.session_history.redo_depth() > 0
+    }
+
+    /// Whether cancelling the open edit session would change the document —
+    /// the predicate [`App::handle_undo`]'s cancel step acts on.
+    fn edit_session_is_cancellable(&self) -> bool {
+        if !self.canvas.editing {
+            return false;
+        }
+        if self.canvas.fresh_placement.is_some() {
+            return true;
+        }
+        let Some(doc) = &self.document else {
+            return false;
+        };
+        let Some(overlay) = self.canvas.active_overlay.and_then(|i| doc.overlays.get(i)) else {
+            return false;
+        };
+        self.canvas
+            .edit_start_text
+            .as_ref()
+            .is_some_and(|start| *start != overlay.text)
+    }
+
     fn execute_command(&mut self, cmd: UndoCommand) {
         if let Some(doc) = &mut self.document {
             cmd.apply(&mut doc.overlays);
             self.undo_stack.push(cmd);
             self.redo_stack.clear();
+            // A command made inside an open session is a session step too, so
+            // undo walks the session's own edits in the order they were made.
+            if self.canvas.editing {
+                self.canvas.session_history.record_document();
+            }
         }
     }
 

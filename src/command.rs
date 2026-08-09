@@ -40,6 +40,92 @@ pub enum Command {
     },
 }
 
+/// One reversible step taken inside an open edit session.
+///
+/// Sessions are undoable at a finer grain than the document history: while the
+/// edit box is open, each step can be walked back on its own. Only text lives
+/// here — every other in-session change (font, size, move, resize) is already a
+/// [`Command`] on the document history, so its step is just a marker saying
+/// "the newest document command belongs to this session", which keeps the two
+/// histories in step with each other instead of duplicating state.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionStep {
+    /// A run of typing, from `old` to `new`.
+    Text { old: String, new: String },
+    /// The newest command on the document undo stack.
+    Document,
+}
+
+/// The undo/redo history of a single open edit session.
+///
+/// Empty between sessions: committing or cancelling one discards it, because
+/// its steps address an overlay that the next session may not be editing.
+#[derive(Debug, Default, Clone)]
+pub struct SessionHistory {
+    undo: Vec<SessionStep>,
+    redo: Vec<SessionStep>,
+    /// Whether the newest undo step is a run of typing still open to more
+    /// keystrokes. Any other action closes the run, so the next keystroke
+    /// starts a burst of its own.
+    typing: bool,
+}
+
+impl SessionHistory {
+    /// Record a text change, extending the run of typing in progress rather
+    /// than adding a step of its own. A change that changes nothing is not a
+    /// step, so undo never spends a keystroke doing nothing visible.
+    pub fn record_text(&mut self, old: &str, new: &str) {
+        if old == new {
+            return;
+        }
+        self.redo.clear();
+        match self.undo.last_mut() {
+            Some(SessionStep::Text { new: last, .. }) if self.typing => *last = new.to_string(),
+            _ => {
+                self.undo.push(SessionStep::Text {
+                    old: old.to_string(),
+                    new: new.to_string(),
+                });
+                self.typing = true;
+            }
+        }
+    }
+
+    /// Record that the newest document command was made inside this session.
+    pub fn record_document(&mut self) {
+        self.redo.clear();
+        self.undo.push(SessionStep::Document);
+        self.typing = false;
+    }
+
+    /// Move the newest step onto the redo side and hand it back.
+    pub fn undo(&mut self) -> Option<SessionStep> {
+        self.typing = false;
+        let step = self.undo.pop()?;
+        self.redo.push(step.clone());
+        Some(step)
+    }
+
+    /// Move the most recently undone step back onto the undo side and hand it
+    /// back.
+    pub fn redo(&mut self) -> Option<SessionStep> {
+        self.typing = false;
+        let step = self.redo.pop()?;
+        self.undo.push(step.clone());
+        Some(step)
+    }
+
+    /// Number of steps an undo could walk back through.
+    pub fn undo_depth(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// Number of steps a redo could reapply.
+    pub fn redo_depth(&self) -> usize {
+        self.redo.len()
+    }
+}
+
 impl Command {
     /// Whether applying or reversing this command changes how many overlays
     /// exist, invalidating indices held outside the command history (such as
