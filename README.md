@@ -67,19 +67,7 @@ See [docs/screenshot-tool.md](docs/screenshot-tool.md) for system dependencies, 
 
 ## Project Structure
 
-Key modules in `src/`:
-
-| Module | Purpose |
-|--------|---------|
-| `app/` | Iced application state, Message enum, update/view/subscription, event handlers |
-| `ui/canvas/` | PDF canvas rendering, hit testing, zoom, overlay drawing |
-| `ui/sidebar.rs` | Thumbnail sidebar with drag-resize |
-| `ui/toolbar.rs` | Font picker, zoom controls, page navigation |
-| `pdf/` | PDF rendering (`pdftoppm` wrapper) and writing (`lopdf` overlay embedding) |
-| `overlay.rs` | Text overlay data model (position, font, text, width) |
-| `coordinate.rs` | Screen-to-PDF coordinate conversion, AFM font width tables |
-| `ipc.rs` | IPC protocol for the screenshot development tool |
-| `command.rs` | Undo/redo command pattern |
+The app is organized into `src/` modules for the UI, PDF rendering/writing, overlay model, and IPC — see [docs/architecture.md](docs/architecture.md) for the module map and data flow.
 
 Tests live in `tests/` (integration/E2E) and co-located `#[cfg(test)]` modules (unit).
 
