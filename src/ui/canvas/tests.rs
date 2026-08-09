@@ -2876,6 +2876,24 @@ fn rightmost_ink_column(shot: &Screenshot, top: u32, bottom: u32) -> Option<u32>
         .next_back()
 }
 
+/// Last row of the surface holding glyph ink, scanning the whole height.
+fn lowest_ink_row(shot: &Screenshot) -> Option<u32> {
+    (0..shot.height)
+        .rev()
+        .find(|y| (0..shot.width).any(|x| shot.darkening(x, *y) >= 150.0))
+}
+
+/// How far below a line box a glyph's descender may reach, as a fraction of
+/// the font size.
+///
+/// A [`TEXT_LINE_HEIGHT_RATIO`] line box is a *layout* box: it spaces
+/// baselines, and makes no promise to contain the ink hanging below the last
+/// one. Measured across the registry, a descender fills its line box almost
+/// exactly and overhangs it by under 0.03em — so this allowance is loose
+/// enough for that and far tighter than the 1.2em a wrongly-escaped line of
+/// text would need.
+const DESCENDER_ALLOWANCE: f32 = 0.25;
+
 #[test]
 fn the_text_box_covers_every_glyph_of_a_proportional_font_overlay() {
     // The box width came from the PDF AFM widths, but the canvas renders with
@@ -2916,6 +2934,27 @@ fn assert_rendered_text_stays_inside_its_box(overlay: TextOverlay) {
     assert!(
         rightmost as f32 <= box_right,
         "text reaches column {rightmost} but the box ends at {box_right}"
+    );
+
+    // Vertically the box bounds the *layout*, not the ink: the last line's
+    // descenders reach the bottom of its line box and may overhang it by a
+    // hair, which is ordinary typography rather than text escaping its box.
+    // What must never happen is a whole line drawn outside — the failure the
+    // wrapped-line count exists to prevent — so the bound is the box plus one
+    // descender's worth, well inside the next line box.
+    let lowest = lowest_ink_row(&canvas).expect("the overlay text should have been rendered");
+    let scaled_font_size =
+        overlays[0].font_size * crate::coordinate::render_scale(TEST_ZOOM, TEST_DPI);
+    let ink_limit = text_box.y + text_box.height + DESCENDER_ALLOWANCE * scaled_font_size;
+    assert!(
+        (lowest as f32) < ink_limit,
+        "text reaches row {lowest}, past the box bottom {} by more than a descender",
+        text_box.y + text_box.height
+    );
+    assert!(
+        lowest as f32 >= text_box.y,
+        "text was drawn above the box top {}",
+        text_box.y
     );
 }
 
