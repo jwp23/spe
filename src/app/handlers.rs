@@ -65,6 +65,11 @@ impl App {
         position: PdfPosition,
         width: Option<f32>,
     ) -> iced::Task<Message> {
+        let commit_task = if self.canvas.editing {
+            self.handle_commit_text()
+        } else {
+            iced::Task::none()
+        };
         if self.document.is_some() {
             let overlay = TextOverlay {
                 page,
@@ -88,18 +93,62 @@ impl App {
             if width.is_some() {
                 self.editor_content = Some(iced::widget::text_editor::Content::with_text(""));
             }
-            return iced::widget::operation::focus(self.text_input_id.clone());
+            return iced::Task::batch([
+                commit_task,
+                iced::widget::operation::focus(self.text_input_id.clone()),
+            ]);
         }
-        iced::Task::none()
+        commit_task
     }
 
     pub(super) fn handle_update_overlay_text(&mut self, text: String) {
+        // Typing into a selected overlay begins editing it. Every text change
+        // must be bracketed by an edit session, because the session is what
+        // records it in the undo history on commit; an unbracketed change
+        // would drift the document away from the history silently.
+        if !self.canvas.editing && !self.begin_edit_session_on_selection() {
+            return;
+        }
         if let Some(doc) = &mut self.document
             && let Some(idx) = self.canvas.active_overlay
             && idx < doc.overlays.len()
         {
-            doc.overlays[idx].text = text;
+            doc.overlays[idx].text = text.clone();
+            // Multi-line overlays render from editor_content, not overlay.text
+            // directly (see handle_text_editor_action). Keep it in sync so the
+            // IPC `type` path converges on the same state real typing would
+            // produce (spe-jpw). Gate on the *target* overlay's own
+            // multiline-ness (width.is_some()), not on whether editor_content
+            // happens to be populated: editor_content can still hold a
+            // previously edited multiline overlay's text after selection
+            // moves to a different, single-line overlay (handle_select_overlay
+            // doesn't touch editor_content), so `.is_some()` would clobber it
+            // with unrelated text. `idx` is already the target overlay (it's
+            // derived from active_overlay above and bounds-checked), so no
+            // separate idx == active_overlay check is needed.
+            if doc.overlays[idx].width.is_some() {
+                self.editor_content = Some(iced::widget::text_editor::Content::with_text(&text));
+            }
         }
+    }
+
+    /// Open an edit session on the selected overlay, capturing its current
+    /// text as the undo baseline. Returns false when nothing is selected, so
+    /// there is no overlay to record changes against.
+    fn begin_edit_session_on_selection(&mut self) -> bool {
+        let Some(doc) = &self.document else {
+            return false;
+        };
+        let Some(index) = self.canvas.active_overlay else {
+            return false;
+        };
+        let Some(overlay) = doc.overlays.get(index) else {
+            return false;
+        };
+        self.canvas.edit_start_text = Some(overlay.text.clone());
+        self.canvas.fresh_placement = None;
+        self.canvas.editing = true;
+        true
     }
 
     pub(super) fn handle_text_editor_action(&mut self, action: iced::widget::text_editor::Action) {
@@ -190,7 +239,14 @@ impl App {
         iced::Task::none()
     }
 
-    pub(super) fn handle_delete_overlay(&mut self) {
+    /// Delete the selected overlay. Any pending text is committed first, so
+    /// undoing the deletion cannot restore text the history never recorded.
+    pub(super) fn handle_delete_overlay(&mut self) -> iced::Task<Message> {
+        let task = if self.canvas.editing {
+            self.handle_commit_text()
+        } else {
+            iced::Task::none()
+        };
         if let Some(doc) = &self.document
             && let Some(idx) = self.canvas.active_overlay
             && idx < doc.overlays.len()
@@ -200,25 +256,64 @@ impl App {
                 index: idx,
             };
             self.execute_command(cmd);
-            self.canvas.active_overlay = None;
-            self.canvas.editing = false;
+            self.clear_edit_session();
         }
+        task
     }
 
-    pub(super) fn handle_select_overlay(&mut self, index: usize) {
+    /// Sync the toolbar's font/size controls to the currently active
+    /// overlay's stored values, if any overlay is active. Called whenever
+    /// selection changes or an undo/redo may have changed the active
+    /// overlay's font — the toolbar must always reflect what's selected.
+    fn sync_toolbar_to_active_overlay(&mut self) {
+        let Some(doc) = &self.document else { return };
+        let Some(idx) = self.canvas.active_overlay else {
+            return;
+        };
+        let Some(overlay) = doc.overlays.get(idx) else {
+            return;
+        };
+        self.toolbar.font = overlay.font;
+        self.toolbar.font_size = overlay.font_size;
+        self.toolbar.font_size_input = format!("{}", overlay.font_size);
+    }
+
+    pub(super) fn handle_select_overlay(&mut self, index: usize) -> iced::Task<Message> {
+        let (task, index) = self.commit_before_targeting(index);
         if let Some(doc) = &self.document
             && index < doc.overlays.len()
         {
             self.canvas.active_overlay = Some(index);
             self.canvas.editing = false;
             self.canvas.fresh_placement = None;
-            self.toolbar.font = doc.overlays[index].font;
-            self.toolbar.font_size = doc.overlays[index].font_size;
-            self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
+            self.canvas.edit_start_text = None;
+            self.sync_toolbar_to_active_overlay();
         }
+        task
+    }
+
+    /// Number of overlays in the open document.
+    fn overlay_count(&self) -> usize {
+        self.document.as_ref().map_or(0, |doc| doc.overlays.len())
+    }
+
+    /// Close any in-progress edit before acting on `index`, which is resolved
+    /// against the overlay list as it stood before the commit. Committing can
+    /// discard the blank overlay being edited, shifting later entries down.
+    fn commit_before_targeting(&mut self, index: usize) -> (iced::Task<Message>, usize) {
+        if !self.canvas.editing {
+            return (iced::Task::none(), index);
+        }
+        let edited = self.canvas.active_overlay;
+        let count_before = self.overlay_count();
+        let task = self.handle_commit_text();
+        let shifted =
+            self.overlay_count() < count_before && edited.is_some_and(|edited| edited < index);
+        (task, if shifted { index - 1 } else { index })
     }
 
     pub(super) fn handle_edit_overlay(&mut self, index: usize) -> iced::Task<Message> {
+        let (commit_task, index) = self.commit_before_targeting(index);
         if let Some(doc) = &self.document
             && index < doc.overlays.len()
         {
@@ -226,17 +321,18 @@ impl App {
             self.canvas.editing = true;
             self.canvas.fresh_placement = None;
             self.canvas.edit_start_text = Some(doc.overlays[index].text.clone());
-            self.toolbar.font = doc.overlays[index].font;
-            self.toolbar.font_size = doc.overlays[index].font_size;
-            self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
-            if doc.overlays[index].width.is_some() {
-                self.editor_content = Some(iced::widget::text_editor::Content::with_text(
-                    &doc.overlays[index].text,
-                ));
+            let width_is_some = doc.overlays[index].width.is_some();
+            let text = doc.overlays[index].text.clone();
+            self.sync_toolbar_to_active_overlay();
+            if width_is_some {
+                self.editor_content = Some(iced::widget::text_editor::Content::with_text(&text));
             }
-            return iced::widget::operation::focus(self.text_input_id.clone());
+            return iced::Task::batch([
+                commit_task,
+                iced::widget::operation::focus(self.text_input_id.clone()),
+            ]);
         }
-        iced::Task::none()
+        commit_task
     }
 
     pub(super) fn handle_deselect_overlay(&mut self) -> iced::Task<Message> {
@@ -274,8 +370,56 @@ impl App {
         }
         self.canvas.editing = false;
         self.canvas.edit_start_text = None;
+        self.canvas.fresh_placement = None;
         self.editor_content = None;
         iced::Task::none()
+    }
+
+    /// Discard every trace of an edit session without touching the overlay
+    /// list. Session state addresses overlays by index, so it must never
+    /// outlive an operation that reorders or shortens the list.
+    fn clear_edit_session(&mut self) {
+        self.canvas.editing = false;
+        self.canvas.active_overlay = None;
+        self.canvas.edit_start_text = None;
+        self.canvas.fresh_placement = None;
+        self.editor_content = None;
+    }
+
+    /// Abandon an in-progress edit, returning the overlay list to the state it
+    /// had when the session began: a freshly placed overlay is removed along
+    /// with its placement command, and an established overlay's text reverts.
+    /// Returns whether the document or the undo history changed.
+    fn cancel_edit_session(&mut self) -> bool {
+        if !self.canvas.editing {
+            return false;
+        }
+        let index = self.canvas.active_overlay;
+        let start_text = self.canvas.edit_start_text.clone();
+        let fresh_placement = self.canvas.fresh_placement;
+        self.clear_edit_session();
+
+        let Some(doc) = &mut self.document else {
+            return false;
+        };
+        let Some(index) = index.filter(|i| *i < doc.overlays.len()) else {
+            return false;
+        };
+        if let Some(base_len) = fresh_placement {
+            doc.overlays.remove(index);
+            self.undo_stack.truncate(base_len);
+            // Redo entries address overlays by index, so none of them can
+            // survive the list shrinking outside the command history.
+            self.redo_stack.clear();
+            return true;
+        }
+        match start_text {
+            Some(text) if doc.overlays[index].text != text => {
+                doc.overlays[index].text = text;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Remove an overlay whose text is blank, since it would only render as an
@@ -360,6 +504,7 @@ impl App {
     pub(super) fn handle_file_opened(&mut self, path: PathBuf) -> iced::Task<Message> {
         match lopdf::Document::load(&path) {
             Ok(doc) => {
+                self.last_open_error = None;
                 let page_dims = crate::pdf::page_dimensions(&doc);
                 let page_count = doc.get_pages().len() as u32;
                 self.document = Some(DocumentState {
@@ -410,7 +555,9 @@ impl App {
                 iced::Task::batch([scroll_reset, page_task, thumb_task])
             }
             Err(e) => {
+                let message = format!("failed to open {}: {e}", path.display());
                 eprintln!("Failed to open PDF: {e}");
+                self.last_open_error = Some(message);
                 iced::Task::none()
             }
         }
@@ -789,22 +936,54 @@ impl App {
 
     // --- Undo/Redo handlers ---
 
+    /// Undo the in-progress edit if there is one, otherwise reverse the most
+    /// recent command. Cancelling the edit first keeps the session from
+    /// outliving the overlay it addresses, and gives one visible change per
+    /// keystroke: an edit that changed nothing falls through to the history.
     pub(super) fn handle_undo(&mut self) {
+        if self.cancel_edit_session() {
+            return;
+        }
         if let Some(cmd) = self.undo_stack.pop()
             && let Some(doc) = &mut self.document
         {
             cmd.reverse(&mut doc.overlays);
+            // A selection is an index, so it only survives commands that leave
+            // the list's length intact. Placing or deleting can strand it on a
+            // removed or shifted overlay, so the selection goes; an in-place
+            // change (text, font, size, position, width) leaves it addressing
+            // the same overlay, and the toolbar resyncs to the restored values.
+            let changes_count = cmd.changes_overlay_count();
             self.redo_stack.push(cmd);
+            if changes_count {
+                self.clear_edit_session();
+            }
+            self.sync_toolbar_to_active_overlay();
         }
     }
 
-    pub(super) fn handle_redo(&mut self) {
+    /// Reapply the most recently undone command. An in-progress edit is
+    /// committed rather than cancelled, because redo must never move the
+    /// document backwards; committing also invalidates the redo stack whenever
+    /// it records a command, which is what a new action should do.
+    pub(super) fn handle_redo(&mut self) -> iced::Task<Message> {
+        let task = if self.canvas.editing {
+            self.handle_commit_text()
+        } else {
+            iced::Task::none()
+        };
         if let Some(cmd) = self.redo_stack.pop()
             && let Some(doc) = &mut self.document
         {
             cmd.apply(&mut doc.overlays);
+            let changes_count = cmd.changes_overlay_count();
             self.undo_stack.push(cmd);
+            if changes_count {
+                self.clear_edit_session();
+            }
+            self.sync_toolbar_to_active_overlay();
         }
+        task
     }
 
     /// Common post-zoom logic: increment generation and schedule a debounced
