@@ -60,6 +60,25 @@ impl OverlayCanvasProgram<'_> {
         Some((page, rect))
     }
 
+    /// Resolve the page under the cursor and its PDF conversion params.
+    ///
+    /// Returns None if the cursor is outside the canvas bounds, falls in a
+    /// gap between pages, or lands on a page with unknown dimensions.
+    fn page_at_cursor(
+        &self,
+        cursor_pos: iced::Point,
+        bounds: iced::Rectangle,
+    ) -> Option<(u32, iced::Rectangle, ConversionParams)> {
+        if !bounds.contains(cursor_pos) {
+            return None;
+        }
+        let canvas_y = cursor_pos.y - bounds.y;
+        let (page, page_rect) = self.page_at_canvas_y(canvas_y, bounds.width)?;
+        let page_screen_rect = to_screen_rect(page_rect, &bounds);
+        let params = self.conversion_params_for_page(page, &page_screen_rect)?;
+        Some((page, page_rect, params))
+    }
+
     /// Handle left mouse button press: resize handle, overlay hit test, placement, or deselect.
     fn handle_left_click(
         &self,
@@ -80,14 +99,11 @@ impl OverlayCanvasProgram<'_> {
         let canvas_y = cursor_pos.y - bounds.y;
         let canvas_x = cursor_pos.x - bounds.x;
 
-        let Some((page, page_rect)) = self.page_at_canvas_y(canvas_y, bounds.width) else {
+        let Some((page, page_rect, params)) = self.page_at_cursor(cursor_pos, bounds) else {
             // Click in gap or outside pages
             state.last_click = None;
             return Some(canvas::Action::publish(Message::DeselectOverlay).and_capture());
         };
-
-        let page_screen_rect = to_screen_rect(page_rect, &bounds);
-        let params = self.conversion_params_for_page(page, &page_screen_rect)?;
 
         if let Some(action) = self.try_resize_handle(state, cursor_pos, page, &params) {
             return Some(action);
@@ -202,13 +218,7 @@ impl OverlayCanvasProgram<'_> {
 
         // Hover tracking: hit-test the cursor position against overlays.
         let new_hover = cursor.position().and_then(|cursor_pos| {
-            if !bounds.contains(cursor_pos) {
-                return None;
-            }
-            let canvas_y = cursor_pos.y - bounds.y;
-            let (page, page_rect) = self.page_at_canvas_y(canvas_y, bounds.width)?;
-            let page_screen_rect = to_screen_rect(page_rect, &bounds);
-            let params = self.conversion_params_for_page(page, &page_screen_rect)?;
+            let (page, _, params) = self.page_at_cursor(cursor_pos, bounds)?;
             hit_test(
                 cursor_pos.x,
                 cursor_pos.y,
@@ -617,17 +627,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
             return mouse::Interaction::default();
         };
 
-        if !bounds.contains(cursor_pos) {
-            return mouse::Interaction::default();
-        }
-
-        let canvas_y = cursor_pos.y - bounds.y;
-        let Some((page, page_rect)) = self.page_at_canvas_y(canvas_y, bounds.width) else {
-            return mouse::Interaction::default();
-        };
-
-        let page_screen_rect = to_screen_rect(page_rect, &bounds);
-        let Some(params) = self.conversion_params_for_page(page, &page_screen_rect) else {
+        let Some((page, page_rect, params)) = self.page_at_cursor(cursor_pos, bounds) else {
             return mouse::Interaction::default();
         };
 
@@ -661,6 +661,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
         }
 
         let canvas_x = cursor_pos.x - bounds.x;
+        let canvas_y = cursor_pos.y - bounds.y;
         if page_rect.contains(iced::Point::new(canvas_x, canvas_y)) {
             return mouse::Interaction::Crosshair;
         }
