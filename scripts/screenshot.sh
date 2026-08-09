@@ -3,16 +3,38 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-SOCKET_PATH="${XDG_RUNTIME_DIR:-/tmp}/spe-ipc.sock"
 SCREENSHOT_DIR="$PROJECT_DIR/screenshots"
-PIDFILE="/tmp/spe-screenshot-harness.pid"
-CAGE_DISPLAY_FILE="/tmp/spe-screenshot-display"
+
+# Isolate each harness invocation so parallel worktrees don't collide on the
+# IPC socket, pidfile, or Wayland display. Defaults to a short hash of
+# PROJECT_DIR so a given checkout gets a stable instance across start/send/
+# capture/stop calls without any setup; SPE_SCREENSHOT_INSTANCE overrides it
+# (e.g. to run two instances from the same checkout). Unix socket paths have
+# a 108-byte limit, so the key must stay short regardless of how long the
+# worktree path is.
+INSTANCE_ID="${SPE_SCREENSHOT_INSTANCE:-$(printf '%s' "$PROJECT_DIR" | sha256sum | cut -c1-8)}"
+
+# Guard against a malicious or malformed SPE_SCREENSHOT_INSTANCE: it is
+# spliced into RUNTIME_DIR below, which gets rm -rf'd on every start and
+# stop. A value like '../../some-dir' would otherwise escape the
+# spe-screenshot-<instance> subtree. The length bound also keeps the socket
+# path under the 108-byte AF_UNIX limit.
+if [[ ! "$INSTANCE_ID" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
+    echo "Invalid SPE_SCREENSHOT_INSTANCE (want 1-32 chars of [A-Za-z0-9_-])" >&2
+    exit 1
+fi
+
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/spe-screenshot-$INSTANCE_ID"
+SOCKET_PATH="$RUNTIME_DIR/spe-ipc.sock"
+PIDFILE="$RUNTIME_DIR/harness.pid"
+CAGE_DISPLAY_FILE="$RUNTIME_DIR/display"
 
 check_deps() {
     local missing=()
     command -v cage >/dev/null 2>&1 || missing+=(cage)
     command -v grim >/dev/null 2>&1 || missing+=(grim)
     command -v socat >/dev/null 2>&1 || missing+=(socat)
+    command -v sha256sum >/dev/null 2>&1 || missing+=(sha256sum)
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo "Missing dependencies: ${missing[*]}"
         echo "Install with: sudo pacman -S ${missing[*]}"
@@ -29,18 +51,20 @@ do_start() {
     echo "Building app..."
     cargo build --manifest-path "$PROJECT_DIR/Cargo.toml"
 
-    # Clean up stale socket
-    rm -f "$SOCKET_PATH"
-
-    # Record existing wayland sockets so we can detect the one cage creates.
-    local runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
-    local before
-    before="$(ls "$runtime_dir"/wayland-* 2>/dev/null | grep -v '\.lock$' || true)"
+    # Fresh, isolated runtime dir for this instance's socket and Wayland
+    # display. Wiping it here means the wayland-* detection below never sees
+    # a stale socket left over from a crashed previous run.
+    rm -rf "$RUNTIME_DIR"
+    mkdir -m 0700 -p "$RUNTIME_DIR"
 
     echo "Starting cage compositor (headless)..."
     # WLR_BACKENDS=headless: virtual display, no GPU or parent compositor needed.
     # Unset WAYLAND_DISPLAY so cage doesn't try to nest inside the host compositor.
-    env -u WAYLAND_DISPLAY WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+    # XDG_RUNTIME_DIR is overridden to this instance's isolated dir, so the
+    # app's IPC socket (src/ipc.rs socket_path()) and cage's Wayland socket
+    # both land there instead of colliding with other running instances.
+    env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$RUNTIME_DIR" \
+        WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
         cage -- "$PROJECT_DIR/target/debug/spe" --ipc &
     local cage_pid=$!
     echo "$cage_pid" > "$PIDFILE"
@@ -48,11 +72,8 @@ do_start() {
     echo "Waiting for IPC socket..."
     for i in {1..30}; do
         if [[ -S "$SOCKET_PATH" ]]; then
-            # Detect which wayland socket cage created.
-            local after
-            after="$(ls "$runtime_dir"/wayland-* 2>/dev/null | grep -v '\.lock$' || true)"
             local cage_display
-            cage_display="$(comm -13 <(echo "$before") <(echo "$after") | head -1)"
+            cage_display="$(ls "$RUNTIME_DIR"/wayland-* 2>/dev/null | grep -v '\.lock$' | head -1)"
             if [[ -n "$cage_display" ]]; then
                 cage_display="$(basename "$cage_display")"
             else
@@ -76,9 +97,7 @@ do_stop() {
         local pid
         pid="$(cat "$PIDFILE")"
         kill "$pid" 2>/dev/null || true
-        rm -f "$PIDFILE"
-        rm -f "$SOCKET_PATH"
-        rm -f "$CAGE_DISPLAY_FILE"
+        rm -rf "$RUNTIME_DIR"
         echo "Stopped"
     else
         echo "Not running"
@@ -102,7 +121,7 @@ do_capture() {
     fi
     local display
     display="$(cat "$CAGE_DISPLAY_FILE")"
-    WAYLAND_DISPLAY="$display" grim "$output"
+    XDG_RUNTIME_DIR="$RUNTIME_DIR" WAYLAND_DISPLAY="$display" grim "$output"
     echo "Captured: $output"
 }
 

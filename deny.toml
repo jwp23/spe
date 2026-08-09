@@ -5,7 +5,7 @@ all-features = false
 [advisories]
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but only used transitively by wgpu/image; upstream will migrate to pastey" },
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained and directly depended on by this project; no patched version is available. Exception remains until migration to a maintained parser" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained. The project's direct use (src/fonts.rs) has migrated to skrifa (spe-4pe). Remaining exposure is transitive only, via lopdf, iced's text stack (cosmic-text -> fontdb), and Wayland decoration theming (sctk-adwaita -> ab_glyph); the cosmic-text path is not actionable until iced ships a release with cosmic-text >= 0.19. No patched version is available upstream" },
 ]
 
 [licenses]

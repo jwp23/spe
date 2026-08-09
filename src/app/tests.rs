@@ -1093,6 +1093,33 @@ fn view_with_toast_does_not_panic() {
     let _element = app.view();
 }
 
+#[test]
+fn toast_renders_below_toolbar_and_above_content() {
+    let (mut app, _) = App::new(false);
+    app.status_message = Some(("Saved to foo.pdf".to_string(), std::time::Instant::now()));
+
+    let mut simulator = iced_test::Simulator::new(app.view());
+    let toast_bounds = simulator
+        .find("Saved to foo.pdf")
+        .expect("toast text should be present in the view")
+        .bounds();
+    let content_bounds = simulator
+        .find("Open a PDF to get started")
+        .expect("placeholder content text should be present in the view")
+        .bounds();
+
+    assert!(
+        toast_bounds.height > 0.0,
+        "toast must occupy nonzero height, got {toast_bounds:?}"
+    );
+    assert!(
+        toast_bounds.y < content_bounds.y,
+        "toast (y={}) must render above the content area (y={})",
+        toast_bounds.y,
+        content_bounds.y
+    );
+}
+
 // --- Floating text input (spe-vnm.3.1) ---
 
 #[test]
@@ -1558,6 +1585,102 @@ fn edit_multiline_overlay_returns_focus_task() {
 }
 
 // =====================================================================
+// spe-0g1: font picker returns focus to the text editor
+// =====================================================================
+
+#[test]
+fn change_font_while_editing_returns_focus_task() {
+    let mut app = test_app_with_overlay();
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::ChangeFont(courier));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "ChangeFont while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn change_font_via_toolbar_message_returns_focus_task() {
+    let mut app = test_app_with_overlay();
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::Toolbar(toolbar::Message::FontSelected(
+        crate::ui::toolbar::FontOption {
+            id: courier,
+            name: "Courier".to_string(),
+        },
+    )));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "Toolbar font selection while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn change_font_when_not_editing_returns_no_focus_task() {
+    let mut app = test_app_with_overlay();
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::SelectOverlay(0));
+
+    let task = app.update(Message::ChangeFont(courier));
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "ChangeFont without an active edit must not steal focus, got: {debug}"
+    );
+}
+
+#[test]
+fn change_font_without_document_returns_no_focus_task() {
+    let (mut app, _) = App::new(false);
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+
+    let task = app.update(Message::ChangeFont(courier));
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "ChangeFont without a document must not focus anything, got: {debug}"
+    );
+}
+
+#[test]
+fn change_font_size_while_editing_returns_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::ChangeFontSize(18.0));
+
+    let debug = format!("{task:?}");
+    assert!(
+        !debug.contains("units: 0"),
+        "ChangeFontSize while editing should return a focus Task, got: {debug}"
+    );
+}
+
+#[test]
+fn change_font_size_when_not_editing_returns_no_focus_task() {
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+
+    let task = app.update(Message::ChangeFontSize(18.0));
+
+    let debug = format!("{task:?}");
+    assert!(
+        debug.contains("units: 0"),
+        "ChangeFontSize without an active edit must not steal focus, got: {debug}"
+    );
+}
+
+// =====================================================================
 // spe-zr9: text_input has matching font size and zero padding
 // =====================================================================
 
@@ -1960,4 +2083,68 @@ fn erasing_an_existing_overlay_to_whitespace_records_a_deletion_for_undo() {
         overlays[0].text, "Hello",
         "undo restores the text as of edit start, not the whitespace"
     );
+}
+
+// =====================================================================
+// spe-rto: floating editor previews text in the selected font
+// =====================================================================
+
+#[test]
+fn editing_font_is_none_when_not_editing() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::CommitText);
+    assert!(!app.canvas.editing);
+    assert!(app.editing_font().is_none());
+}
+
+#[test]
+fn editing_font_matches_selected_bundled_font() {
+    let mut app = test_app_with_document();
+    let great_vibes = app.font_registry.find_by_name("Great Vibes").unwrap();
+    app.update(Message::ChangeFont(great_vibes));
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    assert!(app.canvas.editing);
+    let expected = app.font_registry.get(great_vibes).iced_font;
+    assert_eq!(app.editing_font(), Some(expected));
+    assert_eq!(expected.family, iced::font::Family::Name("Great Vibes"));
+}
+
+#[test]
+fn editing_font_follows_font_change_during_edit() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::ChangeFont(courier));
+    let expected = app.font_registry.get(courier).iced_font;
+    assert_eq!(app.editing_font(), Some(expected));
+    assert_eq!(expected.family, iced::font::Family::Monospace);
+}
+
+#[test]
+fn editing_font_for_multiline_overlay_matches_selected_font() {
+    let mut app = test_app_with_document();
+    let times = app.font_registry.find_by_name("Times Bold").unwrap();
+    app.update(Message::ChangeFont(times));
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: Some(200.0),
+    });
+    assert!(app.editor_content.is_some());
+    let expected = app.font_registry.get(times).iced_font;
+    assert_eq!(app.editing_font(), Some(expected));
+    assert_eq!(expected.weight, iced::font::Weight::Bold);
 }

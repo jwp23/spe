@@ -139,39 +139,53 @@ impl App {
         }
     }
 
-    pub(super) fn handle_change_font(&mut self, font: FontId) {
-        if self.document.is_some() {
-            if let Some(idx) = self.canvas.active_overlay
-                && let Some(doc) = &self.document
-                && idx < doc.overlays.len()
-            {
-                let cmd = UndoCommand::ChangeOverlayFont {
-                    index: idx,
-                    old_font: doc.overlays[idx].font,
-                    new_font: font,
-                };
-                self.execute_command(cmd);
-            }
-            self.toolbar.font = font;
+    pub(super) fn handle_change_font(&mut self, font: FontId) -> iced::Task<Message> {
+        if self.document.is_none() {
+            return iced::Task::none();
         }
+        if let Some(idx) = self.canvas.active_overlay
+            && let Some(doc) = &self.document
+            && idx < doc.overlays.len()
+        {
+            let cmd = UndoCommand::ChangeOverlayFont {
+                index: idx,
+                old_font: doc.overlays[idx].font,
+                new_font: font,
+            };
+            self.execute_command(cmd);
+        }
+        self.toolbar.font = font;
+        self.refocus_editing_widget()
     }
 
-    pub(super) fn handle_change_font_size(&mut self, size: f32) {
-        if self.document.is_some() {
-            if let Some(idx) = self.canvas.active_overlay
-                && let Some(doc) = &self.document
-                && idx < doc.overlays.len()
-            {
-                let cmd = UndoCommand::ChangeOverlayFontSize {
-                    index: idx,
-                    old_size: doc.overlays[idx].font_size,
-                    new_size: size,
-                };
-                self.execute_command(cmd);
-            }
-            self.toolbar.font_size = size;
-            self.toolbar.font_size_input = format!("{size}");
+    pub(super) fn handle_change_font_size(&mut self, size: f32) -> iced::Task<Message> {
+        if self.document.is_none() {
+            return iced::Task::none();
         }
+        if let Some(idx) = self.canvas.active_overlay
+            && let Some(doc) = &self.document
+            && idx < doc.overlays.len()
+        {
+            let cmd = UndoCommand::ChangeOverlayFontSize {
+                index: idx,
+                old_size: doc.overlays[idx].font_size,
+                new_size: size,
+            };
+            self.execute_command(cmd);
+        }
+        self.toolbar.font_size = size;
+        self.toolbar.font_size_input = format!("{size}");
+        self.refocus_editing_widget()
+    }
+
+    /// Return keyboard focus to the floating text widget while an overlay is
+    /// being edited. Clicking a toolbar control unfocuses the floating widget,
+    /// so typing must be handed back once the toolbar interaction completes.
+    fn refocus_editing_widget(&self) -> iced::Task<Message> {
+        if self.canvas.editing && self.canvas.active_overlay.is_some() {
+            return iced::widget::operation::focus(self.text_input_id.clone());
+        }
+        iced::Task::none()
     }
 
     pub(super) fn handle_delete_overlay(&mut self) {

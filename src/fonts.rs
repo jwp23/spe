@@ -1,6 +1,9 @@
 // Unified font model: FontId, PdfEmbedding, WidthTable, FontEntry, FontRegistry.
 
 use crate::coordinate::BoundingBox;
+use skrifa::attribute::Style;
+use skrifa::instance::Size;
+use skrifa::{FontRef, MetadataProvider};
 
 const GREAT_VIBES_BYTES: &[u8] = include_bytes!("../assets/fonts/great-vibes.ttf");
 const DANCING_SCRIPT_BYTES: &[u8] = include_bytes!("../assets/fonts/dancing-script.ttf");
@@ -251,15 +254,17 @@ impl Default for FontRegistry {
 /// Widths are normalised to 1000em units (standard PDF/AFM convention).
 /// Characters outside the Latin-1 range (0-255) use the default width.
 fn build_ttf_width_table(font_bytes: &[u8]) -> WidthTable {
-    let face = ttf_parser::Face::parse(font_bytes, 0).expect("valid TTF");
-    let units_per_em = face.units_per_em() as f32;
+    let font = FontRef::new(font_bytes).expect("valid TTF");
+    let units_per_em = font.metrics(Size::unscaled(), &[][..]).units_per_em as f32;
+    let charmap = font.charmap();
+    let glyph_metrics = font.glyph_metrics(Size::unscaled(), &[][..]);
     let mut widths = [0.0_f32; 256];
     for code in 0u16..=255 {
         if let Some(c) = char::from_u32(u32::from(code))
-            && let Some(glyph_id) = face.glyph_index(c)
+            && let Some(glyph_id) = charmap.map(c)
         {
-            let advance = face.glyph_hor_advance(glyph_id).unwrap_or(0);
-            widths[usize::from(code)] = advance as f32 / units_per_em * 1000.0;
+            let advance = glyph_metrics.advance_width(glyph_id).unwrap_or(0.0);
+            widths[usize::from(code)] = advance / units_per_em * 1000.0;
         }
     }
     let default = widths[b' ' as usize].max(500.0);
@@ -270,22 +275,26 @@ fn build_ttf_width_table(font_bytes: &[u8]) -> WidthTable {
 ///
 /// All metric values are normalised to 1000em units (PDF convention).
 fn extract_font_descriptor(font_bytes: &[u8]) -> FontDescriptorInfo {
-    let face = ttf_parser::Face::parse(font_bytes, 0).expect("valid TTF");
-    let units_per_em = face.units_per_em() as f32;
-    let scale = |v: i16| -> i64 { (v as f32 / units_per_em * 1000.0).round() as i64 };
-    let bbox = face.global_bounding_box();
+    let font = FontRef::new(font_bytes).expect("valid TTF");
+    let metrics = font.metrics(Size::unscaled(), &[][..]);
+    let units_per_em = metrics.units_per_em as f32;
+    let scale = |v: f32| -> i64 { (v / units_per_em * 1000.0).round() as i64 };
+    let bounds = metrics.bounds.unwrap_or_default();
+    // Mirrors ttf-parser's is_italic(): the OS/2 fsSelection ITALIC bit, or a
+    // non-zero post-table italic angle.
+    let is_italic = font.attributes().style == Style::Italic || metrics.italic_angle != 0.0;
     FontDescriptorInfo {
-        ascent: scale(face.ascender()),
-        descent: scale(face.descender()),
-        cap_height: scale(face.capital_height().unwrap_or(face.ascender())),
-        italic_angle: face.italic_angle(),
+        ascent: scale(metrics.ascent),
+        descent: scale(metrics.descent),
+        cap_height: scale(metrics.cap_height.unwrap_or(metrics.ascent)),
+        italic_angle: metrics.italic_angle,
         // PDF flags: bit 7 (64) = Italic, bit 6 (32) = Nonsymbolic.
-        flags: if face.is_italic() { 64 } else { 32 },
+        flags: if is_italic { 64 } else { 32 },
         bbox: [
-            (bbox.x_min as f32 / units_per_em * 1000.0).round() as i64,
-            (bbox.y_min as f32 / units_per_em * 1000.0).round() as i64,
-            (bbox.x_max as f32 / units_per_em * 1000.0).round() as i64,
-            (bbox.y_max as f32 / units_per_em * 1000.0).round() as i64,
+            scale(bounds.x_min),
+            scale(bounds.y_min),
+            scale(bounds.x_max),
+            scale(bounds.y_max),
         ],
         stem_v: 80,
     }
@@ -1289,5 +1298,130 @@ mod tests {
         let desc = entry.descriptor.as_ref().unwrap();
         assert!(desc.ascent > 0);
         assert!(desc.descent < 0);
+    }
+
+    /// Golden-master values below were captured from the pre-migration
+    /// ttf-parser implementation of `extract_font_descriptor` /
+    /// `build_ttf_width_table`. They pin the exact descriptor and glyph
+    /// width outputs for the bundled TrueType fonts so the skrifa migration
+    /// cannot silently change what gets baked into saved PDFs.
+    ///
+    /// Width tolerance is 0.01 units-per-1000em: well under the 1-unit
+    /// rounding the PDF writer applies (`w.round() as i64` in
+    /// `pdf/writer.rs`), so any difference here is invisible in output PDFs.
+    fn assert_width_close(actual: f32, expected: f32, label: &str) {
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "{label}: expected {expected}, got {actual}"
+        );
+    }
+
+    fn assert_descriptor_matches(
+        desc: &FontDescriptorInfo,
+        ascent: i64,
+        descent: i64,
+        cap_height: i64,
+        italic_angle: f32,
+        flags: i64,
+        bbox: [i64; 4],
+    ) {
+        assert_eq!(desc.ascent, ascent, "ascent");
+        assert_eq!(desc.descent, descent, "descent");
+        assert_eq!(desc.cap_height, cap_height, "cap_height");
+        assert!(
+            (desc.italic_angle - italic_angle).abs() < f32::EPSILON,
+            "italic_angle: expected {italic_angle}, got {}",
+            desc.italic_angle
+        );
+        assert_eq!(desc.flags, flags, "flags");
+        assert_eq!(desc.bbox, bbox, "bbox");
+    }
+
+    #[test]
+    fn great_vibes_descriptor_matches_golden_values() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Great Vibes").unwrap();
+        let desc = registry.get(id).descriptor.as_ref().unwrap();
+        assert_descriptor_matches(desc, 851, -401, 750, 0.0, 32, [-491, -556, 2022, 1153]);
+    }
+
+    #[test]
+    fn great_vibes_widths_match_golden_values() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Great Vibes").unwrap();
+        let widths = &registry.get(id).widths;
+        assert_width_close(widths.char_width('A'), 716.0, "A");
+        assert_width_close(widths.char_width('a'), 358.0, "a");
+        assert_width_close(widths.char_width('i'), 176.0, "i");
+        assert_width_close(widths.char_width('W'), 1351.0, "W");
+        assert_width_close(widths.char_width('z'), 343.0, "z");
+        assert_width_close(widths.char_width(' '), 171.0, " ");
+        assert_width_close(widths.char_width('0'), 458.0, "0");
+    }
+
+    #[test]
+    fn dancing_script_descriptor_matches_golden_values() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Dancing Script").unwrap();
+        let desc = registry.get(id).descriptor.as_ref().unwrap();
+        assert_descriptor_matches(desc, 920, -280, 720, 0.0, 32, [-239, -284, 1298, 1095]);
+    }
+
+    #[test]
+    fn dancing_script_widths_match_golden_values() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Dancing Script").unwrap();
+        let widths = &registry.get(id).widths;
+        assert_width_close(widths.char_width('A'), 592.0, "A");
+        assert_width_close(widths.char_width('a'), 436.0, "a");
+        assert_width_close(widths.char_width('i'), 241.0, "i");
+        assert_width_close(widths.char_width('W'), 906.0, "W");
+        assert_width_close(widths.char_width('z'), 317.0, "z");
+        assert_width_close(widths.char_width(' '), 260.0, " ");
+        assert_width_close(widths.char_width('0'), 630.0, "0");
+    }
+
+    #[test]
+    fn pinyon_script_descriptor_matches_golden_values() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Pinyon Script").unwrap();
+        let desc = registry.get(id).descriptor.as_ref().unwrap();
+        assert_descriptor_matches(desc, 863, -384, 678, 0.0, 32, [-562, -470, 1696, 1048]);
+    }
+
+    #[test]
+    fn pinyon_script_widths_match_golden_values() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Pinyon Script").unwrap();
+        let widths = &registry.get(id).widths;
+        assert_width_close(widths.char_width('A'), 794.9219, "A");
+        assert_width_close(widths.char_width('a'), 417.968_75, "a");
+        assert_width_close(widths.char_width('i'), 221.679_69, "i");
+        assert_width_close(widths.char_width('W'), 840.8203, "W");
+        assert_width_close(widths.char_width('z'), 338.8672, "z");
+        assert_width_close(widths.char_width(' '), 245.605_47, " ");
+        assert_width_close(widths.char_width('0'), 562.9883, "0");
+    }
+
+    #[test]
+    fn pacifico_descriptor_matches_golden_values() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Pacifico").unwrap();
+        let desc = registry.get(id).descriptor.as_ref().unwrap();
+        assert_descriptor_matches(desc, 1303, -453, 840, 0.0, 32, [-593, -457, 1660, 1478]);
+    }
+
+    #[test]
+    fn pacifico_widths_match_golden_values() {
+        let registry = FontRegistry::new();
+        let id = registry.find_by_name("Pacifico").unwrap();
+        let widths = &registry.get(id).widths;
+        assert_width_close(widths.char_width('A'), 786.0, "A");
+        assert_width_close(widths.char_width('a'), 470.0, "a");
+        assert_width_close(widths.char_width('i'), 246.0, "i");
+        assert_width_close(widths.char_width('W'), 1217.0, "W");
+        assert_width_close(widths.char_width('z'), 445.0, "z");
+        assert_width_close(widths.char_width(' '), 265.0, " ");
+        assert_width_close(widths.char_width('0'), 543.0, "0");
     }
 }
