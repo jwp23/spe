@@ -999,11 +999,10 @@ mod tests {
 
     #[test]
     fn refused_socket_path_creates_no_socket() {
-        assert!(socket_path_in(None).is_err());
-        assert!(
-            !std::path::Path::new("/tmp/spe-ipc.sock").exists(),
-            "refusing must not fall back to creating a socket in /tmp"
-        );
+        // There is no /tmp fallback path to construct at all: refusal is the
+        // only outcome, so no socket location can be derived.
+        assert_eq!(socket_path_in(None), Err(MissingRuntimeDir));
+        assert_eq!(socket_path_in(Some("")), Err(MissingRuntimeDir));
     }
 
     // --- precondition checks: every command reports whether it acted (spe-749) ---

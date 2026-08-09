@@ -146,7 +146,7 @@ by consulting the same hit test the mouse path uses (`hit_test_pdf`, which
 | Over an existing overlay | selects it (topmost/last-placed wins) |
 | Over blank page area | places a new overlay there |
 | Off the page | deselects |
-| While an overlay is being edited | commits the text first, like any click does |
+| While an overlay is being edited | commits the text and does nothing else; send `click_at` again to act on the point |
 
 Residual differences from a real mouse, which need a pointer device the IPC
 protocol does not model:
