@@ -346,9 +346,10 @@ impl IpcCommand {
                     // cannot produce boxes of different shapes.
                     new_box: OverlayBox {
                         width: width.max(crate::ui::canvas::MIN_BOX_DIMENSION),
-                        min_height: height
-                            .unwrap_or(old_box.min_height)
-                            .max(crate::ui::canvas::MIN_BOX_DIMENSION),
+                        min_height: match height {
+                            Some(h) => h.max(crate::ui::canvas::MIN_BOX_DIMENSION),
+                            None => old_box.min_height,
+                        },
                     },
                 })
             }
@@ -875,6 +876,27 @@ mod tests {
             msg,
             Message::ResizeOverlay { new_box, .. }
             if (new_box.min_height - 80.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn resize_without_a_height_does_not_floor_a_minimum_the_overlay_never_had() {
+        // The mouse path (ResizeEdge::Right) leaves an untouched axis exactly
+        // as it was; a width-only IPC resize must agree rather than gift the
+        // overlay a minimum height it never had.
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Resize {
+            index: 0,
+            width: 300.0,
+            height: None,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(
+            msg,
+            Message::ResizeOverlay { new_box, .. }
+            if new_box.min_height == 0.0
         ));
     }
 

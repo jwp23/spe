@@ -6,8 +6,9 @@ use iced_test::core::clipboard;
 use iced_test::core::renderer::Headless;
 use iced_test::runtime::{UserInterface, user_interface};
 
-/// Size of the headless render surface, in logical pixels. Large enough to
-/// hold a US Letter page at zoom 1 with room around it.
+/// Size of the headless render surface, in logical pixels. Wide enough to
+/// hold a US Letter page at zoom 1 with margins on both sides. The page is
+/// taller than the surface, so its bottom edge falls outside the capture.
 pub const RENDER_SIZE: iced::Size = iced::Size {
     width: 900.0,
     height: 700.0,
@@ -185,22 +186,20 @@ impl Screenshot {
     /// blue/red channel gap) so it tracks the renderer's actual selection
     /// color instead of a magic number that could silently fall out of sync.
     pub fn selection_blue_pixels(&self) -> usize {
-        let threshold = Self::selection_blue_threshold();
         self.rgba
             .chunks_exact(4)
-            .filter(|p| f32::from(p[2]) - f32::from(p[0]) > threshold)
+            .filter(|p| Self::is_selection_blue(p[0], p[2]))
             .count()
     }
 
     /// Bounding box of the strongly blue pixels as (left, top, right, bottom),
     /// or None if none exist.
     pub fn selection_blue_bounds(&self) -> Option<(u32, u32, u32, u32)> {
-        let threshold = Self::selection_blue_threshold();
         let mut bounds: Option<(u32, u32, u32, u32)> = None;
         for y in 0..self.height {
             for x in 0..self.width {
                 let (r, _, b) = self.pixel(x, y);
-                if f32::from(b) - f32::from(r) <= threshold {
+                if !Self::is_selection_blue(r, b) {
                     continue;
                 }
                 bounds = Some(match bounds {
@@ -210,6 +209,12 @@ impl Screenshot {
             }
         }
         bounds
+    }
+
+    /// Shared by `selection_blue_pixels` and `selection_blue_bounds` so the
+    /// count and the bounding box always describe the same pixel set.
+    fn is_selection_blue(r: u8, b: u8) -> bool {
+        f32::from(b) - f32::from(r) > Self::selection_blue_threshold()
     }
 
     fn selection_blue_threshold() -> f32 {
