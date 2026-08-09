@@ -144,9 +144,12 @@ hitting, not scenario-script luck:
    layer here to observe compositor-side presentation.
 
    Determinism, `committed_tint` scenario, 5 runs each, full harness
-   start/stop per run (not just repeated captures in one session):
+   start/stop per run (not just repeated captures in one session). Values
+   are `compare -metric AE` output against the checked-in reference PNG —
+   ImageMagick's Absolute Error metric, i.e. a count of differing pixels,
+   not a percentage or a distance measure:
 
-   | | run 1 | run 2 | run 3 | run 4 | run 5 |
+   | AE pixel count vs. reference | run 1 | run 2 | run 3 | run 4 | run 5 |
    |---|---|---|---|---|---|
    | 300ms sleep (old) | 230.103 | 230.103 | 315.492 | 315.492 | 230.103 |
    | `wait_frame` (new) | 315.492 | 315.492 | 315.492 | 315.492 | 315.492 |
@@ -163,12 +166,83 @@ hitting, not scenario-script luck:
    environment's font rendering differing slightly from whatever machine
    generated the references — a pre-existing gap, not a regression.
 
+### Staleness window: which commands are safe before `wait_frame`
+
+`IpcEvent::Command` batches the command's own task with the task that sends
+the IPC reply (`Task::batch([command_task, response_task])`,
+`src/app/mod.rs`). `wait_frame`'s target is a snapshot of `state_generation`
+taken when it is processed, so a command whose handler chains a **trailing
+task that later delivers its own `Message`** could still bump
+`state_generation` after that snapshot — `wait_frame` would then resolve on
+a frame that predates the trailing effect.
+
+Audited every handler `scripts/visual-regression.sh` scenarios actually call
+— `click`, `click_at`, `drag`, `type`, `select`, `deselect` — against this
+risk (`src/app/handlers.rs`):
+
+- `handle_place_overlay` (`click`/`drag`) and `handle_edit_overlay` (`edit`,
+  not currently used by any scenario) return
+  `Task::batch([commit_task, iced::widget::operation::focus(...)])`.
+  `commit_task` is always `Task::none()` or the result of `handle_commit_text`,
+  which is itself always `Task::none()`. `focus()` is `task::effect(Action::
+  widget(...))` (`iced_runtime-0.14.0/src/widget/operation.rs:65`) — applied
+  synchronously inside `run_action`, in the same event-loop turn as the
+  command, and **never produces a `Message`**
+  (`iced_winit-0.14.0/src/lib.rs:1742`, the `Action::Widget` branch calls
+  `ui.operate` directly with no message channel involved). It cannot bump
+  `state_generation` later, so it cannot make `wait_frame` stale.
+- `handle_update_overlay_text` (`type`) and `handle_select_overlay`/
+  `handle_deselect_overlay` (`select`/`deselect`) don't return a `Task` at
+  all (`type`) or only ever return `Task::none()` (`select`/`deselect`,
+  through the same `commit_before_targeting` → `handle_commit_text` path).
+
+**Conclusion: none of `click` / `click_at` / `drag` / `type` / `select` /
+`deselect` can leave `wait_frame` stale.** They are safe to send in any
+order before a single trailing `wait_frame`, which is exactly how the
+current scenario functions use them.
+
+`open` and the `zoom_*` commands are different: `handle_file_opened` and
+`apply_zoom_change` (`zoom_reset` and friends) both chain genuinely delayed
+async work — `open` via a real `pdftoppm` render task delivering
+`Message::PageBatchRendered`, `zoom_*` via a 300ms debounce
+(`schedule_zoom_render`) delivering `Message::ZoomDebounceExpired`, which
+clears and re-renders `page_images` at the new DPI. `run_scenario` already
+sends `wait_ready` after both, before ever reaching a scenario function.
+
+That said, `wait_ready`'s own precondition (`is_render_idle`, `src/app/
+mod.rs`) only checks that every page number has *some* entry in
+`page_images` — it does not check that entry was rendered at the current
+`zoom_generation`. Structurally, `wait_ready` sent right after `zoom_reset`
+could return `ok` immediately using images still cached from before the
+zoom change, before the 300ms debounce ever fires — a real gap, but one
+that belongs to `wait_ready`'s invariant, not to `wait_frame`'s design; it
+predates spe-xqb.
+
+Empirically tested against the running harness (open → wait_ready →
+capture; zoom_reset → wait_ready → capture immediately; sleep 500ms →
+wait_ready → capture again): all three captures were pixel-identical
+(`compare -metric AE` = 0 for every pair). In this headless cage setup,
+`window_size` never differs from what already makes
+`canvas::fit_to_width_zoom` compute exactly `1.0` by the time `open` runs
+(or the resize event hasn't landed yet), so `zoom_reset`'s `1.0 → 1.0`
+change is a no-op here — the debounce still fires 300ms later, but
+re-renders identical output. The gap is real and unaddressed, but it has
+no observed effect on `scripts/visual-regression.sh`'s scenarios in this
+environment. Left as documented, scoped-out follow-up rather than folded
+into `wait_frame` — see below.
+
 ### Possible follow-ups (not done here)
 
 - Close the residual compositor-presentation gap `wait_frame` cannot
   observe from inside the iced process (would need a Wayland-side signal —
   e.g. a frame callback observed by the harness itself — not something the
   app's IPC socket can report).
+- Make `wait_ready`'s `is_render_idle` check `zoom_generation` freshness,
+  not just key presence, to close the (currently dormant, in this
+  environment) `zoom_reset`-then-`wait_ready` staleness gap described
+  above. Out of scope for spe-xqb: it is a pre-existing property of
+  `wait_ready`, not something the frame-presented signal introduced or is
+  responsible for fixing.
 - Regenerate the checked-in reference PNGs in `tests/visual/` from this
   environment, or otherwise resolve the small constant offset between them
   and this machine's font rendering, so `compare` reports MATCH instead of

@@ -29,6 +29,14 @@ send() { "$SCREENSHOT_SH" send "$1" >/dev/null; }
 # Each scenario function drives the app from a freshly opened fixture to the
 # state it wants to capture. Keep them small and additive so new scenarios
 # are cheap to write.
+#
+# Safe commands here: click, click_at, drag, type, select, deselect. None of
+# their handlers chain a trailing task that delivers its own Message later,
+# so a single wait_frame after the last one (run_scenario adds it for you)
+# is always enough. Do NOT add a zoom_* or open call inside a scenario
+# function — those chain genuinely delayed async work (a render task /
+# a 300ms debounce) and need their own wait_ready before anything else runs.
+# See "Staleness window" in docs/visual-regression.md for the full audit.
 
 scenario_committed_tint() {
     send '{"cmd": "click", "page": 1, "x": 100, "y": 700}'

@@ -499,6 +499,17 @@ impl App {
                 iced::Task::none()
             }
             crate::ipc::IpcEvent::Command(cmd) => {
+                // command_task and response_task run concurrently, so a
+                // command whose handler chains a *trailing* task that later
+                // delivers its own Message could still bump state_generation
+                // after a wait_frame sent right after this reply — wait_frame
+                // would then resolve on a frame that predates that trailing
+                // effect. None of click/click_at/drag/type/select/deselect do
+                // this (their only trailing task is a synchronous,
+                // message-less widget focus effect); open and the zoom_*
+                // commands do (a real render task / a debounced re-render)
+                // and need their own wait_ready before anything else runs.
+                // Full audit: "Staleness window" in docs/visual-regression.md.
                 let (response, command_task) = self.run_ipc_command(cmd);
                 let response_task = self.send_ipc_response(response);
                 iced::Task::batch([command_task, response_task])
@@ -516,10 +527,23 @@ impl App {
             }
             crate::ipc::IpcEvent::WaitFrame => {
                 // Target the generation as of the command that preceded this
-                // one, not this WaitFrame message's own bump: WaitFrame never
-                // changes the view, so nothing would ever request the extra
-                // redraw a target including it would demand, and the wait
-                // would hang until the 30s IPC timeout on every call.
+                // one, not this WaitFrame message's own bump.
+                //
+                // A self-inclusive target would NOT hang: iced's AboutToWait
+                // handler unconditionally requests a redraw for every window
+                // whenever the message queue was non-empty, regardless of
+                // whether the view actually changed (`iced_winit-0.14.0/
+                // src/lib.rs:1211-1249`), so even WaitFrame's own bump gets a
+                // follow-up RedrawRequested and would eventually resolve.
+                // Verified empirically against the running harness: a
+                // self-inclusive target resolved in ~20ms, same order as
+                // self-exclusive, never hit the 30s timeout.
+                //
+                // Excluding WaitFrame's own bump is still the better choice:
+                // it gives idle-resolve semantics matching wait_ready — if
+                // the preceding command's frame is already presented,
+                // wait_frame returns immediately instead of always paying for
+                // one needless extra redraw round-trip.
                 let target = self.state_generation.saturating_sub(1);
                 if self.presented_generation >= target {
                     self.send_ipc_response(crate::ipc::IpcResponse {

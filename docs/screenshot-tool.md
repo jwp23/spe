@@ -146,6 +146,11 @@ fixed settle sleep before `capture` (see spe-xqb and the comments in
 mutation. It does not replace `wait_ready`; page rendering is a different,
 slower pipeline (`pdftoppm` subprocess vs. GPU frame), so both are typically
 needed: `wait_ready` after `open`/zoom, `wait_frame` right before `capture`.
+This guarantee covers commands whose handler doesn't chain a trailing task
+that delivers its own message later (`click`, `click_at`, `drag`, `type`,
+`select`, `deselect` all qualify) — see "Staleness window" in
+`docs/visual-regression.md` for the full audit and the `open`/`zoom_*`
+exceptions.
 
 ### `click` vs `click_at`
 

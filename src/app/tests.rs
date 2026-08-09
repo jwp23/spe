@@ -3658,8 +3658,12 @@ fn ipc_wait_frame_not_yet_presented_sets_pending() {
     app.update(Message::Noop);
     let generation_before_wait = app.state_generation;
     let _ = app.update(Message::Ipc(crate::ipc::IpcEvent::WaitFrame));
-    // The target excludes WaitFrame's own generation bump: it never changes
-    // the view, so nothing would trigger the extra redraw that target would need.
+    // The target excludes WaitFrame's own generation bump, so a wait already
+    // satisfied by the preceding command's redraw resolves immediately
+    // instead of always paying for one needless extra redraw round-trip (see
+    // the comment on IpcEvent::WaitFrame in src/app/mod.rs for the empirical
+    // check that a self-inclusive target would not hang either — just cost
+    // that avoidable extra frame).
     assert_eq!(app.pending_frame_wait, Some(generation_before_wait));
 }
 
