@@ -1674,13 +1674,7 @@ fn edit_overlay_syncs_toolbar_font_and_size() {
 #[test]
 fn undo_font_change_syncs_toolbar_to_active_overlay() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
-    });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
+    place_committed_overlay(&mut app, 100.0, "Hello");
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::ChangeFont(courier));
 
@@ -1936,13 +1930,7 @@ fn font_size_arrow_key_result_decrements_when_focused() {
 #[test]
 fn redo_font_change_syncs_toolbar_to_active_overlay() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
-    });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
+    place_committed_overlay(&mut app, 100.0, "Hello");
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::ChangeFont(courier));
     app.update(Message::Undo);
@@ -2088,19 +2076,7 @@ fn commit_text_no_command_when_text_unchanged() {
 #[test]
 fn undo_after_text_edit_restores_previous_text() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
-    });
-
-    // Type text
-    let overlay = &mut app.document.as_mut().unwrap().overlays[0];
-    overlay.text = "Hello".to_string();
-
-    // Commit
-    let _ = app.update(Message::CommitText);
-    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+    place_and_commit_raw_text(&mut app, "Hello");
 
     // Undo
     let _ = app.update(Message::Undo);
@@ -2112,19 +2088,7 @@ fn undo_after_text_edit_restores_previous_text() {
 #[test]
 fn redo_after_undo_restores_edited_text() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
-    });
-
-    // Type text
-    let overlay = &mut app.document.as_mut().unwrap().overlays[0];
-    overlay.text = "Hello".to_string();
-
-    // Commit
-    let _ = app.update(Message::CommitText);
-    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+    place_and_commit_raw_text(&mut app, "Hello");
 
     // Undo
     let _ = app.update(Message::Undo);
@@ -3565,6 +3529,20 @@ fn editing_font_for_multiline_overlay_matches_selected_font() {
 // =====================================================================
 
 /// Place an overlay, type `text` into it, and commit the edit session.
+/// Place an overlay and commit `text` into it by writing the overlay field
+/// directly, bypassing `UpdateOverlayText` so that the commit path alone is
+/// what records the edit in the history.
+fn place_and_commit_raw_text(app: &mut App, text: &str) {
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.document.as_mut().unwrap().overlays[0].text = text.to_string();
+    let _ = app.update(Message::CommitText);
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, text);
+}
+
 fn place_committed_overlay(app: &mut App, x: f32, text: &str) {
     app.update(Message::PlaceOverlay {
         page: 1,
@@ -3583,6 +3561,103 @@ fn replay_undo_stack(app: &App) -> Vec<TextOverlay> {
         cmd.apply(&mut overlays);
     }
     overlays
+}
+
+/// Deterministic xorshift, so a property failure is reproducible from its seed.
+fn xorshift(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+/// Render an overlay into the key the history oracle compares. Position
+/// identifies the overlay. Text is left out while an edit session is open,
+/// which legitimately holds text the history has not recorded yet. Style is
+/// included only for pools that actually change it — it stays on the document
+/// history even mid-session, so it is always safe to compare when present.
+fn describe_overlay(app: &App, overlay: &TextOverlay, include_style: bool) -> String {
+    let style = if include_style {
+        format!("#{:?}/{}", overlay.font, overlay.font_size)
+    } else {
+        String::new()
+    };
+    if app.canvas.editing {
+        format!("@{}{style}", overlay.position.x)
+    } else {
+        format!("{}@{}{style}", overlay.text, overlay.position.x)
+    }
+}
+
+/// The message pool both property checks draw from, indexed by `draw` in
+/// `0..9`: placement, typing, blanking, commit, deletion, selection, re-entry
+/// and undo/redo. Selection cases fall through to undo when the document is
+/// empty, so there is always a message to send.
+fn core_interleaving_message(app: &App, rng: &mut u64, step: u64, draw: u64) -> Message {
+    let len = app.document.as_ref().unwrap().overlays.len();
+    match draw {
+        0 => Message::PlaceOverlay {
+            page: 1,
+            position: PdfPosition {
+                x: (step * 7) as f32,
+                y: 700.0,
+            },
+            width: None,
+        },
+        1 => Message::UpdateOverlayText(format!("t{step}")),
+        2 => Message::UpdateOverlayText(String::new()),
+        3 => Message::CommitText,
+        4 => Message::DeleteOverlay,
+        5 if len > 0 => Message::SelectOverlay((xorshift(rng) % len as u64) as usize),
+        6 if len > 0 => Message::EditOverlay((xorshift(rng) % len as u64) as usize),
+        7 => Message::Undo,
+        8 => Message::Redo,
+        _ => Message::Undo,
+    }
+}
+
+/// Drive pseudo-random message sequences through a fresh app and assert, after
+/// every single message, that the document still agrees with the command
+/// history that is supposed to describe it.
+///
+/// `pick` draws the next message from the app's state, and `include_style`
+/// widens the oracle for pools that change font or size. The failure message
+/// replays the whole sequence, so a divergence names the exact interleaving.
+fn assert_history_tracks_document(
+    seeds: std::ops::Range<u64>,
+    include_style: bool,
+    pick: impl Fn(&App, &mut u64, u64) -> Message,
+) {
+    for seed in seeds {
+        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut app = test_app_with_document();
+        let mut log: Vec<String> = Vec::new();
+
+        for step in 0..30u64 {
+            let msg = pick(&app, &mut rng, step);
+            log.push(format!("{msg:?}"));
+            app.update(msg);
+
+            let live: Vec<String> = app
+                .document
+                .as_ref()
+                .unwrap()
+                .overlays
+                .iter()
+                .map(|o| describe_overlay(&app, o, include_style))
+                .collect();
+            let replayed: Vec<String> = replay_undo_stack(&app)
+                .iter()
+                .map(|o| describe_overlay(&app, o, include_style))
+                .collect();
+            assert_eq!(
+                live,
+                replayed,
+                "seed {seed} step {step}: document diverged from history\n{}",
+                log.join("\n")
+            );
+        }
+    }
 }
 
 fn assert_history_matches_document(app: &App, context: &str) {
@@ -3757,70 +3832,10 @@ fn stale_edit_session_cannot_discard_an_unrelated_overlay() {
 /// command history that is supposed to describe it.
 #[test]
 fn document_always_matches_undo_history_under_arbitrary_interleavings() {
-    // Deterministic xorshift so failures are reproducible.
-    fn next(state: &mut u64) -> u64 {
-        *state ^= *state << 13;
-        *state ^= *state >> 7;
-        *state ^= *state << 17;
-        *state
-    }
-
-    for seed in 1..2000u64 {
-        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-        let mut app = test_app_with_document();
-        let mut log: Vec<String> = Vec::new();
-
-        for step in 0..30u64 {
-            let len = app.document.as_ref().unwrap().overlays.len();
-            let msg = match next(&mut rng) % 9 {
-                0 => Message::PlaceOverlay {
-                    page: 1,
-                    position: PdfPosition {
-                        x: (step * 7) as f32,
-                        y: 700.0,
-                    },
-                    width: None,
-                },
-                1 => Message::UpdateOverlayText(format!("t{step}")),
-                2 => Message::UpdateOverlayText(String::new()),
-                3 => Message::CommitText,
-                4 => Message::DeleteOverlay,
-                5 if len > 0 => Message::SelectOverlay((next(&mut rng) % len as u64) as usize),
-                6 if len > 0 => Message::EditOverlay((next(&mut rng) % len as u64) as usize),
-                7 => Message::Undo,
-                _ => Message::Redo,
-            };
-            log.push(format!("{msg:?}"));
-            app.update(msg);
-
-            // Positions identify overlays. Text is compared too, except while
-            // an edit session is open, which legitimately holds text the
-            // history has not recorded yet.
-            let include_text = !app.canvas.editing;
-            let describe = |o: &TextOverlay| {
-                if include_text {
-                    format!("{}@{}", o.text, o.position.x)
-                } else {
-                    format!("@{}", o.position.x)
-                }
-            };
-            let live: Vec<String> = app
-                .document
-                .as_ref()
-                .unwrap()
-                .overlays
-                .iter()
-                .map(describe)
-                .collect();
-            let replayed: Vec<String> = replay_undo_stack(&app).iter().map(describe).collect();
-            assert_eq!(
-                live,
-                replayed,
-                "seed {seed} step {step}: document diverged from history\n{}",
-                log.join("\n")
-            );
-        }
-    }
+    assert_history_tracks_document(1..2000, false, |app, rng, step| {
+        let draw = xorshift(rng) % 9;
+        core_interleaving_message(app, rng, step, draw)
+    });
 }
 
 #[test]
@@ -4405,77 +4420,19 @@ fn undo_is_offered_while_a_session_has_steps_to_step_back_through() {
 
 #[test]
 fn document_always_matches_undo_history_under_session_undo_interleavings() {
-    fn next(state: &mut u64) -> u64 {
-        *state ^= *state << 13;
-        *state ^= *state >> 7;
-        *state ^= *state << 17;
-        *state
-    }
-
-    let courier_name = "Courier";
-    for seed in 1..1500u64 {
-        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-        let mut app = test_app_with_document();
-        let courier = app.font_registry.find_by_name(courier_name).unwrap();
+    // Widens the pool with the style changes that are reachable mid-session,
+    // and the oracle with the font and size they move.
+    assert_history_tracks_document(1..1500, true, |app, rng, step| {
+        let courier = app.font_registry.find_by_name("Courier").unwrap();
         let helvetica = app.font_registry.default_font();
-        let mut log: Vec<String> = Vec::new();
-
-        for step in 0..30u64 {
-            let len = app.document.as_ref().unwrap().overlays.len();
-            let msg = match next(&mut rng) % 11 {
-                0 => Message::PlaceOverlay {
-                    page: 1,
-                    position: PdfPosition {
-                        x: (step * 7) as f32,
-                        y: 700.0,
-                    },
-                    width: None,
-                },
-                1 => Message::UpdateOverlayText(format!("t{step}")),
-                2 => Message::UpdateOverlayText(String::new()),
-                3 => Message::CommitText,
-                4 => Message::DeleteOverlay,
-                5 if len > 0 => Message::SelectOverlay((next(&mut rng) % len as u64) as usize),
-                6 if len > 0 => Message::EditOverlay((next(&mut rng) % len as u64) as usize),
-                7 => Message::ChangeFont(if step % 2 == 0 { courier } else { helvetica }),
-                8 => Message::ChangeFontSize(10.0 + (step % 5) as f32),
-                9 => Message::Undo,
-                _ => Message::Redo,
-            };
-            log.push(format!("{msg:?}"));
-            app.update(msg);
-
-            // Positions identify overlays. Text and style are compared too,
-            // except while an edit session is open, which legitimately holds
-            // uncommitted text the history has not recorded yet. Style
-            // changes stay on the document history even mid-session, so they
-            // are always compared.
-            let include_text = !app.canvas.editing;
-            let describe = |o: &TextOverlay| {
-                let style = format!("{:?}/{}", o.font, o.font_size);
-                if include_text {
-                    format!("{}@{}#{style}", o.text, o.position.x)
-                } else {
-                    format!("@{}#{style}", o.position.x)
-                }
-            };
-            let live: Vec<String> = app
-                .document
-                .as_ref()
-                .unwrap()
-                .overlays
-                .iter()
-                .map(describe)
-                .collect();
-            let replayed: Vec<String> = replay_undo_stack(&app).iter().map(describe).collect();
-            assert_eq!(
-                live,
-                replayed,
-                "seed {seed} step {step}: document diverged from history\n{}",
-                log.join("\n")
-            );
+        match xorshift(rng) % 11 {
+            7 => Message::ChangeFont(if step % 2 == 0 { courier } else { helvetica }),
+            8 => Message::ChangeFontSize(10.0 + (step % 5) as f32),
+            9 => core_interleaving_message(app, rng, step, 7),
+            10 => core_interleaving_message(app, rng, step, 8),
+            draw => core_interleaving_message(app, rng, step, draw),
         }
-    }
+    });
 }
 
 #[test]
