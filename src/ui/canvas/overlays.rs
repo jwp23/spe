@@ -5,15 +5,15 @@ use iced::widget::canvas;
 
 use crate::app::Message;
 use crate::coordinate::{ConversionParams, pdf_to_screen, render_scale, screen_to_pdf};
-use crate::fonts::{FontId, FontRegistry};
+use crate::fonts::FontRegistry;
 use crate::overlay::{PdfPosition, TextOverlay};
 
 use super::{
     DOUBLE_CLICK_DISTANCE_PX, DOUBLE_CLICK_TIMEOUT_MS, LocalDragState, MIN_DRAG_DISTANCE,
-    OVERLAY_TINT_HOVER_BORDER_ALPHA, PageLayout, PlacementDragState, ProgramState, ResizeDragState,
-    SELECTION_BORDER_WIDTH, SELECTION_BOX_PADDING, SELECTION_COLOR, draw_overlay_text, hit_test,
-    overlay_text_box, page_rect_in_canvas, resize_handle_hit, should_draw_overlay_text,
-    should_draw_selection_box, tint_alpha, to_screen_rect, visible_pages,
+    OVERLAY_TINT_HOVER_BORDER_ALPHA, OverlayAnchor, PageLayout, PlacementDragState, ProgramState,
+    ResizeDragState, SELECTION_BORDER_WIDTH, SELECTION_COLOR, draw_overlay_text, hit_test,
+    overlay_text_box, page_rect_in_canvas, resize_handle_hit, selection_box_rect,
+    should_draw_overlay_text, should_draw_selection_box, tint_alpha, to_screen_rect, visible_pages,
 };
 
 /// Canvas program that renders text overlays using native Iced drawing primitives.
@@ -60,6 +60,40 @@ impl OverlayCanvasProgram<'_> {
         Some((page, rect))
     }
 
+    /// Find the page under the cursor, if any.
+    ///
+    /// Returns None if the cursor is outside the canvas bounds or falls in a
+    /// gap between pages. Distinct from [`Self::page_at_cursor`]: a caller
+    /// that must tell "no page here" apart from "page here but its
+    /// conversion params are unavailable" hit-tests with this first, then
+    /// resolves params itself.
+    fn page_hit(
+        &self,
+        cursor_pos: iced::Point,
+        bounds: iced::Rectangle,
+    ) -> Option<(u32, iced::Rectangle)> {
+        if !bounds.contains(cursor_pos) {
+            return None;
+        }
+        let canvas_y = cursor_pos.y - bounds.y;
+        self.page_at_canvas_y(canvas_y, bounds.width)
+    }
+
+    /// Resolve the page under the cursor and its PDF conversion params.
+    ///
+    /// Returns None if the cursor is outside the canvas bounds, falls in a
+    /// gap between pages, or lands on a page with unknown dimensions.
+    fn page_at_cursor(
+        &self,
+        cursor_pos: iced::Point,
+        bounds: iced::Rectangle,
+    ) -> Option<(u32, iced::Rectangle, ConversionParams)> {
+        let (page, page_rect) = self.page_hit(cursor_pos, bounds)?;
+        let page_screen_rect = to_screen_rect(page_rect, &bounds);
+        let params = self.conversion_params_for_page(page, &page_screen_rect)?;
+        Some((page, page_rect, params))
+    }
+
     /// Handle left mouse button press: resize handle, overlay hit test, placement, or deselect.
     fn handle_left_click(
         &self,
@@ -80,7 +114,7 @@ impl OverlayCanvasProgram<'_> {
         let canvas_y = cursor_pos.y - bounds.y;
         let canvas_x = cursor_pos.x - bounds.x;
 
-        let Some((page, page_rect)) = self.page_at_canvas_y(canvas_y, bounds.width) else {
+        let Some((page, page_rect)) = self.page_hit(cursor_pos, bounds) else {
             // Click in gap or outside pages
             state.last_click = None;
             return Some(canvas::Action::publish(Message::DeselectOverlay).and_capture());
@@ -125,11 +159,18 @@ impl OverlayCanvasProgram<'_> {
             return None;
         }
         let width_pts = overlay.width?;
-        if !resize_handle_hit(cursor_pos.x, cursor_pos.y, overlay, width_pts, params) {
+        if !resize_handle_hit(
+            cursor_pos.x,
+            cursor_pos.y,
+            overlay,
+            params,
+            self.font_registry,
+        ) {
             return None;
         }
         state.resize_drag = Some(ResizeDragState {
             overlay_index: active_idx,
+            anchor: OverlayAnchor::of(overlay),
             initial_width: width_pts,
         });
         Some(canvas::Action::capture())
@@ -170,7 +211,7 @@ impl OverlayCanvasProgram<'_> {
         );
         state.drag = Some(LocalDragState {
             overlay_index: idx,
-            initial_pdf_position: self.overlays[idx].position,
+            anchor: OverlayAnchor::of(&self.overlays[idx]),
             grab_offset_x: cursor_pos.x - overlay_sx,
             grab_offset_y: cursor_pos.y - overlay_sy,
         });
@@ -195,13 +236,7 @@ impl OverlayCanvasProgram<'_> {
 
         // Hover tracking: hit-test the cursor position against overlays.
         let new_hover = cursor.position().and_then(|cursor_pos| {
-            if !bounds.contains(cursor_pos) {
-                return None;
-            }
-            let canvas_y = cursor_pos.y - bounds.y;
-            let (page, page_rect) = self.page_at_canvas_y(canvas_y, bounds.width)?;
-            let page_screen_rect = to_screen_rect(page_rect, &bounds);
-            let params = self.conversion_params_for_page(page, &page_screen_rect)?;
+            let (page, _, params) = self.page_at_cursor(cursor_pos, bounds)?;
             hit_test(
                 cursor_pos.x,
                 cursor_pos.y,
@@ -295,7 +330,8 @@ impl OverlayCanvasProgram<'_> {
         cursor_pos: iced::Point,
     ) -> Option<canvas::Action<Message>> {
         let resize = state.resize_drag.take()?;
-        let overlay = self.overlays.get(resize.overlay_index)?;
+        let index = resize.anchor.resolve(self.overlays, resize.overlay_index)?;
+        let overlay = &self.overlays[index];
         let page_rect = page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
         let page_screen_rect = to_screen_rect(page_rect, &bounds);
         let params = self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
@@ -304,7 +340,7 @@ impl OverlayCanvasProgram<'_> {
         if (new_width - resize.initial_width).abs() > 0.1 {
             Some(
                 canvas::Action::publish(Message::ResizeOverlay {
-                    index: resize.overlay_index,
+                    index,
                     old_width: resize.initial_width,
                     new_width,
                 })
@@ -323,8 +359,8 @@ impl OverlayCanvasProgram<'_> {
         cursor_pos: iced::Point,
     ) -> Option<canvas::Action<Message>> {
         let drag = state.drag.take()?;
-
-        let overlay = self.overlays.get(drag.overlay_index)?;
+        let index = drag.anchor.resolve(self.overlays, drag.overlay_index)?;
+        let overlay = &self.overlays[index];
         let page_rect = page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
         let page_screen_rect = to_screen_rect(page_rect, &bounds);
         let params = self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
@@ -333,13 +369,13 @@ impl OverlayCanvasProgram<'_> {
         let overlay_screen_y = cursor_pos.y - drag.grab_offset_y;
         let (new_pdf_x, new_pdf_y) = screen_to_pdf(overlay_screen_x, overlay_screen_y, &params);
 
-        let moved = (new_pdf_x - drag.initial_pdf_position.x).abs() > 0.1
-            || (new_pdf_y - drag.initial_pdf_position.y).abs() > 0.1;
+        let moved = (new_pdf_x - drag.anchor.position.x).abs() > 0.1
+            || (new_pdf_y - drag.anchor.position.y).abs() > 0.1;
 
         if moved {
             Some(
                 canvas::Action::publish(Message::MoveOverlay(
-                    drag.overlay_index,
+                    index,
                     PdfPosition {
                         x: new_pdf_x,
                         y: new_pdf_y,
@@ -366,10 +402,10 @@ impl OverlayCanvasProgram<'_> {
     ) {
         let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
         let scaled_size = overlay.font_size * scale;
+        let text_box = overlay_text_box(overlay, sx, sy, scale, self.font_registry);
 
         if should_draw_overlay_text(self.editing, self.active_overlay, index) {
             let is_hovered = state.hovered_overlay == Some(index);
-            let text_box = overlay_text_box(overlay, sx, sy, scale, self.font_registry);
             draw_overlay_tint(frame, text_box, overlay_color, tint_alpha(is_hovered));
             if is_hovered {
                 draw_overlay_hover_border(frame, text_box, overlay_color);
@@ -386,18 +422,9 @@ impl OverlayCanvasProgram<'_> {
         }
 
         if should_draw_selection_box(self.editing, self.active_overlay, index) {
-            draw_selection_box(
-                frame,
-                &overlay.text,
-                overlay.font,
-                overlay.font_size,
-                sx,
-                sy,
-                scale,
-                self.font_registry,
-            );
-            if let Some(width_pts) = overlay.width {
-                draw_resize_handle(frame, sx, sy, width_pts, scale, overlay.font_size);
+            draw_selection_box(frame, text_box);
+            if overlay.width.is_some() {
+                draw_resize_handle(frame, text_box);
             }
         }
     }
@@ -411,8 +438,9 @@ impl OverlayCanvasProgram<'_> {
         scale: f32,
     ) {
         if let (Some(drag), Some(cursor_pos)) = (&state.drag, state.cursor_position)
-            && let Some(overlay) = self.overlays.get(drag.overlay_index)
+            && let Some(index) = drag.anchor.resolve(self.overlays, drag.overlay_index)
         {
+            let overlay = &self.overlays[index];
             let preview_screen_x = cursor_pos.x - drag.grab_offset_x - bounds.x;
             let preview_screen_y = cursor_pos.y - drag.grab_offset_y - bounds.y;
             let scaled_size = overlay.font_size * scale;
@@ -548,6 +576,14 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
         // Determine visible pages
         let (first, last) = visible_pages(&self.page_layout, self.scroll_y, self.viewport_height);
 
+        // The overlay being dragged is drawn at the cursor instead of in place.
+        // Resolved once here rather than per overlay, which would scan the list
+        // for every entry drawn.
+        let dragged = state
+            .drag
+            .as_ref()
+            .and_then(|drag| drag.anchor.resolve(self.overlays, drag.overlay_index));
+
         // Draw overlays for each visible page
         for page in first..=last {
             let page_rect = page_rect_in_canvas(&self.page_layout, page, bounds.width);
@@ -568,8 +604,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                 if overlay.page != page {
                     continue;
                 }
-                let is_dragging = state.drag.as_ref().is_some_and(|d| d.overlay_index == i);
-                if is_dragging {
+                if dragged == Some(i) {
                     continue;
                 }
                 self.draw_single_overlay(
@@ -610,17 +645,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
             return mouse::Interaction::default();
         };
 
-        if !bounds.contains(cursor_pos) {
-            return mouse::Interaction::default();
-        }
-
-        let canvas_y = cursor_pos.y - bounds.y;
-        let Some((page, page_rect)) = self.page_at_canvas_y(canvas_y, bounds.width) else {
-            return mouse::Interaction::default();
-        };
-
-        let page_screen_rect = to_screen_rect(page_rect, &bounds);
-        let Some(params) = self.conversion_params_for_page(page, &page_screen_rect) else {
+        let Some((page, page_rect, params)) = self.page_at_cursor(cursor_pos, bounds) else {
             return mouse::Interaction::default();
         };
 
@@ -628,8 +653,14 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
         if let Some(active_idx) = self.active_overlay
             && let Some(overlay) = self.overlays.get(active_idx)
             && overlay.page == page
-            && let Some(width_pts) = overlay.width
-            && resize_handle_hit(cursor_pos.x, cursor_pos.y, overlay, width_pts, &params)
+            && overlay.width.is_some()
+            && resize_handle_hit(
+                cursor_pos.x,
+                cursor_pos.y,
+                overlay,
+                &params,
+                self.font_registry,
+            )
         {
             return mouse::Interaction::ResizingHorizontally;
         }
@@ -648,6 +679,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
         }
 
         let canvas_x = cursor_pos.x - bounds.x;
+        let canvas_y = cursor_pos.y - bounds.y;
         if page_rect.contains(iced::Point::new(canvas_x, canvas_y)) {
             return mouse::Interaction::Crosshair;
         }
@@ -689,47 +721,23 @@ fn draw_overlay_hover_border(
     );
 }
 
-/// Draw a selection bounding box around an overlay using native stroke_rectangle.
-#[allow(clippy::too_many_arguments)]
-fn draw_selection_box(
-    frame: &mut canvas::Frame,
-    text: &str,
-    font: FontId,
-    font_size: f32,
-    screen_x: f32,
-    screen_y: f32,
-    scale: f32,
-    registry: &FontRegistry,
-) {
-    let bbox = registry.overlay_bounding_box(text, font, font_size);
-    let w = bbox.width * scale + 2.0 * SELECTION_BOX_PADDING;
-    let h = bbox.height * scale + 2.0 * SELECTION_BOX_PADDING;
+/// Draw a selection bounding box framing an overlay's text box.
+fn draw_selection_box(frame: &mut canvas::Frame, text_box: iced::Rectangle) {
+    let rect = selection_box_rect(text_box);
     frame.stroke_rectangle(
-        iced::Point::new(
-            screen_x - SELECTION_BOX_PADDING,
-            screen_y - bbox.height * scale - SELECTION_BOX_PADDING,
-        ),
-        iced::Size::new(w, h),
+        rect.position(),
+        rect.size(),
         canvas::Stroke::default()
             .with_color(SELECTION_COLOR)
             .with_width(SELECTION_BORDER_WIDTH),
     );
 }
 
-/// Draw a vertical bar resize handle on the right edge of a multi-line overlay using fill_rectangle.
-fn draw_resize_handle(
-    frame: &mut canvas::Frame,
-    overlay_sx: f32,
-    overlay_sy: f32,
-    width_pts: f32,
-    scale: f32,
-    font_size: f32,
-) {
-    let handle_x = overlay_sx + width_pts * scale;
-    let scaled_size = font_size * scale;
+/// Draw a vertical bar resize handle down the right edge of a multi-line overlay.
+fn draw_resize_handle(frame: &mut canvas::Frame, text_box: iced::Rectangle) {
     frame.fill_rectangle(
-        iced::Point::new(handle_x - 2.0, overlay_sy - scaled_size),
-        iced::Size::new(4.0, scaled_size),
+        iced::Point::new(text_box.x + text_box.width - 2.0, text_box.y),
+        iced::Size::new(4.0, text_box.height),
         SELECTION_COLOR,
     );
 }

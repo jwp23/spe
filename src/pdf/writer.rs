@@ -176,6 +176,11 @@ fn create_truetype_font_object(
         })
         .collect();
 
+    let to_unicode_id = doc.add_object(Stream::new(
+        dictionary! {},
+        win_ansi_to_unicode_cmap().into_bytes(),
+    ));
+
     doc.add_object(dictionary! {
         "Type" => "Font",
         "Subtype" => "TrueType",
@@ -185,7 +190,74 @@ fn create_truetype_font_object(
         "Widths" => Object::Array(widths),
         "FontDescriptor" => Object::Reference(descriptor_id),
         "Encoding" => "WinAnsiEncoding",
+        "ToUnicode" => Object::Reference(to_unicode_id),
     })
+}
+
+/// The 27 WinAnsiEncoding codes in 0x80-0x9F whose Unicode values differ from
+/// Latin-1. The remaining codes in that block are undefined and left unmapped.
+const WIN_ANSI_HIGH_CONTROL_BLOCK: &[(u8, u32)] = &[
+    (0x80, 0x20AC),
+    (0x82, 0x201A),
+    (0x83, 0x0192),
+    (0x84, 0x201E),
+    (0x85, 0x2026),
+    (0x86, 0x2020),
+    (0x87, 0x2021),
+    (0x88, 0x02C6),
+    (0x89, 0x2030),
+    (0x8A, 0x0160),
+    (0x8B, 0x2039),
+    (0x8C, 0x0152),
+    (0x8E, 0x017D),
+    (0x91, 0x2018),
+    (0x92, 0x2019),
+    (0x93, 0x201C),
+    (0x94, 0x201D),
+    (0x95, 0x2022),
+    (0x96, 0x2013),
+    (0x97, 0x2014),
+    (0x98, 0x02DC),
+    (0x99, 0x2122),
+    (0x9A, 0x0161),
+    (0x9B, 0x203A),
+    (0x9C, 0x0153),
+    (0x9E, 0x017E),
+    (0x9F, 0x0178),
+];
+
+/// Build a ToUnicode CMap (PDF 32000-1 §9.10.3) mapping WinAnsiEncoding character
+/// codes to Unicode, so readers can extract, copy and search text shown in an
+/// embedded TrueType font instead of treating it as unmappable glyphs.
+///
+/// The ASCII and Latin-1 stretches are emitted as ranges; only WinAnsi's
+/// 0x80-0x9F block, which diverges from Latin-1, needs per-code entries.
+fn win_ansi_to_unicode_cmap() -> String {
+    let mut cmap = String::from(
+        "/CIDInit /ProcSet findresource begin\n\
+         12 dict begin\n\
+         begincmap\n\
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+         /CMapName /Adobe-Identity-UCS def\n\
+         /CMapType 2 def\n\
+         1 begincodespacerange\n\
+         <20> <FF>\n\
+         endcodespacerange\n\
+         2 beginbfrange\n\
+         <20> <7E> <0020>\n\
+         <A0> <FF> <00A0>\n\
+         endbfrange\n",
+    );
+
+    cmap.push_str(&format!(
+        "{} beginbfchar\n",
+        WIN_ANSI_HIGH_CONTROL_BLOCK.len()
+    ));
+    for &(code, unicode) in WIN_ANSI_HIGH_CONTROL_BLOCK {
+        cmap.push_str(&format!("<{code:02X}> <{unicode:04X}>\n"));
+    }
+    cmap.push_str("endbfchar\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+    cmap
 }
 
 /// Add new font objects to the page's Resources/Font dictionary.
@@ -1334,6 +1406,228 @@ mod tests {
         assert!(
             matches!(tt_dict.get(b"FontDescriptor"), Ok(Object::Reference(_))),
             "TrueType font must have a FontDescriptor reference"
+        );
+    }
+
+    /// Resolve `code` through a ToUnicode CMap by parsing its bfchar and bfrange
+    /// sections, so tests assert on what a PDF reader would actually resolve
+    /// rather than on the literal text of the stream.
+    fn cmap_lookup(cmap: &str, code: u8) -> Option<u32> {
+        let hex =
+            |s: &str| u32::from_str_radix(s.trim_start_matches('<').trim_end_matches('>'), 16);
+
+        let mut in_bfchar = false;
+        let mut in_bfrange = false;
+        for line in cmap.lines() {
+            let line = line.trim();
+            match line {
+                "endbfchar" => in_bfchar = false,
+                "endbfrange" => in_bfrange = false,
+                _ if line.ends_with("beginbfchar") => in_bfchar = true,
+                _ if line.ends_with("beginbfrange") => in_bfrange = true,
+                _ if in_bfchar => {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() == 2
+                        && let (Ok(src), Ok(dst)) = (hex(parts[0]), hex(parts[1]))
+                        && src == u32::from(code)
+                    {
+                        return Some(dst);
+                    }
+                }
+                _ if in_bfrange => {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() == 3
+                        && let (Ok(lo), Ok(hi), Ok(dst)) =
+                            (hex(parts[0]), hex(parts[1]), hex(parts[2]))
+                        && (lo..=hi).contains(&u32::from(code))
+                    {
+                        return Some(dst + u32::from(code) - lo);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The entry count a `N begin<kind>` header declares, paired with the number
+    /// of entry lines actually present before the matching `end<kind>`.
+    fn section_entry_counts(cmap: &str, kind: &str) -> (usize, usize) {
+        let mut declared = 0;
+        let mut actual = 0;
+        let mut in_section = false;
+        for line in cmap.lines() {
+            let line = line.trim();
+            if line == format!("end{kind}") {
+                in_section = false;
+            } else if let Some(count) = line.strip_suffix(&format!(" begin{kind}")) {
+                declared = count.parse().expect("section header must declare a count");
+                in_section = true;
+            } else if in_section {
+                actual += 1;
+            }
+        }
+        (declared, actual)
+    }
+
+    #[test]
+    fn tounicode_cmap_has_required_cmap_structure() {
+        let cmap = win_ansi_to_unicode_cmap();
+
+        for required in [
+            "/CIDInit /ProcSet findresource begin",
+            "begincmap",
+            "/CMapName /Adobe-Identity-UCS def",
+            "/CMapType 2 def",
+            "begincodespacerange",
+            "<20> <FF>",
+            "endcodespacerange",
+            "endcmap",
+        ] {
+            assert!(
+                cmap.contains(required),
+                "ToUnicode CMap must contain `{required}`, got:\n{cmap}"
+            );
+        }
+
+        // A declared count that disagrees with the entries present is the mistake a
+        // hand-formatted CMap is most likely to make, and readers trust the header.
+        for (kind, expected) in [("codespacerange", 1), ("bfrange", 2), ("bfchar", 27)] {
+            let (declared, actual) = section_entry_counts(&cmap, kind);
+            assert_eq!(
+                declared, expected,
+                "`{kind}` header should declare {expected} entries"
+            );
+            assert_eq!(
+                actual, expected,
+                "`{kind}` section should contain {expected} entry lines"
+            );
+        }
+    }
+
+    #[test]
+    fn tounicode_cmap_maps_win_ansi_codes_to_unicode() {
+        let cmap = win_ansi_to_unicode_cmap();
+
+        // ASCII range maps to identical codepoints.
+        assert_eq!(cmap_lookup(&cmap, b' '), Some(0x0020));
+        assert_eq!(cmap_lookup(&cmap, b'H'), Some(0x0048));
+        assert_eq!(cmap_lookup(&cmap, b'~'), Some(0x007E));
+        // Latin-1 upper range maps to identical codepoints.
+        assert_eq!(cmap_lookup(&cmap, 0xA9), Some(0x00A9)); // copyright
+        assert_eq!(cmap_lookup(&cmap, 0xFF), Some(0x00FF)); // y with diaeresis
+        // WinAnsi's 0x80-0x9F block differs from Latin-1.
+        assert_eq!(cmap_lookup(&cmap, 0x80), Some(0x20AC)); // euro
+        assert_eq!(cmap_lookup(&cmap, 0x92), Some(0x2019)); // right single quote
+        assert_eq!(cmap_lookup(&cmap, 0x9F), Some(0x0178)); // Y with diaeresis
+        // Codes WinAnsi leaves undefined have no mapping.
+        for code in [0x81, 0x8D, 0x8F, 0x90, 0x9D] {
+            assert_eq!(cmap_lookup(&cmap, code), None);
+        }
+    }
+
+    #[test]
+    fn write_truetype_overlay_adds_tounicode_cmap() {
+        use crate::fonts::{FontEntry, FontRegistry, PdfEmbedding, WidthTable};
+        use crate::overlay::{PdfPosition, TextOverlay};
+
+        static TEST_TTF: &[u8] = include_bytes!("../../assets/icons/phosphor-subset.ttf");
+
+        let mut registry = FontRegistry::new();
+        let tt_id = registry.add_entry(FontEntry {
+            id: crate::fonts::FontId::default(),
+            display_name: "UnitTestTT",
+            pdf_name: "UnitTestTT",
+            iced_font: iced::Font::DEFAULT,
+            embedding: PdfEmbedding::TrueType { bytes: TEST_TTF },
+            widths: WidthTable::Monospaced(600.0),
+            descriptor: None,
+        });
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst = NamedTempFile::new().expect("temp file");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: tt_id,
+            font_size: 12.0,
+            width: None,
+        };
+
+        write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1");
+
+        let fonts = doc.get_page_fonts(page_id).expect("get_page_fonts");
+        let tt_dict = fonts
+            .values()
+            .find(|fd| matches!(fd.get(b"BaseFont"), Ok(Object::Name(n)) if n == b"UnitTestTT"))
+            .expect("UnitTestTT not found in page fonts");
+
+        let Ok(Object::Reference(cmap_id)) = tt_dict.get(b"ToUnicode") else {
+            panic!("TrueType font must reference a ToUnicode CMap stream");
+        };
+        let stream = doc
+            .get_object(*cmap_id)
+            .expect("ToUnicode object missing")
+            .as_stream()
+            .expect("ToUnicode must be a stream");
+        let cmap = String::from_utf8(
+            stream
+                .decompressed_content()
+                .unwrap_or(stream.content.clone()),
+        )
+        .expect("CMap must be valid UTF-8");
+
+        // Every character actually shown must resolve back to its own codepoint.
+        for c in "Hello".chars() {
+            assert_eq!(
+                cmap_lookup(&cmap, c as u8),
+                Some(c as u32),
+                "CMap must map `{c}` back to U+{:04X}",
+                c as u32
+            );
+        }
+    }
+
+    #[test]
+    fn write_builtin_overlay_has_no_tounicode_cmap() {
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst = NamedTempFile::new().expect("temp file");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Standard".to_string(),
+            font: registry.find_by_name("Helvetica").unwrap(),
+            font_size: 12.0,
+            width: None,
+        };
+
+        write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1");
+        let fonts = doc.get_page_fonts(page_id).expect("get_page_fonts");
+        let helvetica = fonts
+            .values()
+            .find(|fd| matches!(fd.get(b"BaseFont"), Ok(Object::Name(n)) if n == b"Helvetica"))
+            .expect("Helvetica not found");
+
+        assert!(
+            helvetica.get(b"ToUnicode").is_err(),
+            "Standard 14 fonts have known encodings and need no ToUnicode CMap"
         );
     }
 

@@ -280,6 +280,84 @@ fn ipc_open_place_type_save_round_trip() {
     );
 }
 
+/// spe-9gt.7.1: the full user workflow with a bundled cursive font — open, pick
+/// the font, place, type, save — must produce a PDF whose text a reader can
+/// extract, which is what the ToUnicode CMap on the embedded TrueType font buys.
+#[test]
+#[ignore]
+fn ipc_cursive_overlay_text_is_extractable_by_pdftotext() {
+    if !cage_available() {
+        eprintln!(
+            "SKIP ipc_cursive_overlay_text_is_extractable_by_pdftotext: `cage` not available"
+        );
+        return;
+    }
+
+    let runtime_dir = make_test_runtime_dir("cursive-extract");
+    let socket = socket_path(&runtime_dir);
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/single-page.pdf");
+    let dest = runtime_dir.join("cursive.pdf");
+    let mut child = launch_app(&runtime_dir, &socket);
+
+    let outcome = (|| -> Result<CommandLog, String> {
+        wait_for_socket(&socket, &mut child, Duration::from_secs(20))?;
+        let send = |json: &str| send_command(&socket, json, Duration::from_secs(15));
+
+        let mut results: CommandLog = Vec::new();
+        results.push((
+            "open",
+            send(&format!(
+                r#"{{"cmd": "open", "path": "{}"}}"#,
+                fixture.display()
+            )),
+        ));
+        results.push(("wait_ready", send(r#"{"cmd": "wait_ready"}"#)));
+        results.push((
+            "click",
+            send(r#"{"cmd": "click", "page": 1, "x": 100, "y": 700}"#),
+        ));
+        results.push(("font", send(r#"{"cmd": "font", "family": "Great Vibes"}"#)));
+        results.push(("type", send(r#"{"cmd": "type", "text": "Ada Lovelace"}"#)));
+        results.push(("deselect", send(r#"{"cmd": "deselect"}"#)));
+        results.push((
+            "save",
+            send(&format!(
+                r#"{{"cmd": "save", "path": "{}"}}"#,
+                dest.display()
+            )),
+        ));
+        Ok(results)
+    })();
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let extracted = dest.exists().then(|| {
+        let output = Command::new("pdftotext")
+            .arg(&dest)
+            .arg("-")
+            .output()
+            .expect("pdftotext must be installed (poppler-utils)");
+        assert!(
+            output.status.success(),
+            "pdftotext failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    });
+    let _ = std::fs::remove_dir_all(&runtime_dir);
+
+    let results = outcome.expect("IPC sequence setup failed");
+    for (label, reply) in &results {
+        assert_ok(label, reply);
+    }
+    let extracted = extracted.expect("save must have written a PDF");
+    assert!(
+        extracted.contains("Ada Lovelace"),
+        "cursive overlay text must be extractable from the saved PDF, got:\n{extracted}"
+    );
+}
+
 /// spe-47n: Save must always produce a file, even with no overlays placed —
 /// open then save with nothing typed must still write a loadable PDF with
 /// the same page count as the source, not silently do nothing.

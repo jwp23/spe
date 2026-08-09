@@ -580,6 +580,49 @@ fn write_truetype_overlay_embeds_font_program() {
     );
 }
 
+/// The user-visible payoff of the ToUnicode CMap: text set in a bundled cursive
+/// TrueType font can be selected, copied and searched in a PDF reader.
+/// Requires poppler's `pdftotext`.
+#[test]
+#[ignore]
+fn truetype_overlay_text_is_extractable_by_pdftotext() {
+    let registry = FontRegistry::new();
+    let font = registry
+        .find_by_name("Great Vibes")
+        .expect("bundled cursive font must be registered");
+
+    let src = NamedTempFile::new().expect("temp file");
+    create_test_pdf(src.path());
+    let dst = NamedTempFile::new().expect("temp file");
+
+    let overlay = TextOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 500.0 },
+        text: "Signed Ada Lovelace".to_string(),
+        font,
+        font_size: 24.0,
+        width: None,
+    };
+
+    write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write_overlays failed");
+
+    let output = std::process::Command::new("pdftotext")
+        .arg(dst.path())
+        .arg("-")
+        .output()
+        .expect("pdftotext must be installed (poppler-utils)");
+    assert!(
+        output.status.success(),
+        "pdftotext failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let extracted = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        extracted.contains("Signed Ada Lovelace"),
+        "text set in an embedded TrueType font must be extractable, got:\n{extracted}"
+    );
+}
+
 #[test]
 fn write_builtin_overlay_still_creates_type1_font() {
     // Regression test: BuiltIn fonts must still produce Type1 font objects.
