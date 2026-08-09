@@ -52,9 +52,10 @@ riskiest rendering paths — the ones most likely to break silently if a
 | `multiline_overlay` | A drag-created multiline overlay (IPC `type` with `\n` drives multi-line text on current main): text spanning several lines within one tint rectangle |
 
 Adding a scenario: write a new `scenario_<name>` function following the
-existing ones (open + `wait_ready` + `zoom_reset` + `wait_ready` are handled
-for you by `run_scenario`), then capture and eyeball it before committing a
-reference PNG.
+existing ones (open + `wait_ready` + `zoom_reset` + `wait_ready` before your
+scenario, `wait_ready` + `wait_frame` after it, are handled for you by
+`run_scenario`), then capture and eyeball it before committing a reference
+PNG.
 
 ## References
 
@@ -120,18 +121,56 @@ hitting, not scenario-script luck:
    actually compositing and presenting a new Wayland frame that reflects the
    click/type/deselect state we just sent. Capturing immediately after the
    last command intermittently (~40% of runs) grabbed the previous frame,
-   showing a blank page. There's no IPC signal for "frame presented" to poll
-   on instead, so `scripts/visual-regression.sh` sleeps 300ms before
-   capturing — a fixed settle, not a condition-poll, because no condition to
-   poll exists yet. Verified 10/10 non-blank captures with it in place,
-   eliminating the intermittent blank-page grab; the occasional ~85-pixel
-   antialiasing variance described above is a separate, much smaller effect
-   that this settle doesn't touch.
+   showing a blank page.
+
+   **Fixed (spe-xqb) with a `wait_frame` IPC command**, replacing the fixed
+   300ms settle sleep. The app tracks `state_generation` (bumped on every
+   processed message) and `presented_generation` (set to the current
+   `state_generation` whenever iced's `RedrawRequested` event fires —
+   `frame_event_to_message` in `src/app/mod.rs`). `RedrawRequested` is
+   broadcast to subscriptions synchronously, immediately before
+   `compositor.present()` is called in the same non-yielding block of
+   `iced_winit`'s event loop, so by the time the app processes the resulting
+   message the frame has already been submitted. `wait_frame` blocks until
+   `presented_generation` reaches the generation of the last command sent
+   before it.
+
+   Residual gap: this proves iced submitted the frame to wgpu's `present()`;
+   it does not prove cage has finished compositing it and that `grim`'s
+   capture lands on the composited output rather than a frame still in
+   flight between GPU submission and the compositor's next repaint. No
+   signal in iced 0.14 closes that last hop — there is no
+   `window::frames()`-style post-present hook in this version, and no lower
+   layer here to observe compositor-side presentation.
+
+   Determinism, `committed_tint` scenario, 5 runs each, full harness
+   start/stop per run (not just repeated captures in one session):
+
+   | | run 1 | run 2 | run 3 | run 4 | run 5 |
+   |---|---|---|---|---|---|
+   | 300ms sleep (old) | 230.103 | 230.103 | 315.492 | 315.492 | 230.103 |
+   | `wait_frame` (new) | 315.492 | 315.492 | 315.492 | 315.492 | 315.492 |
+
+   The sleep flips between two states (3/5 vs 2/5) in this environment;
+   `wait_frame` is pixel-identical across all 5. Same pattern held for
+   `selected_overlay` (5/5 identical under `wait_frame`). `multiline_overlay`
+   showed the same ~85-pixel antialiasing variance under both methods (1-2
+   runs out of 5 differ by ~85px either way) — that variance is the separate,
+   pre-existing antialiasing effect described above, not the frame-presented
+   race `wait_frame` targets. None of these are the 700,000+-pixel
+   blank-page failures the old race produced; they're all small, localized
+   diffs against the checked-in reference images, consistent with this
+   environment's font rendering differing slightly from whatever machine
+   generated the references — a pre-existing gap, not a regression.
 
 ### Possible follow-ups (not done here)
 
-- Add an IPC-observable "frame presented" signal so capture timing can poll
-  a real condition instead of a fixed sleep. Would remove the 300ms settle
-  and let `wait_ready` (or a new command) genuinely guarantee capture
-  correctness.
+- Close the residual compositor-presentation gap `wait_frame` cannot
+  observe from inside the iced process (would need a Wayland-side signal —
+  e.g. a frame callback observed by the harness itself — not something the
+  app's IPC socket can report).
+- Regenerate the checked-in reference PNGs in `tests/visual/` from this
+  environment, or otherwise resolve the small constant offset between them
+  and this machine's font rendering, so `compare` reports MATCH instead of
+  a tolerated MISMATCH.
 - Wire this into CI once/if a headless-compositor-capable CI runner exists.

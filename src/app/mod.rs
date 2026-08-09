@@ -81,6 +81,19 @@ pub struct App {
     pub ipc_response_sender: Option<crate::ipc::ResponseSender>,
     /// A WaitReady command arrived while rendering was in progress; respond when idle.
     pub pending_ipc_wait: bool,
+    /// Counts every message this app has processed. Bumped once at the top of
+    /// `update`, so it is a monotonic clock over the app's own state changes —
+    /// the basis `wait_frame` uses to know which mutations a redraw must
+    /// reflect before the wait can resolve (spe-xqb).
+    pub state_generation: u64,
+    /// The `state_generation` value as of the most recent completed redraw
+    /// (see [`Message::FramePresented`]). `wait_frame` resolves once this
+    /// reaches the generation captured when the wait was requested.
+    pub presented_generation: u64,
+    /// A `wait_frame` command arrived before a redraw had caught up to the
+    /// generation it needs to observe; holds that target generation until
+    /// [`App::check_ipc_frame_wait`] can resolve it.
+    pub pending_frame_wait: Option<u64>,
     /// Failure recorded by the handler of the IPC command currently running.
     ///
     /// Preconditions are checked before dispatch (see [`crate::ipc::CommandContext`]),
@@ -168,6 +181,10 @@ pub enum Message {
 
     // IPC
     Ipc(crate::ipc::IpcEvent),
+
+    /// A redraw completed: iced submitted a frame reflecting `state_generation`
+    /// as of when this message is processed. See [`App::presented_generation`].
+    FramePresented,
 }
 
 impl App {
@@ -191,6 +208,9 @@ impl App {
             ipc_enabled,
             ipc_response_sender: None,
             pending_ipc_wait: false,
+            state_generation: 0,
+            presented_generation: 0,
+            pending_frame_wait: None,
             last_command_error: None,
         };
         let mut font_tasks =
@@ -301,6 +321,21 @@ impl App {
         iced::Task::none()
     }
 
+    /// If a WaitFrame response is pending and a redraw has caught up to the
+    /// generation it needs to observe, send the response.
+    pub(super) fn check_ipc_frame_wait(&mut self) -> iced::Task<Message> {
+        if let Some(target) = self.pending_frame_wait
+            && self.presented_generation >= target
+        {
+            self.pending_frame_wait = None;
+            return self.send_ipc_response(crate::ipc::IpcResponse {
+                ok: true,
+                error: None,
+            });
+        }
+        iced::Task::none()
+    }
+
     pub fn title(&self) -> String {
         match &self.document {
             Some(doc) => {
@@ -332,6 +367,7 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
+        self.state_generation += 1;
         match message {
             // --- Toolbar message forwarding ---
             Message::Toolbar(toolbar_msg) => {
@@ -434,6 +470,10 @@ impl App {
 
             // --- IPC ---
             Message::Ipc(event) => return self.handle_ipc_event(event),
+            Message::FramePresented => {
+                self.presented_generation = self.state_generation;
+                return self.check_ipc_frame_wait();
+            }
         }
         iced::Task::none()
     }
@@ -457,6 +497,23 @@ impl App {
                     })
                 } else {
                     self.pending_ipc_wait = true;
+                    iced::Task::none()
+                }
+            }
+            crate::ipc::IpcEvent::WaitFrame => {
+                // Target the generation as of the command that preceded this
+                // one, not this WaitFrame message's own bump: WaitFrame never
+                // changes the view, so nothing would ever request the extra
+                // redraw a target including it would demand, and the wait
+                // would hang until the 30s IPC timeout on every call.
+                let target = self.state_generation.saturating_sub(1);
+                if self.presented_generation >= target {
+                    self.send_ipc_response(crate::ipc::IpcResponse {
+                        ok: true,
+                        error: None,
+                    })
+                } else {
+                    self.pending_frame_wait = Some(target);
                     iced::Task::none()
                 }
             }
@@ -491,7 +548,12 @@ impl App {
             iced::Subscription::none()
         };
 
-        iced::Subscription::batch([event_sub, shimmer_sub, toast_sub, ipc_sub])
+        // Only tracking redraws matters for wait_frame, so this stays enabled
+        // even without IPC — it costs one bool comparison per event and keeps
+        // state_generation/presented_generation consistent regardless of mode.
+        let frame_sub = iced::event::listen_raw(frame_event_to_message);
+
+        iced::Subscription::batch([event_sub, shimmer_sub, toast_sub, ipc_sub, frame_sub])
     }
 }
 
@@ -528,6 +590,35 @@ fn event_to_message(
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
             key_to_message(key, modifiers)
+        }
+        _ => None,
+    }
+}
+
+/// Map a raw runtime event to [`Message::FramePresented`] when it is a
+/// completed redraw, discarding everything else.
+///
+/// `RedrawRequested` is broadcast to subscriptions synchronously *before*
+/// `compositor.present()` is called in the same, non-yielding block of the
+/// winit event loop (see `iced_winit::run_instance`, the branch handling
+/// `WindowEvent::RedrawRequested`: the broadcast happens, then `present()` is
+/// called with no `.await` between them). So by the time this message reaches
+/// [`App::update`], the frame for the current state has already been
+/// submitted — this is the closest signal iced 0.14 exposes to "a frame
+/// reflecting the latest state has been presented"; there is no
+/// `window::frames()`-style post-present hook in this version. It is filtered
+/// out of the ordinary [`iced::event::listen_with`] subscription (see
+/// `event_to_message`), so `wait_frame` uses [`iced::event::listen_raw`]
+/// instead, restricted here to just this one event to avoid the flood
+/// `listen_raw` would otherwise deliver.
+fn frame_event_to_message(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Window(iced::window::Event::RedrawRequested(_)) => {
+            Some(Message::FramePresented)
         }
         _ => None,
     }

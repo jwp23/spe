@@ -84,18 +84,26 @@ run_scenario() {
     send '{"cmd": "wait_ready"}'
     "$fn"
     send '{"cmd": "wait_ready"}'
-
-    mkdir -p "$(dirname "$output")"
     # wait_ready only guards page-image rendering (pdftoppm), not the
     # compositor actually presenting a frame that reflects our state
-    # mutations: the wgpu frame submitted after click/type/deselect races
-    # cage's next Wayland frame callback, and there's no IPC signal for
-    # "frame presented" to poll on instead. Without this settle, grim
-    # intermittently (~40% of runs, confirmed by 3x-run diffing) captures
-    # the previous frame, showing a blank page instead of the overlay.
-    # 300ms is comfortably above cage's frame interval; verified 10/10
-    # pixel-identical captures with it in place vs. flaky without it.
-    sleep 0.3
+    # mutations. wait_frame closes that gap: the app tracks a generation
+    # counter bumped on every processed message, and records the generation
+    # as of each completed redraw (iced's RedrawRequested event, which fires
+    # synchronously just before the frame is submitted to the compositor —
+    # see frame_event_to_message in src/app/mod.rs). wait_frame blocks until
+    # a redraw has been observed at or after the generation of every command
+    # sent before it, so the reply proves the click/type/deselect above has
+    # actually been drawn and submitted.
+    #
+    # Residual gap: this proves iced submitted the frame to wgpu's present();
+    # it does not prove the Wayland compositor (cage here) has finished
+    # compositing and grim's capture has landed on the composited output
+    # rather than a frame still in flight. That residual race is far smaller
+    # than the "no signal at all" gap the old 300ms sleep covered, so no
+    # sleep remains here — see 5x-determinism results in spe-xqb.
+    send '{"cmd": "wait_frame"}'
+
+    mkdir -p "$(dirname "$output")"
     "$SCREENSHOT_SH" capture "$output" >&2
 
     "$SCREENSHOT_SH" stop >&2
