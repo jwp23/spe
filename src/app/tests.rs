@@ -1321,6 +1321,86 @@ fn edit_overlay_syncs_toolbar_font_and_size() {
 }
 
 #[test]
+fn undo_font_change_syncs_toolbar_to_active_overlay() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::ChangeFont(courier));
+
+    app.update(Message::Undo);
+
+    let doc = app.document.as_ref().unwrap();
+    assert_eq!(app.toolbar.font, doc.overlays[0].font);
+}
+
+#[test]
+fn undo_font_size_change_syncs_toolbar_to_active_overlay() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    app.update(Message::ChangeFontSize(30.0));
+
+    app.update(Message::Undo);
+
+    let doc = app.document.as_ref().unwrap();
+    assert!((app.toolbar.font_size - doc.overlays[0].font_size).abs() < f32::EPSILON);
+    assert_eq!(
+        app.toolbar.font_size_input,
+        format!("{}", doc.overlays[0].font_size)
+    );
+}
+
+#[test]
+fn redo_font_change_syncs_toolbar_to_active_overlay() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::ChangeFont(courier));
+    app.update(Message::Undo);
+    // Toolbar drifts away from the overlay's (reverted) font between the
+    // undo and the redo, so the redo assertion can't pass by coincidence.
+    let times = app.font_registry.find_by_name("Times Bold").unwrap();
+    app.toolbar.font = times;
+
+    app.update(Message::Redo);
+
+    let doc = app.document.as_ref().unwrap();
+    assert_eq!(app.toolbar.font, doc.overlays[0].font);
+    assert_eq!(app.toolbar.font, courier);
+}
+
+#[test]
+fn undo_does_not_panic_when_undo_stack_is_empty() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+
+    // Undoing the placement itself removes overlay 0, so active_overlay
+    // (still Some(0)) would be out of bounds — the toolbar sync must guard
+    // against that rather than panic on an out-of-range index.
+    app.update(Message::Undo);
+    app.update(Message::Undo);
+}
+
+#[test]
 fn edit_overlay_snapshots_text_to_edit_start_text() {
     let mut app = test_app_with_document();
     app.update(Message::PlaceOverlay {
