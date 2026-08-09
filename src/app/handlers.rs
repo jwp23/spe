@@ -503,7 +503,7 @@ impl App {
         if let Some(doc) = &mut self.document {
             // Prevent saving over the source file to avoid data loss on
             // write failure (the source would already be truncated).
-            if path == doc.source_path {
+            if denotes_same_file(&path, &doc.source_path) {
                 self.set_save_result(Err::<(), _>("cannot overwrite the source file"), &path);
                 return;
             }
@@ -860,6 +860,21 @@ impl App {
             },
             Message::ZoomDebounceExpired,
         )
+    }
+}
+
+/// Whether two paths denote the same file on disk.
+///
+/// Compares canonical paths rather than the paths as written: a relative path,
+/// a `..` segment, or a symlink all spell the same file differently, and a
+/// lexical comparison would let such a spelling slip past the save guard and
+/// truncate the document being edited. A destination that cannot be
+/// canonicalized does not exist yet, so it cannot be the (existing) source —
+/// the literal comparison is only a fallback for that case.
+fn denotes_same_file(destination: &std::path::Path, source: &std::path::Path) -> bool {
+    match (destination.canonicalize(), source.canonicalize()) {
+        (Ok(dest), Ok(src)) => dest == src,
+        _ => destination == source,
     }
 }
 

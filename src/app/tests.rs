@@ -2271,6 +2271,32 @@ fn ipc_save_over_the_source_file_reports_failure() {
 }
 
 #[test]
+fn ipc_save_to_another_spelling_of_the_source_is_rejected() {
+    // The guard exists to stop the open document being truncated. It must key
+    // on which file the path denotes, not on how the path is spelled: an IPC
+    // client can name the source relatively, through `..`, or via a symlink.
+    let source = make_temp_pdf();
+    let mut app = app_with_loaded_pdf(&source);
+    let alias = source
+        .path()
+        .parent()
+        .unwrap()
+        .join("..")
+        .join(source.path().parent().unwrap().file_name().unwrap())
+        .join(source.path().file_name().unwrap());
+    assert_ne!(
+        alias,
+        source.path(),
+        "the alias must be spelled differently"
+    );
+
+    let (response, _task) = app.run_ipc_command(crate::ipc::IpcCommand::Save { path: alias });
+
+    assert!(!response.ok, "overwriting the source must not report ok");
+    assert!(response.error.unwrap().contains("source file"));
+}
+
+#[test]
 fn ipc_save_to_an_unwritable_path_reports_failure() {
     let source = make_temp_pdf();
     let mut app = app_with_loaded_pdf(&source);
