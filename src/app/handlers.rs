@@ -74,6 +74,7 @@ impl App {
                 font_size: self.toolbar.font_size,
                 width,
             };
+            let fresh_placement_base = self.undo_stack.len();
             let cmd = UndoCommand::PlaceOverlay {
                 overlay: overlay.clone(),
             };
@@ -83,6 +84,7 @@ impl App {
             self.canvas.active_overlay = Some(idx);
             self.canvas.editing = true;
             self.canvas.edit_start_text = Some(String::new());
+            self.canvas.fresh_placement = Some(fresh_placement_base);
             if width.is_some() {
                 self.editor_content = Some(iced::widget::text_editor::Content::with_text(""));
             }
@@ -209,6 +211,7 @@ impl App {
         {
             self.canvas.active_overlay = Some(index);
             self.canvas.editing = false;
+            self.canvas.fresh_placement = None;
             self.toolbar.font = doc.overlays[index].font;
             self.toolbar.font_size = doc.overlays[index].font_size;
             self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
@@ -221,6 +224,7 @@ impl App {
         {
             self.canvas.active_overlay = Some(index);
             self.canvas.editing = true;
+            self.canvas.fresh_placement = None;
             self.canvas.edit_start_text = Some(doc.overlays[index].text.clone());
             self.toolbar.font = doc.overlays[index].font;
             self.toolbar.font_size = doc.overlays[index].font_size;
@@ -255,14 +259,17 @@ impl App {
             let new_text = doc.overlays[idx].text.clone();
             if new_text.trim().is_empty() {
                 self.discard_empty_overlay(idx, old_text);
-            } else if old_text != new_text {
-                let cmd = UndoCommand::EditText {
-                    index: idx,
-                    old_text,
-                    new_text,
-                };
-                self.undo_stack.push(cmd);
-                self.redo_stack.clear();
+            } else {
+                self.canvas.fresh_placement = None;
+                if old_text != new_text {
+                    let cmd = UndoCommand::EditText {
+                        index: idx,
+                        old_text,
+                        new_text,
+                    };
+                    self.undo_stack.push(cmd);
+                    self.redo_stack.clear();
+                }
             }
         }
         self.canvas.editing = false;
@@ -273,22 +280,16 @@ impl App {
 
     /// Remove an overlay whose text is blank, since it would only render as an
     /// empty selection box. Abandoning a freshly placed overlay leaves no undo
-    /// history; erasing the text of an established overlay records a deletion
-    /// that restores `text_at_edit_start` when undone.
+    /// history, including any style commands (font, font size) recorded while
+    /// it was being edited; erasing the text of an established overlay
+    /// records a deletion that restores `text_at_edit_start` when undone.
     fn discard_empty_overlay(&mut self, index: usize, text_at_edit_start: String) {
         let Some(doc) = &mut self.document else {
             return;
         };
         let mut overlay = doc.overlays.remove(index);
-        // A placement always appends, so only the last overlay can be the one
-        // the PlaceOverlay on top of the undo stack created.
-        let was_fresh_placement = index == doc.overlays.len()
-            && matches!(
-                self.undo_stack.last(),
-                Some(UndoCommand::PlaceOverlay { .. })
-            );
-        if was_fresh_placement {
-            self.undo_stack.pop();
+        if let Some(base_len) = self.canvas.fresh_placement.take() {
+            self.undo_stack.truncate(base_len);
         } else {
             overlay.text = text_at_edit_start;
             self.undo_stack

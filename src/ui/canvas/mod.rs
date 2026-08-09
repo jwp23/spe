@@ -42,6 +42,13 @@ pub struct CanvasState {
     pub editing: bool,
     /// The overlay text at the start of an edit session, for undo support.
     pub edit_start_text: Option<String>,
+    /// `Some(undo_stack.len())` recorded just before a freshly placed
+    /// overlay's `PlaceOverlay` command was pushed, while that overlay is
+    /// still being edited for the first time. Abandoning it truncates the
+    /// undo stack back to this length, discarding the placement and any
+    /// style commands recorded during the edit. `None` once the overlay is
+    /// committed with text or a different overlay becomes active.
+    pub fresh_placement: Option<usize>,
     /// Counter incremented on each zoom change; used to debounce re-renders.
     pub zoom_generation: u64,
     /// Current vertical scroll offset in pixels.
@@ -57,6 +64,7 @@ impl Default for CanvasState {
             active_overlay: None,
             editing: false,
             edit_start_text: None,
+            fresh_placement: None,
             zoom_generation: 0,
             scroll_y: 0.0,
             viewport_height: 0.0,

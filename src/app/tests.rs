@@ -1918,6 +1918,25 @@ fn abandoned_empty_placement_leaves_no_undo_history() {
 }
 
 #[test]
+fn abandoned_empty_placement_leaves_no_undo_history_after_style_change() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::ChangeFont(courier));
+    app.update(Message::CommitText);
+    assert!(
+        app.undo_stack.is_empty(),
+        "placing and abandoning an empty overlay should leave no trace, even if \
+         the font was changed before any text was typed"
+    );
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+}
+
+#[test]
 fn erasing_an_existing_overlay_records_a_deletion_for_undo() {
     let mut app = test_app_with_document();
     app.update(Message::PlaceOverlay {
