@@ -348,11 +348,20 @@ pub fn write_overlays(
     overlays: &[TextOverlay],
     registry: &FontRegistry,
 ) -> Result<(), WriterError> {
-    if overlays.is_empty() {
-        return Ok(());
-    }
-
     let mut doc = Document::load(source).map_err(WriterError::OpenFailed)?;
+
+    if overlays.is_empty() {
+        // Save must always produce a file: write a plain copy of the source
+        // through the same load/save path used for baking overlays, so an
+        // empty-overlay save is never silently a no-op.
+        return doc
+            .save(destination)
+            .map(|_| ())
+            .map_err(|e| WriterError::SaveFailed {
+                path: destination.to_path_buf(),
+                source: lopdf::Error::IO(e),
+            });
+    }
 
     let pages = doc.get_pages();
 
@@ -1107,7 +1116,7 @@ mod tests {
     }
 
     #[test]
-    fn write_overlays_empty_slice_returns_ok_without_creating_destination() {
+    fn write_overlays_empty_slice_still_writes_destination() {
         use crate::fonts::FontRegistry;
         let registry = FontRegistry::new();
         let src = NamedTempFile::new().expect("failed to create temp file");
@@ -1118,9 +1127,18 @@ mod tests {
         write_overlays(src.path(), &dst_path, &[], &registry).expect("write_overlays failed");
 
         assert!(
-            !dst_path.exists(),
-            "destination file should not be created for empty overlays"
+            dst_path.exists(),
+            "Save must always produce a file, even with no overlays placed"
         );
+        let src_doc = Document::load(src.path()).expect("source PDF must still load");
+        let dst_doc = Document::load(&dst_path).expect("destination must be a loadable PDF");
+        assert_eq!(
+            dst_doc.get_pages().len(),
+            src_doc.get_pages().len(),
+            "destination page count must match the source"
+        );
+
+        let _ = std::fs::remove_file(&dst_path);
     }
 
     #[test]
