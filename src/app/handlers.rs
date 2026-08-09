@@ -707,18 +707,24 @@ impl App {
                 // Characters the PDF text encoding cannot represent are written
                 // as `?`, which is silent data loss unless it is named here.
                 let substitutions = if report.unencodable_chars.is_empty() {
-                    String::new()
+                    None
                 } else {
-                    format!(
-                        " — replaced with '?': {}",
+                    Some(format!(
+                        "replaced with '?': {}",
                         describe_unencodable(&report.unencodable_chars)
-                    )
+                    ))
                 };
                 self.status_message = Some((
-                    format!("Saved to {filename}{substitutions}"),
+                    match &substitutions {
+                        Some(s) => format!("Saved to {filename} — {s}"),
+                        None => format!("Saved to {filename}"),
+                    },
                     std::time::Instant::now(),
                 ));
                 self.last_command_error = None;
+                // Surfaced to an IPC `save` client by App::command_response,
+                // which never sees the status toast (spe-i1b, #127).
+                self.last_command_warning = substitutions;
             }
             Err(e) => {
                 self.status_message =

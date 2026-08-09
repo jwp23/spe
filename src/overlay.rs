@@ -2,6 +2,17 @@
 
 use crate::fonts::FontId;
 
+/// Vertical spacing between overlay lines, as a multiple of font size.
+///
+/// The single source both layers must agree on: `ui::canvas` lays overlay
+/// lines out at this ratio while editing (matching `canvas::Text`'s own
+/// default, `LineHeight::Relative(1.2)`), and `pdf::writer` reproduces it as
+/// the saved PDF's `Td` leading. Living here in the shared overlay data model
+/// — rather than in `ui::canvas` — keeps `pdf::writer` (backend) from having
+/// to depend on `ui::canvas` (presentation) for a constant neither module
+/// owns (spe-5xe).
+pub(crate) const TEXT_LINE_HEIGHT_RATIO: f32 = 1.2;
+
 /// A position on a PDF page in PDF coordinate space (points, origin bottom-left).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PdfPosition {

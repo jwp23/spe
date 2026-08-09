@@ -247,8 +247,10 @@ pub(crate) fn draw_overlay_text(
 }
 
 /// Line height iced applies to canvas text, as a multiple of the font size
-/// (`canvas::Text` defaults to `LineHeight::Relative(1.2)`).
-pub(crate) const TEXT_LINE_HEIGHT_RATIO: f32 = 1.2;
+/// (`canvas::Text` defaults to `LineHeight::Relative(1.2)`). Defined in
+/// `overlay` — the shared data model — so `pdf::writer` can match it without
+/// depending on this presentation module.
+pub(crate) use crate::overlay::TEXT_LINE_HEIGHT_RATIO;
 
 /// Line height for the floating edit widget. Deliberately not iced's widget
 /// default (`Relative(1.3)`): the canvas and the saved PDF's text leading both

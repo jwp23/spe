@@ -89,6 +89,10 @@ Newline-delimited JSON over a Unix socket. Commands use PDF coordinates, not scr
 Every command returns a JSON response:
 - `{"ok": true}` on success
 - `{"ok": false, "error": "description"}` on failure
+- `{"ok": true, "warning": "description"}` on a success that still lost information — e.g.
+  `save` substituting characters the PDF text encoding cannot represent (mirrors the
+  in-app status toast, since an IPC client never sees it). The `warning` key is present
+  only when there is one.
 
 `ok: true` means the action actually happened. A command whose preconditions
 are not met is rejected before it runs rather than silently doing nothing, so
