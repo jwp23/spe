@@ -220,6 +220,23 @@ impl App {
         }
     }
 
+    /// Sync the toolbar's font/size controls to the currently active
+    /// overlay's stored values, if any overlay is active. Called whenever
+    /// selection changes or an undo/redo may have changed the active
+    /// overlay's font — the toolbar must always reflect what's selected.
+    fn sync_toolbar_to_active_overlay(&mut self) {
+        let Some(doc) = &self.document else { return };
+        let Some(idx) = self.canvas.active_overlay else {
+            return;
+        };
+        let Some(overlay) = doc.overlays.get(idx) else {
+            return;
+        };
+        self.toolbar.font = overlay.font;
+        self.toolbar.font_size = overlay.font_size;
+        self.toolbar.font_size_input = format!("{}", overlay.font_size);
+    }
+
     pub(super) fn handle_select_overlay(&mut self, index: usize) {
         if let Some(doc) = &self.document
             && index < doc.overlays.len()
@@ -227,9 +244,7 @@ impl App {
             self.canvas.active_overlay = Some(index);
             self.canvas.editing = false;
             self.canvas.fresh_placement = None;
-            self.toolbar.font = doc.overlays[index].font;
-            self.toolbar.font_size = doc.overlays[index].font_size;
-            self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
+            self.sync_toolbar_to_active_overlay();
         }
     }
 
@@ -241,13 +256,11 @@ impl App {
             self.canvas.editing = true;
             self.canvas.fresh_placement = None;
             self.canvas.edit_start_text = Some(doc.overlays[index].text.clone());
-            self.toolbar.font = doc.overlays[index].font;
-            self.toolbar.font_size = doc.overlays[index].font_size;
-            self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
-            if doc.overlays[index].width.is_some() {
-                self.editor_content = Some(iced::widget::text_editor::Content::with_text(
-                    &doc.overlays[index].text,
-                ));
+            let width_is_some = doc.overlays[index].width.is_some();
+            let text = doc.overlays[index].text.clone();
+            self.sync_toolbar_to_active_overlay();
+            if width_is_some {
+                self.editor_content = Some(iced::widget::text_editor::Content::with_text(&text));
             }
             return iced::widget::operation::focus(self.text_input_id.clone());
         }
@@ -813,6 +826,7 @@ impl App {
         {
             cmd.reverse(&mut doc.overlays);
             self.redo_stack.push(cmd);
+            self.sync_toolbar_to_active_overlay();
         }
     }
 
@@ -822,6 +836,7 @@ impl App {
         {
             cmd.apply(&mut doc.overlays);
             self.undo_stack.push(cmd);
+            self.sync_toolbar_to_active_overlay();
         }
     }
 
