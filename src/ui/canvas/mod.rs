@@ -22,12 +22,13 @@ pub(crate) const DOUBLE_CLICK_TIMEOUT_MS: u128 = 500;
 pub(crate) const DOUBLE_CLICK_DISTANCE_PX: f32 = 5.0;
 /// Blue used for selection boxes, resize handles, and text input borders.
 pub const SELECTION_COLOR: iced::Color = iced::Color::from_rgb(0.2, 0.5, 1.0);
-/// Opacity for the background tint behind committed overlay text.
-pub(crate) const OVERLAY_TINT_ALPHA: f32 = 0.15;
+/// Opacity for the background tint behind committed overlay text. High enough
+/// that the tint reads as a highlight against white paper without hovering.
+pub(crate) const OVERLAY_TINT_ALPHA: f32 = 0.30;
 /// Opacity for the background tint when hovering over an overlay.
-pub(crate) const OVERLAY_TINT_HOVER_ALPHA: f32 = 0.25;
+pub(crate) const OVERLAY_TINT_HOVER_ALPHA: f32 = 0.45;
 /// Opacity for the border drawn around a hovered overlay.
-pub(crate) const OVERLAY_TINT_HOVER_BORDER_ALPHA: f32 = 0.5;
+pub(crate) const OVERLAY_TINT_HOVER_BORDER_ALPHA: f32 = 0.7;
 /// Padding around the selection box border (screen pixels).
 pub(crate) const SELECTION_BOX_PADDING: f32 = 2.0;
 /// Stroke width for selection-style borders (selection box, placement preview).
@@ -153,6 +154,15 @@ pub(crate) fn should_draw_selection_box(
     active_overlay == Some(index) && !editing
 }
 
+/// Screen-space top edge of text sitting on the baseline `screen_y`.
+///
+/// Canvas text is anchored by its top edge, so text rendering and the tint
+/// geometry behind it must both derive their position from here — computing
+/// the anchor separately is how the tint drifted off the text (spe-ner).
+pub(crate) fn text_top(screen_y: f32, scaled_font_size: f32) -> f32 {
+    screen_y - scaled_font_size
+}
+
 /// Draw overlay text at a screen position on the canvas frame.
 pub(crate) fn draw_overlay_text(
     frame: &mut canvas::Frame,
@@ -165,7 +175,7 @@ pub(crate) fn draw_overlay_text(
 ) {
     let text = canvas::Text {
         content: content.to_string(),
-        position: iced::Point::new(screen_x, screen_y - scaled_font_size),
+        position: iced::Point::new(screen_x, text_top(screen_y, scaled_font_size)),
         color,
         size: iced::Pixels(scaled_font_size),
         font,
@@ -174,22 +184,48 @@ pub(crate) fn draw_overlay_text(
     frame.fill_text(text);
 }
 
-/// Compute the screen-space (width, height) of the tint rectangle for an overlay.
-/// For multi-line overlays (width=Some), uses the specified width and line count.
-/// For single-line overlays, uses the bounding box of the text.
-pub(crate) fn tint_size_for_overlay(
+/// Line height iced applies to canvas text, as a multiple of the font size
+/// (`canvas::Text` defaults to `LineHeight::Relative(1.2)`).
+pub(crate) const TEXT_LINE_HEIGHT_RATIO: f32 = 1.2;
+
+/// Opacity of the background tint behind an overlay, deepened while hovered.
+pub(crate) fn tint_alpha(hovered: bool) -> f32 {
+    if hovered {
+        OVERLAY_TINT_HOVER_ALPHA
+    } else {
+        OVERLAY_TINT_ALPHA
+    }
+}
+
+/// The screen-space rectangle an overlay's rendered text occupies.
+///
+/// `draw_overlay_text` anchors the text's top edge one font size above the PDF
+/// baseline and lays out lines downward, so the box starts there and extends
+/// one line height per line of text. Multi-line overlays are as wide as the box
+/// the user dragged; single-line overlays are as wide as their text.
+pub(crate) fn overlay_text_box(
     overlay: &TextOverlay,
+    screen_x: f32,
+    screen_y: f32,
     scale: f32,
     registry: &FontRegistry,
-) -> (f32, f32) {
-    if let Some(width_pts) = overlay.width {
-        let scaled_width = width_pts * scale;
-        let line_count = overlay.text.lines().count().max(1) as f32;
-        let scaled_height = overlay.font_size * scale * line_count;
-        (scaled_width, scaled_height)
-    } else {
-        let bbox = registry.overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size);
-        (bbox.width * scale, bbox.height * scale)
+) -> iced::Rectangle {
+    let scaled_font_size = overlay.font_size * scale;
+    let width = match overlay.width {
+        Some(width_pts) => width_pts * scale,
+        None => {
+            registry
+                .overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size)
+                .width
+                * scale
+        }
+    };
+    let line_count = overlay.text.lines().count().max(1) as f32;
+    iced::Rectangle {
+        x: screen_x,
+        y: text_top(screen_y, scaled_font_size),
+        width,
+        height: line_count * scaled_font_size * TEXT_LINE_HEIGHT_RATIO,
     }
 }
 
