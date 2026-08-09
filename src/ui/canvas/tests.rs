@@ -374,6 +374,30 @@ fn release_on(
     decompose(action)
 }
 
+/// Grab the overlay at (270, 75) in `before`, check the drag took hold of
+/// `expected_index`, then release at (400, 300) against `after` — the overlay
+/// list having changed underneath the drag, as an IPC delete or an undo can do.
+///
+/// Returns what the release published and the state it left, so each caller
+/// can say what should have become of its own drag.
+fn drag_across_a_list_change(
+    before: &[TextOverlay],
+    expected_index: usize,
+    after: &[TextOverlay],
+) -> (Option<Message>, ProgramState) {
+    let (_, _, mut state) = press_on(before, None, cursor_at(270.0, 75.0));
+    assert_eq!(
+        state
+            .drag
+            .as_ref()
+            .expect("press should start a drag")
+            .overlay_index,
+        expected_index
+    );
+    let (msg, _) = release_on(&mut state, after, None, cursor_at(400.0, 300.0));
+    (msg, state)
+}
+
 /// Press at `press` then release at `release` on a blank single-page canvas,
 /// and return the placement the canvas published. The placement drag must be
 /// recorded on press and cleared on release either way, so that is checked
@@ -2665,18 +2689,8 @@ fn drag_release_after_the_dragged_overlay_is_deleted_publishes_no_move() {
         overlay_at(72.0, 720.0, "first"),
         overlay_at(72.0, 600.0, "second"),
     ];
-    let (_, _, mut state) = press_on(&before, None, cursor_at(270.0, 75.0));
-    assert_eq!(
-        state
-            .drag
-            .as_ref()
-            .expect("press should start a drag")
-            .overlay_index,
-        0
-    );
-
     let after = vec![overlay_at(72.0, 600.0, "second")];
-    let (msg, _) = release_on(&mut state, &after, None, cursor_at(400.0, 300.0));
+    let (msg, state) = drag_across_a_list_change(&before, 0, &after);
     assert!(
         !matches!(msg, Some(Message::MoveOverlay(..))),
         "a drag whose overlay is gone must not move whatever took its index, got {msg:?}"
@@ -2717,18 +2731,8 @@ fn drag_release_still_moves_an_overlay_that_only_shifted_index() {
         overlay_at(72.0, 600.0, "first"),
         overlay_at(72.0, 720.0, "dragged"),
     ];
-    let (_, _, mut state) = press_on(&before, None, cursor_at(270.0, 75.0));
-    assert_eq!(
-        state
-            .drag
-            .as_ref()
-            .expect("press should start a drag")
-            .overlay_index,
-        1
-    );
-
     let after = vec![overlay_at(72.0, 720.0, "dragged")];
-    let (msg, _) = release_on(&mut state, &after, None, cursor_at(400.0, 300.0));
+    let (msg, _) = drag_across_a_list_change(&before, 1, &after);
     assert!(
         matches!(msg, Some(Message::MoveOverlay(0, _))),
         "the dragged overlay moved to index 0 and should still be the one moved, got {msg:?}"
