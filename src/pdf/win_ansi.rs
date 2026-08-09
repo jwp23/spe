@@ -86,6 +86,16 @@ pub fn decode(code: u8) -> Option<char> {
         .map(|(_, c)| *c)
 }
 
+/// Add `chars` to `seen`, skipping any it already holds, so a report names each
+/// character once and in the order it was first met.
+pub fn merge_unencodable(seen: &mut Vec<char>, chars: impl IntoIterator<Item = char>) {
+    for c in chars {
+        if !seen.contains(&c) {
+            seen.push(c);
+        }
+    }
+}
+
 /// Encode overlay text for a content stream, substituting [`SUBSTITUTE`] for
 /// characters the encoding cannot represent and reporting them to the caller.
 pub fn encode(text: &str) -> EncodedText {
@@ -96,9 +106,7 @@ pub fn encode(text: &str) -> EncodedText {
             Some(code) => bytes.push(code),
             None => {
                 bytes.push(SUBSTITUTE);
-                if !unencodable.contains(&c) {
-                    unencodable.push(c);
-                }
+                merge_unencodable(&mut unencodable, [c]);
             }
         }
     }

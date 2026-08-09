@@ -382,6 +382,13 @@ fn ipc_cursive_overlay_text_is_extractable_by_pdftotext() {
 /// declares, so a reader extracts exactly what was typed — accented letters,
 /// curly quotes, an em dash and the euro sign all round-trip rather than
 /// arriving as mojibake.
+///
+/// Scope: `pdftotext` reads the ToUnicode CMap, not page geometry, so this test
+/// says nothing about how the text is laid out. The 27 characters WinAnsi maps
+/// outside Latin-1 — including the em dash and euro sign typed here — still get
+/// the wrong advance width in `/Widths`, because `WidthTable` is keyed by
+/// Unicode scalar rather than WinAnsi code (spe-gah). Extraction is green while
+/// that rendering defect is live; do not read this test as covering it.
 #[test]
 #[ignore]
 fn ipc_non_ascii_overlay_text_round_trips_through_pdftotext() {

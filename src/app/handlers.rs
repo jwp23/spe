@@ -11,6 +11,49 @@ use crate::pdf::renderer::PdftoppmRenderer;
 use crate::ui::canvas;
 use crate::ui::toolbar;
 
+/// How many substituted characters a toast names before summarising the rest.
+const MAX_LISTED_UNENCODABLE: usize = 5;
+
+/// True for characters that would leave no mark of their own in a status
+/// message: controls, whitespace, zero-width formatting characters, and
+/// combining marks, which attach to whatever precedes them.
+fn is_invisible(c: char) -> bool {
+    c.is_control()
+        || c.is_whitespace()
+        || matches!(u32::from(c),
+            0x0300..=0x036F
+            | 0x1AB0..=0x1AFF
+            | 0x1DC0..=0x1DFF
+            | 0x200B..=0x200F
+            | 0x20D0..=0x20FF
+            | 0x2060..=0x206F
+            | 0xFE20..=0xFE2F)
+}
+
+/// Name the characters a save could not encode. Each is given with its
+/// codepoint — and invisible ones by codepoint alone, since writing them raw
+/// would disclose nothing and could smuggle a control character into the
+/// toast. Long lists are summarised rather than filling the message.
+fn describe_unencodable(chars: &[char]) -> String {
+    let mut listed: Vec<String> = chars
+        .iter()
+        .take(MAX_LISTED_UNENCODABLE)
+        .map(|&c| {
+            let code = u32::from(c);
+            if is_invisible(c) {
+                format!("(U+{code:04X})")
+            } else {
+                format!("'{c}' (U+{code:04X})")
+            }
+        })
+        .collect();
+    let hidden = chars.len().saturating_sub(MAX_LISTED_UNENCODABLE);
+    if hidden > 0 {
+        listed.push(format!("and {hidden} more"));
+    }
+    listed.join(", ")
+}
+
 impl App {
     // --- Page navigation handlers ---
 
@@ -658,13 +701,10 @@ impl App {
                 let substitutions = if report.unencodable_chars.is_empty() {
                     String::new()
                 } else {
-                    let listed: String = report
-                        .unencodable_chars
-                        .iter()
-                        .map(|c| c.to_string())
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    format!(" — replaced with '?': {listed}")
+                    format!(
+                        " — replaced with '?': {}",
+                        describe_unencodable(&report.unencodable_chars)
+                    )
                 };
                 self.status_message = Some((
                     format!("Saved to {filename}{substitutions}"),

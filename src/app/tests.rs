@@ -1151,54 +1151,78 @@ fn save_destination_sets_status_message_on_success() {
     assert!(msg.contains("Saved to"), "expected 'Saved to' in '{msg}'");
 }
 
-#[test]
-fn save_status_names_characters_the_pdf_encoding_could_not_represent() {
+/// Place a single overlay containing `text` on page 1, save it, and return the
+/// resulting status toast.
+fn save_with_text(text: &str) -> String {
     let mut app = test_app_with_document();
     let tmp_source = make_temp_pdf();
     let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
+        // No wrap width, so the text reaches the writer exactly as typed —
+        // embedded newlines included.
         width: None,
     });
-    app.update(Message::UpdateOverlayText("中".to_string()));
+    app.update(Message::UpdateOverlayText(text.to_string()));
     app.update(Message::DeselectOverlay);
 
     let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
     app.update(Message::SaveDestinationChosen(
         tmp_dest.path().to_path_buf(),
     ));
+    app.status_message
+        .as_ref()
+        .expect("status message")
+        .0
+        .clone()
+}
 
-    let (msg, _) = app.status_message.as_ref().expect("status message");
+#[test]
+fn save_status_names_characters_the_pdf_encoding_could_not_represent() {
+    let msg = save_with_text("\u{4e2d}");
+
     assert!(
         msg.contains("Saved to"),
         "the save still succeeded: '{msg}'"
     );
     assert!(
-        msg.contains('中'),
-        "the substituted character must be named: '{msg}'"
+        msg.contains("'\u{4e2d}' (U+4E2D)"),
+        "the substituted character must be named with its codepoint: '{msg}'"
+    );
+}
+
+/// A newline reaches the writer intact on the unwrapped path and is dropped by
+/// the encoding. Printing it raw would disclose nothing — which is the whole
+/// point of naming substitutions — so it must be described by codepoint alone.
+#[test]
+fn save_status_describes_an_invisible_character_without_emitting_it() {
+    let msg = save_with_text("a\nb");
+
+    assert!(
+        msg.contains("(U+000A)"),
+        "the dropped newline must be named by codepoint: '{msg}'"
+    );
+    assert!(
+        !msg.contains('\n'),
+        "a control character must never be written raw into the toast: '{msg}'"
+    );
+}
+
+#[test]
+fn save_status_caps_a_long_list_of_unencodable_characters() {
+    let msg = save_with_text("\u{4e2d}\u{1f600}\u{100}\u{4e00}\u{4e8c}\u{4e09}\u{56db}");
+
+    assert!(
+        msg.contains("and 2 more"),
+        "only the first few characters belong in a toast: '{msg}'"
     );
 }
 
 #[test]
 fn save_status_stays_quiet_when_every_character_encodes() {
-    let mut app = test_app_with_document();
-    let tmp_source = make_temp_pdf();
-    let _ = app.handle_file_opened(tmp_source.path().to_path_buf());
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
-    });
-    app.update(Message::UpdateOverlayText("café".to_string()));
-    app.update(Message::DeselectOverlay);
+    let msg = save_with_text("caf\u{e9}");
 
-    let tmp_dest = tempfile::NamedTempFile::new().expect("temp file");
-    app.update(Message::SaveDestinationChosen(
-        tmp_dest.path().to_path_buf(),
-    ));
-
-    let (msg, _) = app.status_message.as_ref().expect("status message");
     assert!(
         !msg.contains('?'),
         "a losslessly encoded save must not warn: '{msg}'"

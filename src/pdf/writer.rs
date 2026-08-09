@@ -327,11 +327,7 @@ fn build_overlay_operations(
             // A PDF shows text as bytes read through the font's /Encoding, so
             // the line must be encoded to WinAnsi rather than emitted as UTF-8.
             let encoded = win_ansi::encode(line);
-            for c in encoded.unencodable {
-                if !unencodable.contains(&c) {
-                    unencodable.push(c);
-                }
-            }
+            win_ansi::merge_unencodable(&mut unencodable, encoded.unencodable);
             operations.push(Operation::new(
                 "Tj",
                 vec![Object::String(encoded.bytes, lopdf::StringFormat::Literal)],
@@ -450,11 +446,7 @@ pub fn write_overlays(
         let mapping = build_font_mapping(&mut doc, page_id, &needed_fonts, registry);
         install_page_fonts(&mut doc, page_id, mapping.new_font_objects);
         let content = build_overlay_operations(page_overlays, &mapping.resource_names, registry);
-        for c in content.unencodable {
-            if !report.unencodable_chars.contains(&c) {
-                report.unencodable_chars.push(c);
-            }
-        }
+        win_ansi::merge_unencodable(&mut report.unencodable_chars, content.unencodable);
         let content_bytes = Content {
             operations: content.operations,
         }
