@@ -81,6 +81,10 @@ pub struct App {
     pub ipc_response_sender: Option<crate::ipc::ResponseSender>,
     /// A WaitReady command arrived while rendering was in progress; respond when idle.
     pub pending_ipc_wait: bool,
+    /// Error from the most recent `handle_file_opened` call, if it failed to load.
+    /// Cleared on a successful open. Lets the IPC `open` response report the
+    /// real load outcome instead of only message-construction success.
+    pub last_open_error: Option<String>,
 }
 
 /// All messages the application can process.
@@ -184,6 +188,7 @@ impl App {
             ipc_enabled,
             ipc_response_sender: None,
             pending_ipc_wait: false,
+            last_open_error: None,
         };
         let mut font_tasks =
             vec![iced::font::load(crate::ui::icons::font_bytes()).map(Message::FontLoaded)];
@@ -219,6 +224,21 @@ impl App {
         };
         let sender = sender.clone();
         iced::Task::perform(deliver_ipc_response(sender, response), |_| Message::Noop)
+    }
+
+    /// Override an `open` command's response with the real load outcome.
+    /// `to_message` only reports whether the command translated to a Message;
+    /// this consults `last_open_error`, which `handle_file_opened` sets
+    /// synchronously, so `open` reports actual success or failure instead of
+    /// only message-construction success (spe-6vq).
+    fn open_command_response(&mut self, base: crate::ipc::IpcResponse) -> crate::ipc::IpcResponse {
+        match self.last_open_error.take() {
+            Some(error) => crate::ipc::IpcResponse {
+                ok: false,
+                error: Some(error),
+            },
+            None => base,
+        }
     }
 
     /// If a WaitReady response is pending and rendering is now idle, send the response.
@@ -377,6 +397,7 @@ impl App {
                 iced::Task::none()
             }
             crate::ipc::IpcEvent::Command(cmd) => {
+                let is_open = matches!(cmd, crate::ipc::IpcCommand::Open { .. });
                 let (response, msg_result) =
                     match cmd.to_message(self.document.as_ref(), &self.font_registry) {
                         Ok(msg) => (
@@ -400,6 +421,16 @@ impl App {
                 let command_task = match msg_result {
                     Some(msg) => self.update(msg),
                     None => iced::Task::none(),
+                };
+                // `to_message` only proves the Open command translated into a
+                // Message; handle_file_opened's load happens synchronously inside
+                // the update() call above, so last_open_error is already current.
+                // Without this check `open` would report ok:true purely from
+                // message construction even when the PDF failed to load (spe-6vq).
+                let response = if is_open {
+                    self.open_command_response(response)
+                } else {
+                    response
                 };
                 let response_task = self.send_ipc_response(response);
                 iced::Task::batch([command_task, response_task])
