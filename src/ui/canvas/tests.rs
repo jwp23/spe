@@ -605,13 +605,24 @@ fn hit_test_agrees_with_hit_test_pdf_at_every_zoom_and_offset() {
         overlay_at(72.0, 720.0, "Hello"),
         overlay_at(200.0, 400.0, "Second overlay"),
     ];
-    // A grid of PDF points covering both overlays, their edges, and empty space.
+    // A grid of PDF points covering both overlays, just inside and just outside
+    // each edge, and empty space.
+    //
+    // Deliberately no point sits exactly on an edge. The hit box is half-open
+    // (`Rectangle::contains` is `x <= p < x + w`), and the screen path reaches
+    // its verdict through a `pdf -> screen -> pdf` round trip that is not
+    // bit-exact: at zoom 2.5/dpi 150 an exact 108.0 comes back as 107.999992,
+    // landing on the other side of the boundary. Any two implementations
+    // related by that round trip disagree within a rounding error of an edge,
+    // so asserting agreement there would be asserting something untrue rather
+    // than catching a real divergence.
     let probes = [
-        (72.0, 720.0),
+        (72.5, 719.5),
         (80.0, 725.0),
-        (108.0, 732.0),
+        (107.5, 731.5),
+        (108.5, 732.5),
         (110.0, 725.0),
-        (200.0, 405.0),
+        (200.5, 400.5),
         (250.0, 410.0),
         (400.0, 400.0),
         (0.0, 0.0),
@@ -653,6 +664,26 @@ fn hit_test_ignores_overlays_on_other_pages() {
     }];
     let result = hit_test(80.0, 65.0, &overlays, 1, &params, &registry);
     assert!(result.is_none());
+}
+
+#[test]
+fn hit_test_finds_explicit_width_overlay_beyond_its_glyphs() {
+    let params = default_params();
+    let registry = FontRegistry::new();
+    // "Hi" is only 2 * 7.2 = 14.4px wide at Courier 12pt, but the overlay's
+    // explicit width (200pt) makes the tinted, clickable area much wider —
+    // the same area draw_single_overlay paints via overlay_text_box.
+    let overlays = vec![TextOverlay {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 720.0 },
+        text: "Hi".to_string(),
+        font: registry.find_by_name("Courier").unwrap(),
+        font_size: 12.0,
+        width: Some(200.0),
+    }];
+    // Click well past the glyphs but still inside the explicit-width box.
+    let result = hit_test(150.0, 65.0, &overlays, 1, &params, &registry);
+    assert_eq!(result, Some(0));
 }
 
 #[test]
@@ -1886,81 +1917,193 @@ fn should_draw_overlay_text_true_when_no_active_overlay() {
 }
 
 // =====================================================================
-// spe-ceg.2: tint size computation
+// spe-ceg.2 / spe-ner: overlay text box geometry (tint and hover border)
 // =====================================================================
 
+/// Rendered line height for a 12pt overlay at scale 1.0.
+const LINE_12PT: f32 = 12.0 * super::TEXT_LINE_HEIGHT_RATIO;
+
 #[test]
-fn tint_size_single_line_overlay_uses_bounding_box() {
-    // Single-line overlay (width=None): tint size comes from overlay_bounding_box.
-    // Courier 12pt, "Hello" → width = 5 * 7.2 = 36.0, height = 12.0
-    // scale=1.0 → w=36.0, h=12.0
+fn text_box_top_edge_is_one_font_size_above_the_baseline() {
+    // draw_overlay_text places the text top at baseline - font_size, so the
+    // tint must start there rather than at the baseline.
     let overlay = overlay_at(72.0, 720.0, "Hello");
-    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0, &FontRegistry::new());
-    assert!((w - 36.0).abs() < 0.1, "width should be ~36, got {w}");
-    assert!((h - 12.0).abs() < 0.1, "height should be 12, got {h}");
+    let rect = super::overlay_text_box(&overlay, 40.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        (rect.x - 40.0).abs() < 0.1,
+        "x should be 40, got {}",
+        rect.x
+    );
+    assert!(
+        (rect.y - 88.0).abs() < 0.1,
+        "top should be baseline - font_size = 88, got {}",
+        rect.y
+    );
 }
 
 #[test]
-fn tint_size_single_line_overlay_scales_with_scale() {
-    // Same as above but scale=2.0 → w=72.0, h=24.0
+fn single_line_text_box_width_comes_from_the_font_bounding_box() {
+    // Courier 12pt, "Hello" → 5 * 7.2 = 36.0 wide, one rendered line tall.
     let overlay = overlay_at(72.0, 720.0, "Hello");
-    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 2.0, &FontRegistry::new());
-    assert!((w - 72.0).abs() < 0.1, "width should be ~72, got {w}");
-    assert!((h - 24.0).abs() < 0.1, "height should be 24, got {h}");
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        (rect.width - 36.0).abs() < 0.1,
+        "width should be ~36, got {}",
+        rect.width
+    );
+    assert!(
+        (rect.height - LINE_12PT).abs() < 0.1,
+        "height should be one line ({LINE_12PT}), got {}",
+        rect.height
+    );
 }
 
 #[test]
-fn tint_size_multiline_overlay_uses_width_and_line_count() {
-    // Multi-line overlay (width=Some(150)), two lines of text, font_size=12.
-    // scale=1.0 → w=150.0, h=12.0 * 2 = 24.0
-    let overlay = TextOverlay {
-        page: 1,
-        position: PdfPosition { x: 72.0, y: 720.0 },
-        text: "line one\nline two".to_string(),
-        font: FontRegistry::new().find_by_name("Courier").unwrap(),
-        font_size: 12.0,
-        width: Some(150.0),
-    };
-    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0, &FontRegistry::new());
-    assert!((w - 150.0).abs() < 0.1, "width should be 150, got {w}");
-    assert!((h - 24.0).abs() < 0.1, "height should be 24, got {h}");
+fn multiline_text_box_grows_downward_from_the_first_line() {
+    // spe-ner: text is drawn top-down from baseline - font_size, so a 3-line
+    // overlay must extend *below* the baseline, not upward from it.
+    let overlay = multiline_overlay_at(72.0, 720.0, 150.0, "one\ntwo\nthree");
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        (rect.y - 88.0).abs() < 0.1,
+        "top should be baseline - font_size = 88, got {}",
+        rect.y
+    );
+    let expected_height = 3.0 * LINE_12PT;
+    assert!(
+        (rect.height - expected_height).abs() < 0.1,
+        "height should be 3 rendered lines ({expected_height}), got {}",
+        rect.height
+    );
+    assert!(
+        rect.y + rect.height > 100.0,
+        "box must extend below the first line's baseline, got bottom {}",
+        rect.y + rect.height
+    );
 }
 
 #[test]
-fn tint_size_multiline_overlay_single_line_text_height_is_one_line() {
-    // Multi-line overlay (width=Some) but text has only one line.
-    // Height = font_size * 1 = 12.0
+fn multiline_text_box_width_comes_from_the_overlay_width() {
     let overlay = multiline_overlay_at(72.0, 720.0, 150.0, "Hello");
-    let (w, h): (f32, f32) = super::tint_size_for_overlay(&overlay, 1.0, &FontRegistry::new());
-    assert!((w - 150.0).abs() < 0.1, "width should be 150, got {w}");
-    assert!((h - 12.0).abs() < 0.1, "height should be 12, got {h}");
-}
-
-#[test]
-fn tint_alpha_constant_is_correct() {
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
     assert!(
-        (super::OVERLAY_TINT_ALPHA - 0.15).abs() < f32::EPSILON,
-        "OVERLAY_TINT_ALPHA should be 0.15"
+        (rect.width - 150.0).abs() < 0.1,
+        "width should be the overlay width 150, got {}",
+        rect.width
     );
-}
-
-// =====================================================================
-// spe-ceg.3: hover tracking and tint intensification
-// =====================================================================
-
-#[test]
-fn overlay_tint_hover_alpha_constant_is_correct() {
     assert!(
-        (super::OVERLAY_TINT_HOVER_ALPHA - 0.25).abs() < f32::EPSILON,
-        "OVERLAY_TINT_HOVER_ALPHA should be 0.25"
+        (rect.height - LINE_12PT).abs() < 0.1,
+        "single line of text is one rendered line tall, got {}",
+        rect.height
     );
 }
 
 #[test]
-fn overlay_tint_hover_border_alpha_constant_is_correct() {
+fn text_box_scales_with_the_render_scale() {
+    let overlay = overlay_at(72.0, 720.0, "Hello");
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 2.0, &FontRegistry::new());
     assert!(
-        (super::OVERLAY_TINT_HOVER_BORDER_ALPHA - 0.5).abs() < f32::EPSILON,
-        "OVERLAY_TINT_HOVER_BORDER_ALPHA should be 0.5"
+        (rect.width - 72.0).abs() < 0.1,
+        "width should double to 72, got {}",
+        rect.width
+    );
+    assert!(
+        (rect.height - 2.0 * LINE_12PT).abs() < 0.1,
+        "height should double, got {}",
+        rect.height
+    );
+    assert!(
+        (rect.y - 76.0).abs() < 0.1,
+        "top should be baseline - 2 * font_size = 76, got {}",
+        rect.y
+    );
+}
+
+#[test]
+fn text_line_height_ratio_matches_the_canvas_text_default() {
+    // TEXT_LINE_HEIGHT_RATIO mirrors iced's own default. If an iced upgrade
+    // changes it, the tint silently stops matching the text again (spe-ner).
+    // Compares the *resolved* line height for a known font size rather than the
+    // LineHeight variant, so it also catches a switch to an absolute default.
+    let font_size = 100.0;
+    let resolved: f32 = canvas::Text::default()
+        .line_height
+        .to_absolute(iced::Pixels(font_size))
+        .into();
+    let expected = font_size * super::TEXT_LINE_HEIGHT_RATIO;
+    assert!(
+        (resolved - expected).abs() < 0.01,
+        "iced lays out {font_size}pt canvas text on {resolved}px lines, but \
+         TEXT_LINE_HEIGHT_RATIO expects {expected}px"
+    );
+}
+
+#[test]
+fn empty_overlay_text_box_is_one_line_tall() {
+    let overlay = multiline_overlay_at(72.0, 720.0, 150.0, "");
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        (rect.height - LINE_12PT).abs() < 0.1,
+        "empty text still occupies one line, got {}",
+        rect.height
+    );
+}
+
+// =====================================================================
+// spe-ceg.3 / spe-i4e: tint opacity
+// =====================================================================
+
+/// Roughly how much darker than a white page a tint reads, in 0-255 units,
+/// after compositing `color` at `alpha` over white.
+///
+/// This is a guardrail, not a colorimetric model: it weights the stored
+/// sRGB-encoded channels with the BT.709 luma coefficients without linearizing
+/// them, while wgpu composites in linear space. The absolute number is
+/// therefore optimistic — the real on-screen drop for the default tint is
+/// nearer 27 than the 38 computed here. What it does reliably capture is
+/// ordering: brighter tints score higher, so it catches an opacity regression.
+fn tint_luminance_drop_over_white_page(color: [f32; 4], alpha: f32) -> f32 {
+    let luma = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
+    255.0 * (1.0 - luma) * alpha
+}
+
+/// Score a tint must reach to read as a highlight rather than as blank paper.
+/// `committed_overlay_paints_a_visible_tint_without_hover` measures the real
+/// composited output and is the authoritative check; this one is a cheap
+/// arithmetic guard on the constant itself.
+/// Calibrated against observed renders: the old 0.15 alpha scored 19 and was
+/// reported invisible (spe-i4e); the current 0.30 alpha scores 38 and is
+/// clearly visible in screenshots. 30 sits between them, closer to the value
+/// that was confirmed good.
+const PERCEPTIBLE_LUMINANCE_DROP: f32 = 30.0;
+
+#[test]
+fn resting_tint_is_perceptible_against_a_white_page() {
+    // spe-i4e: the tint is always drawn, but at too low an opacity it is
+    // indistinguishable from the page, so it reads as "only shows on hover".
+    let drop = tint_luminance_drop_over_white_page(
+        crate::config::AppConfig::default().overlay_color,
+        super::tint_alpha(false),
+    );
+    assert!(
+        drop >= PERCEPTIBLE_LUMINANCE_DROP,
+        "resting tint is only {drop} darker than white paper, needs >= {PERCEPTIBLE_LUMINANCE_DROP}"
+    );
+}
+
+#[test]
+fn hovered_tint_is_more_prominent_than_the_resting_tint() {
+    assert!(
+        super::tint_alpha(true) > super::tint_alpha(false),
+        "hover should deepen the tint"
+    );
+}
+
+#[test]
+fn overlay_tint_hover_border_alpha_is_stronger_than_the_hover_fill() {
+    assert!(
+        super::OVERLAY_TINT_HOVER_BORDER_ALPHA > super::tint_alpha(true),
+        "the hover border must stand out against its own fill"
     );
 }
 
@@ -2108,5 +2251,266 @@ fn should_draw_selection_box_false_when_nothing_selected() {
     assert!(
         !super::should_draw_selection_box(false, None, 0),
         "no selection means no selection box"
+    );
+}
+
+// =====================================================================
+// spe-i4e / spe-ner: headless rendering of the overlay canvas
+//
+// These render the real canvas Program through iced's software renderer so
+// the drawing code itself runs under plain `cargo test` — no GPU, display or
+// compositor required. The pure geometry tests above pin down the tint rect;
+// these prove it actually reaches the screen.
+// =====================================================================
+
+/// Size of the headless render surface, in logical pixels.
+const RENDER_SIZE: iced::Size = iced::Size {
+    width: 900.0,
+    height: 700.0,
+};
+
+/// A headlessly rendered frame, as RGBA pixels over a white page.
+struct RenderedCanvas {
+    width: u32,
+    rgba: Vec<u8>,
+}
+
+impl RenderedCanvas {
+    fn height(&self) -> u32 {
+        (self.rgba.len() as u32 / 4) / self.width
+    }
+
+    fn pixel(&self, x: u32, y: u32) -> (u8, u8, u8) {
+        assert!(
+            x < self.width && y < self.height(),
+            "sample ({x}, {y}) is outside the {}x{} render surface",
+            self.width,
+            self.height()
+        );
+        let i = ((y * self.width + x) * 4) as usize;
+        (self.rgba[i], self.rgba[i + 1], self.rgba[i + 2])
+    }
+
+    /// How much darker than white the pixel at (x, y) is, averaged over RGB.
+    /// Measured on the real composited output, so it accounts for whatever
+    /// blending the renderer actually performs.
+    fn darkening(&self, x: u32, y: u32) -> f32 {
+        let (r, g, b) = self.pixel(x, y);
+        (3.0 * 255.0 - r as f32 - g as f32 - b as f32) / 3.0
+    }
+
+    /// Rows in `x`'s column that are darker than white by at least `threshold`.
+    fn darkened_rows(&self, x: u32, threshold: f32, height: u32) -> Vec<u32> {
+        (0..height)
+            .filter(|y| self.darkening(x, *y) >= threshold)
+            .collect()
+    }
+}
+
+/// Render an overlay canvas program over a white page, headlessly.
+///
+/// When `cursor` is given it is delivered as a real cursor-moved event first,
+/// so hover state is established through the same path the app uses.
+fn render_overlay_canvas(
+    program: OverlayCanvasProgram<'_>,
+    cursor: Option<iced::Point>,
+) -> RenderedCanvas {
+    use iced_test::core::renderer::Headless;
+    use iced_test::runtime::{UserInterface, user_interface};
+
+    let element: iced::Element<Message> = iced::widget::canvas(program)
+        .width(iced::Length::Fill)
+        .height(iced::Length::Fill)
+        .into();
+
+    let mut renderer = iced_test::futures::futures::executor::block_on(
+        // Pinned to the software backend so the rendered pixels these tests
+        // assert on do not depend on whether a GPU is present.
+        <iced::Renderer as Headless>::new(
+            iced::Font::DEFAULT,
+            iced::Pixels(16.0),
+            Some("tiny-skia"),
+        ),
+    )
+    .expect("software renderer should be available without a GPU or display");
+
+    let mut ui = UserInterface::build(
+        element,
+        RENDER_SIZE,
+        user_interface::Cache::default(),
+        &mut renderer,
+    );
+
+    let pointer = match cursor {
+        Some(position) => mouse::Cursor::Available(position),
+        None => mouse::Cursor::Unavailable,
+    };
+    if let Some(position) = cursor {
+        let _ = ui.update(
+            &[iced::Event::Mouse(mouse::Event::CursorMoved { position })],
+            pointer,
+            &mut renderer,
+            &mut iced_test::core::clipboard::Null,
+            &mut Vec::new(),
+        );
+    }
+
+    ui.draw(
+        &mut renderer,
+        &iced::Theme::Light,
+        &iced_test::core::renderer::Style {
+            text_color: iced::Color::BLACK,
+        },
+        pointer,
+    );
+
+    let width = RENDER_SIZE.width as u32;
+    let height = RENDER_SIZE.height as u32;
+    let rgba = renderer.screenshot(iced::Size::new(width, height), 1.0, iced::Color::WHITE);
+    RenderedCanvas { width, rgba }
+}
+
+/// Screen-space baseline of an overlay inside the rendered canvas.
+fn rendered_baseline(overlay: &TextOverlay, page_dims: &HashMap<u32, (f32, f32)>) -> (f32, f32) {
+    let layout = page_layout(page_dims, 1, TEST_ZOOM, TEST_DPI);
+    let page_rect = page_rect_in_canvas(&layout, overlay.page, RENDER_SIZE.width);
+    let (_, page_h) = page_dims[&overlay.page];
+    let params = ConversionParams {
+        zoom: TEST_ZOOM,
+        dpi: TEST_DPI,
+        page_height: page_h,
+        offset_x: page_rect.x,
+        offset_y: page_rect.y,
+    };
+    crate::coordinate::pdf_to_screen(overlay.position.x, overlay.position.y, &params)
+}
+
+#[test]
+fn committed_overlay_paints_a_visible_tint_without_hover() {
+    // spe-i4e: with nothing hovered the tint must still read as a highlight
+    // against white paper. Measured on the real composited pixels.
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    let canvas = render_overlay_canvas(test_program(&overlays, &dims, &registry), None);
+
+    let (sx, sy) = rendered_baseline(&overlays[0], &dims);
+    // Sample just inside the top-left of the tint, clear of the glyphs.
+    let x = sx as u32 + 2;
+    let y = (sy - 12.0 * TEST_ZOOM) as u32 + 2;
+    let darkening = canvas.darkening(x, y);
+
+    // Calibrated on real composited output: the old 0.15 alpha that was
+    // reported invisible measures ~25 here, the current 0.30 alpha ~51.
+    assert!(
+        darkening >= 40.0,
+        "resting tint at ({x}, {y}) is only {darkening} darker than white paper"
+    );
+}
+
+#[test]
+fn hovered_overlay_paints_a_deeper_tint_than_a_resting_one() {
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    let (sx, sy) = rendered_baseline(&overlays[0], &dims);
+    let x = sx as u32 + 2;
+    let y = (sy - 12.0 * TEST_ZOOM) as u32 + 2;
+
+    let resting =
+        render_overlay_canvas(test_program(&overlays, &dims, &registry), None).darkening(x, y);
+    // Park the cursor over the overlay so the canvas hit-tests it as hovered.
+    let hovered = render_overlay_canvas(
+        test_program(&overlays, &dims, &registry),
+        Some(iced::Point::new(sx + 4.0, sy - 4.0)),
+    )
+    .darkening(x, y);
+
+    assert!(
+        hovered > resting,
+        "hovered tint ({hovered}) should be deeper than resting tint ({resting})"
+    );
+}
+
+#[test]
+fn multiline_tint_covers_the_rows_its_text_occupies() {
+    // spe-ner: the tint band must start at the top of the first line and run
+    // downward over every line, not float above the text.
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![multiline_overlay_at(72.0, 600.0, 150.0, "one\ntwo\nthree")];
+    let canvas = render_overlay_canvas(test_program(&overlays, &dims, &registry), None);
+
+    let (sx, sy) = rendered_baseline(&overlays[0], &dims);
+    // Sample a column near the right edge of the box, past the short glyphs,
+    // so only the tint contributes.
+    let column = (sx + 140.0 * TEST_ZOOM) as u32;
+    let rows = canvas.darkened_rows(column, 10.0, RENDER_SIZE.height as u32);
+    assert!(!rows.is_empty(), "no tint band found in column {column}");
+
+    let scaled_font_size = 12.0 * TEST_ZOOM;
+    let expected_top = sy - scaled_font_size;
+    let expected_bottom = expected_top + 3.0 * scaled_font_size * super::TEXT_LINE_HEIGHT_RATIO;
+    let top = *rows.first().unwrap() as f32;
+    let bottom = *rows.last().unwrap() as f32;
+
+    assert!(
+        (top - expected_top).abs() <= 1.5,
+        "tint starts at row {top}, expected the first line's top {expected_top}"
+    );
+    assert!(
+        (bottom - expected_bottom).abs() <= 1.5,
+        "tint ends at row {bottom}, expected the third line's bottom {expected_bottom}"
+    );
+}
+
+impl RenderedCanvas {
+    /// Pixels painted in a strong, saturated blue — the selection border and
+    /// resize handle, which are opaque, unlike the pale overlay tint.
+    ///
+    /// The threshold is derived from `SELECTION_COLOR` itself (halfway to its
+    /// blue/red channel gap) so it tracks the renderer's actual selection
+    /// color instead of a magic number that could silently fall out of sync.
+    fn selection_blue_pixels(&self) -> usize {
+        let blue_red_gap = (super::SELECTION_COLOR.b - super::SELECTION_COLOR.r) * 255.0;
+        let threshold = blue_red_gap / 2.0;
+        self.rgba
+            .chunks_exact(4)
+            .filter(|p| p[2] as f32 - p[0] as f32 > threshold)
+            .count()
+    }
+}
+
+#[test]
+fn selected_overlay_paints_a_selection_border() {
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![multiline_overlay_at(72.0, 600.0, 150.0, "one\ntwo")];
+    let mut program = test_program(&overlays, &dims, &registry);
+    program.active_overlay = Some(0);
+
+    let canvas = render_overlay_canvas(program, None);
+    assert!(
+        canvas.selection_blue_pixels() > 0,
+        "a selected overlay should paint a selection border and resize handle"
+    );
+}
+
+#[test]
+fn overlay_being_edited_paints_no_selection_border() {
+    // The floating text widget draws its own border while editing, so the
+    // canvas must stay out of the way (#113).
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![multiline_overlay_at(72.0, 600.0, 150.0, "one\ntwo")];
+    let mut program = test_program(&overlays, &dims, &registry);
+    program.active_overlay = Some(0);
+    program.editing = true;
+
+    let canvas = render_overlay_canvas(program, None);
+    assert_eq!(
+        canvas.selection_blue_pixels(),
+        0,
+        "the canvas must not draw a second selection border while editing"
     );
 }

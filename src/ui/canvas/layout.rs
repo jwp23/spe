@@ -6,6 +6,8 @@ use crate::coordinate::{ConversionParams, render_scale, screen_to_pdf};
 use crate::fonts::FontRegistry;
 use crate::overlay::TextOverlay;
 
+use super::overlay_text_box_contains_pdf;
+
 /// Gap between pages in continuous scrolling mode (pixels).
 pub const PAGE_GAP: f32 = 16.0;
 
@@ -185,10 +187,15 @@ pub fn hit_test(
 /// Test whether a PDF-space point hits any overlay on the given page.
 /// Returns the index of the topmost (last-placed) overlay hit, or None.
 ///
-/// The hit box is the overlay's bounding box: text extends right from the
-/// position and upward from the baseline, so it spans
-/// `[x, x + width] × [y, y + height]` in PDF points. Being expressed in PDF
-/// points makes it independent of zoom, DPI, and scroll position.
+/// PDF points are the space the shared decision lives in, because they are the
+/// only space both callers can speak: the IPC automation path has no scroll,
+/// zoom, or viewport to build a screen point from, while the mouse path can
+/// always convert what it has via `screen_to_pdf`. PDF points are also the
+/// document's own coordinates, so the verdict does not shift with zoom or DPI.
+///
+/// The geometry itself still comes from [`overlay_text_box`] — the same
+/// rectangle the tint is drawn in — so what the user can click stays exactly
+/// what the user can see (spe-ner).
 pub fn hit_test_pdf(
     pdf_x: f32,
     pdf_y: f32,
@@ -201,10 +208,7 @@ pub fn hit_test_pdf(
         if overlay.page != current_page {
             continue;
         }
-        let bbox = registry.overlay_bounding_box(&overlay.text, overlay.font, overlay.font_size);
-        let x = overlay.position.x;
-        let y = overlay.position.y;
-        if pdf_x >= x && pdf_x <= x + bbox.width && pdf_y >= y && pdf_y <= y + bbox.height {
+        if overlay_text_box_contains_pdf(overlay, pdf_x, pdf_y, registry) {
             return Some(i);
         }
     }
