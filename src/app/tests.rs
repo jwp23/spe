@@ -1369,6 +1369,66 @@ fn update_overlay_text_leaves_editor_content_none_for_singleline_overlay() {
     assert!(app.editor_content.is_none());
 }
 
+#[test]
+fn update_overlay_text_does_not_clobber_editor_content_for_unrelated_singleline_overlay() {
+    // Review-traced hazard: the sync guard must key on the *target* overlay's
+    // own multiline-ness (width.is_some()), not merely on whether
+    // editor_content happens to be populated from a previously edited
+    // overlay. Reproduces the exact sequence: multiline overlay 0 is being
+    // edited (editor_content populated) -> Select single-line overlay 1
+    // (handle_select_overlay changes active_overlay without touching
+    // editor_content) -> Type into overlay 1 must not stomp overlay 0's
+    // editor_content with overlay 1's unrelated text.
+    let mut app = test_app_with_document();
+    let font = app.toolbar.font;
+    let font_size = app.toolbar.font_size;
+    {
+        let doc = app.document.as_mut().unwrap();
+        doc.overlays.push(TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 100.0, y: 500.0 },
+            text: String::new(),
+            font,
+            font_size,
+            width: Some(200.0), // multiline
+        });
+        doc.overlays.push(TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 150.0, y: 600.0 },
+            text: String::new(),
+            font,
+            font_size,
+            width: None, // single-line
+        });
+    }
+    // Simulate overlay 0 (multiline) having just been dragged into edit mode.
+    app.canvas.active_overlay = Some(0);
+    app.canvas.editing = true;
+    app.editor_content = Some(iced::widget::text_editor::Content::with_text(""));
+
+    app.update(Message::UpdateOverlayText("AAA".to_string()));
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "AAA");
+
+    // IPC `select` targets overlay 1 (single-line).
+    app.update(Message::SelectOverlay(1));
+    assert_eq!(app.canvas.active_overlay, Some(1));
+
+    // IPC `type` now targets overlay 1.
+    app.update(Message::UpdateOverlayText("BBB".to_string()));
+    assert_eq!(app.document.as_ref().unwrap().overlays[1].text, "BBB");
+
+    let editor_text = app
+        .editor_content
+        .as_ref()
+        .expect("editor_content should still hold overlay 0's multiline text")
+        .text();
+    assert!(
+        editor_text.starts_with("AAA"),
+        "editor_content must not be clobbered by typing into an unrelated \
+         single-line overlay, got: {editor_text:?}"
+    );
+}
+
 // =====================================================================
 // EditOverlay tests
 // =====================================================================

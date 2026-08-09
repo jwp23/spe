@@ -102,8 +102,16 @@ impl App {
             // Multi-line overlays render from editor_content, not overlay.text
             // directly (see handle_text_editor_action). Keep it in sync so the
             // IPC `type` path converges on the same state real typing would
-            // produce (spe-jpw).
-            if self.editor_content.is_some() {
+            // produce (spe-jpw). Gate on the *target* overlay's own
+            // multiline-ness (width.is_some()), not on whether editor_content
+            // happens to be populated: editor_content can still hold a
+            // previously edited multiline overlay's text after selection
+            // moves to a different, single-line overlay (handle_select_overlay
+            // doesn't touch editor_content), so `.is_some()` would clobber it
+            // with unrelated text. `idx` is already the target overlay (it's
+            // derived from active_overlay above and bounds-checked), so no
+            // separate idx == active_overlay check is needed.
+            if doc.overlays[idx].width.is_some() {
                 self.editor_content = Some(iced::widget::text_editor::Content::with_text(&text));
             }
         }
