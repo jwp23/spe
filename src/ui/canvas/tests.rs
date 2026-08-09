@@ -3346,3 +3346,38 @@ fn a_vertical_resize_in_flight_previews_only_the_height() {
         250.0 + pad
     );
 }
+
+#[test]
+fn committed_text_wraps_inside_the_box_it_was_given() {
+    // The canvas drew overlay text with no width bound, so a wrapping
+    // overlay's committed text ran off the right of its own box in one long
+    // line — disagreeing with both the box the user drew and the wrapped
+    // lines the PDF writer emits.
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![multiline_overlay_at(
+        72.0,
+        600.0,
+        150.0,
+        "The quick brown fox jumps over the lazy dog and keeps on running",
+    )];
+    let canvas = render_overlay_canvas(test_program(&overlays, &dims, &registry), None);
+
+    let (sx, sy) = rendered_baseline(&overlays[0], &dims);
+    let text_box = super::overlay_text_box(
+        &overlays[0],
+        sx,
+        sy,
+        crate::coordinate::render_scale(TEST_ZOOM, TEST_DPI),
+        &registry,
+    );
+    let rightmost = canvas
+        .rightmost_ink_column(text_box.y as u32, (text_box.y + text_box.height) as u32)
+        .expect("the overlay text should have been rendered");
+
+    let box_right = text_box.x + text_box.width;
+    assert!(
+        rightmost as f32 <= box_right + 1.0,
+        "text reaches column {rightmost} but its box ends at {box_right}"
+    );
+}

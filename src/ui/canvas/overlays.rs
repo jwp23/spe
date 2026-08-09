@@ -391,7 +391,6 @@ impl OverlayCanvasProgram<'_> {
         resizing: Option<usize>,
     ) {
         let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
-        let scaled_size = overlay.font_size * scale;
         let text_box = overlay_text_box(overlay, sx, sy, scale, self.font_registry);
 
         if should_draw_overlay_text(self.editing, self.active_overlay, index) {
@@ -402,12 +401,10 @@ impl OverlayCanvasProgram<'_> {
             }
             draw_overlay_text(
                 frame,
-                &overlay.text,
-                sx,
-                sy,
-                scaled_size,
-                iced::Color::BLACK,
-                self.font_registry.get(overlay.font).iced_font,
+                overlay,
+                iced::Point::new(sx, sy),
+                scale,
+                self.font_registry,
             );
         }
 
@@ -435,15 +432,12 @@ impl OverlayCanvasProgram<'_> {
             let overlay = &self.overlays[index];
             let preview_screen_x = cursor_pos.x - drag.grab_offset_x - bounds.x;
             let preview_screen_y = cursor_pos.y - drag.grab_offset_y - bounds.y;
-            let scaled_size = overlay.font_size * scale;
             draw_overlay_text(
                 frame,
-                &overlay.text,
-                preview_screen_x,
-                preview_screen_y,
-                scaled_size,
-                iced::Color::BLACK,
-                self.font_registry.get(overlay.font).iced_font,
+                overlay,
+                iced::Point::new(preview_screen_x, preview_screen_y),
+                scale,
+                self.font_registry,
             );
         }
     }

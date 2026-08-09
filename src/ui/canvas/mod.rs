@@ -219,25 +219,39 @@ pub(crate) fn text_top(screen_y: f32, scaled_font_size: f32) -> f32 {
     screen_y - scaled_font_size
 }
 
-/// Draw overlay text at a screen position on the canvas frame.
+/// Draw overlay text at a screen position on the canvas frame, wrapping it
+/// within `max_width` screen pixels.
+///
+/// A wrapping overlay must be drawn inside the box it was given: left
+/// unbounded, its committed text ran off the right of its own box in one line,
+/// agreeing neither with the box the user drew nor with the wrapped lines the
+/// PDF writer emits.
 pub(crate) fn draw_overlay_text(
     frame: &mut canvas::Frame,
-    content: &str,
-    screen_x: f32,
-    screen_y: f32,
-    scaled_font_size: f32,
-    color: iced::Color,
-    font: iced::Font,
+    overlay: &TextOverlay,
+    baseline: iced::Point,
+    scale: f32,
+    registry: &FontRegistry,
 ) {
+    let scaled_font_size = overlay.font_size * scale;
     let text = canvas::Text {
-        content: content.to_string(),
-        position: iced::Point::new(screen_x, text_top(screen_y, scaled_font_size)),
-        color,
+        content: overlay.text.clone(),
+        position: iced::Point::new(baseline.x, text_top(baseline.y, scaled_font_size)),
+        max_width: overlay_wrap_width(overlay, scale),
+        color: iced::Color::BLACK,
         size: iced::Pixels(scaled_font_size),
-        font,
+        font: registry.get(overlay.font).iced_font,
         ..canvas::Text::default()
     };
     frame.fill_text(text);
+}
+
+/// How wide `overlay`'s text may run on screen before it wraps. A single-line
+/// overlay has no box to stay inside, so it never wraps.
+pub(crate) fn overlay_wrap_width(overlay: &TextOverlay, scale: f32) -> f32 {
+    overlay
+        .width
+        .map_or(f32::INFINITY, |width_pts| width_pts * scale)
 }
 
 /// Line height iced applies to canvas text, as a multiple of the font size

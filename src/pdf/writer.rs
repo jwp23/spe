@@ -1260,6 +1260,65 @@ mod tests {
     }
 
     #[test]
+    fn a_boxs_minimum_height_leaves_the_written_document_unchanged() {
+        // The height a user drags a box to is an editing affordance: the
+        // writer lays wrapped lines out downward from the first baseline and
+        // emits nothing for the empty space below, so a taller box must write
+        // exactly the same PDF. Anything else would make the box's height a
+        // silent property of the saved document.
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Line 1\nLine 2".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: Some(200.0),
+            min_height: None,
+        };
+        let tall = TextOverlay {
+            min_height: Some(400.0),
+            ..overlay.clone()
+        };
+
+        let written = |overlay: &TextOverlay| {
+            let src = NamedTempFile::new().expect("temp file");
+            create_test_pdf(src.path());
+            let dst = NamedTempFile::new().expect("temp file");
+            write_overlays(
+                src.path(),
+                dst.path(),
+                std::slice::from_ref(overlay),
+                &registry,
+            )
+            .expect("write failed");
+            let doc = Document::load(dst.path()).expect("load failed");
+            let page_id = *doc.get_pages().get(&1).expect("page 1");
+            let stream_id = *doc
+                .get_page_contents(page_id)
+                .last()
+                .expect("no content streams");
+            doc.get_object(stream_id)
+                .expect("stream obj")
+                .as_stream()
+                .expect("stream")
+                .decode_content()
+                .expect("decode")
+                .encode()
+                .expect("encode")
+        };
+
+        assert_eq!(
+            written(&overlay),
+            written(&tall),
+            "a box dragged taller must write the same content stream"
+        );
+    }
+
+    #[test]
     fn write_multiline_overlay_produces_multiple_tj_operators() {
         use crate::fonts::FontRegistry;
         use crate::overlay::{PdfPosition, TextOverlay};
