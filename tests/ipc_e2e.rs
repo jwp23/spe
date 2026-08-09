@@ -125,38 +125,24 @@ fn ipc_command_sequence_all_receive_responses() {
     let outcome = (|| -> Result<CommandLog, String> {
         wait_for_socket(&socket, &mut child, Duration::from_secs(20))?;
 
+        // Cargo runs test binaries concurrently, so this sequence can be
+        // competing with the whole `e2e` suite for the GPU. The bound is
+        // generous for that reason: it is here to stop a wedged command
+        // hanging the suite, not to police latency.
+        let send = |json: &str| send_command(&socket, json, Duration::from_secs(15));
+
         let mut results: CommandLog = Vec::new();
         let open_json = format!(r#"{{"cmd": "open", "path": "{}"}}"#, fixture.display());
-        results.push((
-            "open",
-            send_command(&socket, &open_json, Duration::from_secs(5)),
-        ));
+        results.push(("open", send(&open_json)));
         // wait_ready blocks until rendering completes; it is the command that
         // hangs forever when the render task is discarded.
-        results.push((
-            "wait_ready",
-            send_command(&socket, r#"{"cmd": "wait_ready"}"#, Duration::from_secs(15)),
-        ));
+        results.push(("wait_ready", send(r#"{"cmd": "wait_ready"}"#)));
         results.push((
             "click",
-            send_command(
-                &socket,
-                r#"{"cmd": "click", "page": 1, "x": 100, "y": 700}"#,
-                Duration::from_secs(5),
-            ),
+            send(r#"{"cmd": "click", "page": 1, "x": 100, "y": 700}"#),
         ));
-        results.push((
-            "type",
-            send_command(
-                &socket,
-                r#"{"cmd": "type", "text": "Hello world"}"#,
-                Duration::from_secs(5),
-            ),
-        ));
-        results.push((
-            "deselect",
-            send_command(&socket, r#"{"cmd": "deselect"}"#, Duration::from_secs(5)),
-        ));
+        results.push(("type", send(r#"{"cmd": "type", "text": "Hello world"}"#)));
+        results.push(("deselect", send(r#"{"cmd": "deselect"}"#)));
         Ok(results)
     })();
 
