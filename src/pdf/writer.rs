@@ -205,9 +205,16 @@ fn create_truetype_font_object(
 
     let first_char = 32_i64;
     let last_char = 255_i64;
+    // Each code is a byte the content stream can emit; resolve it through
+    // WinAnsiEncoding rather than treating the byte as its own codepoint, or
+    // the codes in the 0x80-0x9F block (euro sign, em dash, etc.) get the
+    // width of an unrelated C1 control character instead.
     let widths: Vec<Object> = (first_char..=last_char)
         .map(|c| {
-            let w = entry.widths.char_width(c as u8 as char);
+            // A handful of codes in that block (0x81, 0x8D, 0x8F, 0x90, 0x9D)
+            // are undefined in WinAnsiEncoding; fall back to space's width.
+            let ch = win_ansi::decode(c as u8).unwrap_or(' ');
+            let w = entry.widths.char_width(ch);
             Object::Integer(w.round() as i64)
         })
         .collect();
@@ -1633,6 +1640,42 @@ mod tests {
         assert!(
             page_font_dict(&doc, b"Symbol").get(b"Encoding").is_err(),
             "Symbol has its own built-in encoding; WinAnsiEncoding would garble it"
+        );
+    }
+
+    #[test]
+    fn truetype_widths_are_indexed_by_the_winansi_character_not_the_raw_byte() {
+        let registry = FontRegistry::new();
+        let font = registry.find_by_name("Great Vibes").expect("Great Vibes");
+        let (_, doc) = write_one_overlay("x", font, &registry);
+
+        let font_dict = page_font_dict(&doc, b"GreatVibes-Regular");
+        let widths = font_dict
+            .get(b"Widths")
+            .expect("Widths")
+            .as_array()
+            .expect("array");
+        let first_char = font_dict
+            .get(b"FirstChar")
+            .expect("FirstChar")
+            .as_i64()
+            .expect("int");
+        let width_at = |code: u8| {
+            widths[(code as i64 - first_char) as usize]
+                .as_i64()
+                .expect("int")
+        };
+
+        let entry = registry.get(font);
+        assert_eq!(
+            width_at(0x80),
+            entry.widths.char_width('\u{20AC}').round() as i64,
+            "byte 0x80 is EURO SIGN under WinAnsiEncoding, not U+0080"
+        );
+        assert_eq!(
+            width_at(0x97),
+            entry.widths.char_width('\u{2014}').round() as i64,
+            "byte 0x97 is EM DASH under WinAnsiEncoding, not U+0097"
         );
     }
 
