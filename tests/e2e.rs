@@ -87,7 +87,6 @@ fn undo_redo_with_view_rebuild() {
     let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
     let _ = app.update(Message::CommitText);
@@ -171,7 +170,6 @@ fn delete_overlay_with_selection() {
     let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     assert!(app.canvas.active_overlay.is_some());
     verify_view_renders(&app);

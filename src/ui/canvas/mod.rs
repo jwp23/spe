@@ -381,5 +381,16 @@ pub(crate) fn resize_handle_hit(
 /// Minimum drag distance in pixels to initiate a resize. Clicks below this distance are treated as single-line overlays.
 pub(crate) const MIN_DRAG_DISTANCE: f32 = 10.0;
 
+/// The point in `rect` nearest to `point`.
+///
+/// A drag that leaves the page still ends somewhere, and a box sized from a
+/// cursor out in the margin would run off the paper it is written on.
+pub(crate) fn clamp_to_rect(point: iced::Point, rect: &iced::Rectangle) -> iced::Point {
+    iced::Point::new(
+        point.x.clamp(rect.x, rect.x + rect.width),
+        point.y.clamp(rect.y, rect.y + rect.height),
+    )
+}
+
 #[cfg(test)]
 mod tests;

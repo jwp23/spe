@@ -63,23 +63,57 @@ impl App {
         &mut self,
         page: u32,
         position: PdfPosition,
-        width: Option<f32>,
     ) -> iced::Task<Message> {
+        self.place(TextOverlay {
+            page,
+            position,
+            text: String::new(),
+            font: self.toolbar.font,
+            font_size: self.toolbar.font_size,
+            width: None,
+            min_height: None,
+        })
+    }
+
+    /// Place a wrapping overlay filling the rectangle a drag drew out.
+    ///
+    /// The rectangle's top edge is where its first *line* starts, but an
+    /// overlay is anchored by its first *baseline*, which sits one font size
+    /// below the top of the line — the same offset `draw_overlay_text` and
+    /// `overlay_text_box` apply. Placing the baseline at the top edge instead
+    /// is what floated the edit box a whole line above the drawn rectangle
+    /// (spe-x9e).
+    pub(super) fn handle_place_text_box(
+        &mut self,
+        page: u32,
+        top_left: PdfPosition,
+        width: f32,
+        height: f32,
+    ) -> iced::Task<Message> {
+        let font_size = self.toolbar.font_size;
+        self.place(TextOverlay {
+            page,
+            position: PdfPosition {
+                x: top_left.x,
+                y: top_left.y - font_size,
+            },
+            text: String::new(),
+            font: self.toolbar.font,
+            font_size,
+            width: Some(width),
+            min_height: Some(height),
+        })
+    }
+
+    /// Add `overlay` to the document and open an edit session on it.
+    fn place(&mut self, overlay: TextOverlay) -> iced::Task<Message> {
         let commit_task = if self.canvas.editing {
             self.handle_commit_text()
         } else {
             iced::Task::none()
         };
         if self.document.is_some() {
-            let overlay = TextOverlay {
-                page,
-                position,
-                text: String::new(),
-                font: self.toolbar.font,
-                font_size: self.toolbar.font_size,
-                width,
-                min_height: None,
-            };
+            let width = overlay.width;
             let fresh_placement_base = self.undo_stack.len();
             let cmd = UndoCommand::PlaceOverlay {
                 overlay: overlay.clone(),

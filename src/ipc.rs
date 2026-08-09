@@ -253,7 +253,6 @@ impl IpcCommand {
                 Ok(Message::PlaceOverlay {
                     page,
                     position: PdfPosition { x, y },
-                    width: None,
                 })
             }
             IpcCommand::ClickAt { page, x, y } => {
@@ -296,13 +295,20 @@ impl IpcCommand {
                 x1,
                 y1,
                 x2,
-                y2: _,
+                y2,
             } => {
                 ctx.require_page(page)?;
-                Ok(Message::PlaceOverlay {
+                // The same rectangle the mouse path reports: both corners,
+                // not just the horizontal extent, so automation places the
+                // box a user dragging the same two points would get.
+                Ok(Message::PlaceTextBox {
                     page,
-                    position: PdfPosition { x: x1, y: y1 },
-                    width: Some((x2 - x1).abs()),
+                    top_left: PdfPosition {
+                        x: x1.min(x2),
+                        y: y1.max(y2),
+                    },
+                    width: (x2 - x1).abs(),
+                    height: (y2 - y1).abs(),
                 })
             }
             IpcCommand::Resize { index, width } => {
@@ -383,7 +389,6 @@ fn click_at_message(
         Message::PlaceOverlay {
             page,
             position: PdfPosition { x, y },
-            width: None,
         }
     } else {
         Message::DeselectOverlay
@@ -660,7 +665,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             msg,
-            Message::PlaceOverlay { page: 1, position: PdfPosition { x, y }, width: None }
+            Message::PlaceOverlay { page: 1, position: PdfPosition { x, y } }
             if (x - 100.0).abs() < f32::EPSILON && (y - 700.0).abs() < f32::EPSILON
         ));
     }
@@ -781,7 +786,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             msg,
-            Message::PlaceOverlay { page: 1, position: PdfPosition { x, y }, width: Some(w) }
+            Message::PlaceTextBox { page: 1, top_left: PdfPosition { x, y }, width: w, .. }
             if (x - 100.0).abs() < f32::EPSILON
                 && (y - 700.0).abs() < f32::EPSILON
                 && (w - 200.0).abs() < f32::EPSILON
@@ -1213,7 +1218,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             msg,
-            Message::PlaceOverlay { page: 1, position: PdfPosition { x, y }, width: None }
+            Message::PlaceOverlay { page: 1, position: PdfPosition { x, y } }
             if (x - 300.0).abs() < f32::EPSILON && (y - 300.0).abs() < f32::EPSILON
         ));
     }

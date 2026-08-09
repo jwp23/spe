@@ -404,7 +404,7 @@ fn drag_across_a_list_change(
 /// and return the placement the canvas published. The placement drag must be
 /// recorded on press and cleared on release either way, so that is checked
 /// here rather than restated by every caller.
-fn placement_from(press: mouse::Cursor, release: mouse::Cursor) -> (u32, PdfPosition, Option<f32>) {
+fn placement_from(press: mouse::Cursor, release: mouse::Cursor) -> Message {
     let overlays: Vec<TextOverlay> = vec![];
     let dims = test_page_dimensions();
     let registry = FontRegistry::new();
@@ -425,13 +425,32 @@ fn placement_from(press: mouse::Cursor, release: mouse::Cursor) -> (u32, PdfPosi
         state.placement_drag.is_none(),
         "release should end the placement drag"
     );
-    match msg {
-        Some(Message::PlaceOverlay {
-            page,
-            position,
-            width,
-        }) => (page, position, width),
+    msg.expect("a placement gesture must publish a placement")
+}
+
+/// The single-line placement `press`/`release` published, or a panic naming
+/// what came instead.
+fn single_line_placement_from(press: mouse::Cursor, release: mouse::Cursor) -> (u32, PdfPosition) {
+    match placement_from(press, release) {
+        Message::PlaceOverlay { page, position } => (page, position),
         other => panic!("Expected PlaceOverlay, got {other:?}"),
+    }
+}
+
+/// The dragged-out text box `press`/`release` published, as
+/// (page, top-left corner, width, height).
+fn text_box_placement_from(
+    press: mouse::Cursor,
+    release: mouse::Cursor,
+) -> (u32, PdfPosition, f32, f32) {
+    match placement_from(press, release) {
+        Message::PlaceTextBox {
+            page,
+            top_left,
+            width,
+            height,
+        } => (page, top_left, width, height),
+        other => panic!("Expected PlaceTextBox, got {other:?}"),
     }
 }
 
@@ -955,14 +974,10 @@ fn update_click_on_empty_page_places_single_line_overlay_on_release() {
     let cursor = cursor_at(300.0, 200.0);
 
     // Release at the same spot (distance < 10px) → single-line PlaceOverlay
-    let (page, position, width) = placement_from(cursor, cursor);
+    let (page, position) = single_line_placement_from(cursor, cursor);
     assert_eq!(page, 1);
     assert!((position.x - 106.0).abs() < 0.5);
     assert!((position.y - 600.0).abs() < 0.5);
-    assert!(
-        width.is_none(),
-        "click should produce single-line (no width)"
-    );
 }
 
 #[test]
@@ -974,12 +989,61 @@ fn update_drag_on_empty_page_places_multi_line_overlay_on_release() {
     // Width = |256 - 106| = 150 pts
     // Press at (300, 200), release at (450, 200) — 150px drag, well over the
     // 10px threshold
-    let (page, position, width) = placement_from(cursor_at(300.0, 200.0), cursor_at(450.0, 200.0));
+    let (page, top_left, width, _) =
+        text_box_placement_from(cursor_at(300.0, 200.0), cursor_at(450.0, 200.0));
     assert_eq!(page, 1);
-    assert!((position.x - 106.0).abs() < 1.0);
-    assert!((position.y - 600.0).abs() < 1.0);
-    let w = width.expect("drag should produce multi-line (width Some)");
-    assert!((w - 150.0).abs() < 1.0, "expected width ~150, got {w}");
+    assert!((top_left.x - 106.0).abs() < 1.0);
+    assert!((top_left.y - 600.0).abs() < 1.0);
+    assert!(
+        (width - 150.0).abs() < 1.0,
+        "expected width ~150, got {width}"
+    );
+}
+
+#[test]
+fn a_placement_drag_publishes_the_whole_rectangle_it_drew() {
+    // spe-x9e: the release kept only the horizontal extent and the y the drag
+    // started at, so the box the editor opened bore no relation to the
+    // rectangle drawn on screen.
+    // Drag (300, 200) -> (450, 300): 150 x 100 screen px, scale 1.
+    let (page, top_left, width, height) =
+        text_box_placement_from(cursor_at(300.0, 200.0), cursor_at(450.0, 300.0));
+    assert_eq!(page, 1);
+    assert!((top_left.x - 106.0).abs() < 1.0, "left: {}", top_left.x);
+    assert!((top_left.y - 600.0).abs() < 1.0, "top: {}", top_left.y);
+    assert!((width - 150.0).abs() < 1.0, "width: {width}");
+    assert!((height - 100.0).abs() < 1.0, "height: {height}");
+}
+
+#[test]
+fn a_placement_drag_reports_the_same_rectangle_whichever_corner_it_started_at() {
+    // Dragging up and left draws the same rectangle as dragging down and
+    // right, so it must place the same box.
+    let downward = text_box_placement_from(cursor_at(300.0, 200.0), cursor_at(450.0, 300.0));
+    let upward = text_box_placement_from(cursor_at(450.0, 300.0), cursor_at(300.0, 200.0));
+    assert_eq!(downward.0, upward.0);
+    assert!((downward.1.x - upward.1.x).abs() < 1.0, "left edge differs");
+    assert!((downward.1.y - upward.1.y).abs() < 1.0, "top edge differs");
+    assert!((downward.2 - upward.2).abs() < 1.0, "width differs");
+    assert!((downward.3 - upward.3).abs() < 1.0, "height differs");
+}
+
+#[test]
+fn a_placement_drag_off_the_page_stops_at_the_page_edge() {
+    // The page occupies screen x 194..806 and y 8..800, so a drag released
+    // far outside it draws a box that ends at the page's bottom-right corner.
+    let (_, top_left, width, height) =
+        text_box_placement_from(cursor_at(300.0, 200.0), cursor_at(2000.0, 2000.0));
+    assert!(
+        (top_left.x + width - 612.0).abs() < 1.0,
+        "box runs to {} but the page ends at 612",
+        top_left.x + width
+    );
+    assert!(
+        (top_left.y - height).abs() < 1.0,
+        "box bottom is {} but the page ends at 0",
+        top_left.y - height
+    );
 }
 
 #[test]

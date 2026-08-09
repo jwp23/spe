@@ -126,10 +126,20 @@ pub enum Message {
     PageBatchRendered(Vec<(u32, Handle)>),
 
     // Overlay editing (undoable)
+    /// Place a single-line overlay whose first baseline sits at `position` —
+    /// what a click on blank page area asks for.
     PlaceOverlay {
         page: u32,
         position: PdfPosition,
-        width: Option<f32>,
+    },
+    /// Place a wrapping overlay filling the rectangle a drag drew out.
+    /// `top_left` is the box's upper-left corner in PDF space, not a
+    /// baseline: the first line is laid out inside the box, below its top.
+    PlaceTextBox {
+        page: u32,
+        top_left: PdfPosition,
+        width: f32,
+        height: f32,
     },
     UpdateOverlayText(String),
     TextEditorAction(iced::widget::text_editor::Action),
@@ -413,11 +423,15 @@ impl App {
             Message::PageBatchRendered(pages) => return self.handle_page_batch_rendered(pages),
 
             // --- Overlay editing (undoable) ---
-            Message::PlaceOverlay {
+            Message::PlaceOverlay { page, position } => {
+                return self.handle_place_overlay(page, position);
+            }
+            Message::PlaceTextBox {
                 page,
-                position,
+                top_left,
                 width,
-            } => return self.handle_place_overlay(page, position, width),
+                height,
+            } => return self.handle_place_text_box(page, top_left, width, height),
             Message::UpdateOverlayText(text) => self.handle_update_overlay_text(text),
             Message::TextEditorAction(action) => self.handle_text_editor_action(action),
             Message::CommitText => {

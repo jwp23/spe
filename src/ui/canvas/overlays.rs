@@ -11,8 +11,8 @@ use crate::overlay::{PdfPosition, TextOverlay};
 use super::{
     DOUBLE_CLICK_DISTANCE_PX, DOUBLE_CLICK_TIMEOUT_MS, LocalDragState, MIN_DRAG_DISTANCE,
     OVERLAY_TINT_HOVER_BORDER_ALPHA, OverlayAnchor, PageLayout, PlacementDragState, ProgramState,
-    ResizeDragState, SELECTION_BORDER_WIDTH, SELECTION_COLOR, draw_overlay_text, hit_test,
-    overlay_text_box, page_rect_in_canvas, resize_handle_hit, selection_box_rect,
+    ResizeDragState, SELECTION_BORDER_WIDTH, SELECTION_COLOR, clamp_to_rect, draw_overlay_text,
+    hit_test, overlay_text_box, page_rect_in_canvas, resize_handle_hit, selection_box_rect,
     should_draw_overlay_text, should_draw_selection_box, tint_alpha, to_screen_rect, visible_pages,
 };
 
@@ -269,25 +269,26 @@ impl OverlayCanvasProgram<'_> {
                 canvas::Action::publish(Message::PlaceOverlay {
                     page: placement.page,
                     position: PdfPosition { x: pdf_x, y: pdf_y },
-                    width: None,
                 })
                 .and_capture(),
             )
         } else {
-            // Drag: multi-line overlay — width defined by horizontal drag distance
+            // Drag: a wrapping overlay filling the rectangle just drawn. The
+            // whole rectangle travels, not just its horizontal extent, so the
+            // box the editor opens is the box the user saw (spe-x9e).
             let (start_pdf_x, start_pdf_y) =
                 screen_to_pdf(placement.start_screen.x, placement.start_screen.y, &params);
-            let (end_pdf_x, _) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
-            let width_pts = (end_pdf_x - start_pdf_x).abs();
-            let pdf_x = start_pdf_x.min(end_pdf_x);
+            let end = clamp_to_rect(cursor_pos, &placement.page_screen_rect);
+            let (end_pdf_x, end_pdf_y) = screen_to_pdf(end.x, end.y, &params);
             Some(
-                canvas::Action::publish(Message::PlaceOverlay {
+                canvas::Action::publish(Message::PlaceTextBox {
                     page: placement.page,
-                    position: PdfPosition {
-                        x: pdf_x,
-                        y: start_pdf_y,
+                    top_left: PdfPosition {
+                        x: start_pdf_x.min(end_pdf_x),
+                        y: start_pdf_y.max(end_pdf_y),
                     },
-                    width: Some(width_pts),
+                    width: (end_pdf_x - start_pdf_x).abs(),
+                    height: (end_pdf_y - start_pdf_y).abs(),
                 })
                 .and_capture(),
             )
