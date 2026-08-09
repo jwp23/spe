@@ -44,7 +44,8 @@ pub(crate) fn canvas_text_width(
         return per_point * font_size;
     }
 
-    let per_point = shaped_width(text, registry.get(font).iced_font) / REFERENCE_SIZE;
+    let per_point =
+        shaped_width(text, registry.get(font).iced_font, REFERENCE_SIZE) / REFERENCE_SIZE;
     insert_bounded(
         &mut WIDTHS.write().unwrap_or_else(|e| e.into_inner()),
         key,
@@ -68,15 +69,15 @@ fn insert_bounded(
     cache.insert(key, per_point);
 }
 
-/// Shape `text` at `REFERENCE_SIZE` and return its width.
+/// Shape `text` at `size` and return its width.
 ///
 /// The paragraph mirrors the one `canvas::Text` lays out when it draws, so the
 /// measurement describes the glyphs that actually reach the screen.
-fn shaped_width(text: &str, font: iced::Font) -> f32 {
+fn shaped_width(text: &str, font: iced::Font, size: f32) -> f32 {
     Paragraph::with_text(Text {
         content: text,
         bounds: iced::Size::new(f32::INFINITY, f32::INFINITY),
-        size: iced::Pixels(REFERENCE_SIZE),
+        size: iced::Pixels(size),
         line_height: super::TEXT_LINE_HEIGHT,
         font,
         align_x: iced::advanced::text::Alignment::Default,
@@ -104,16 +105,24 @@ mod tests {
     }
 
     #[test]
-    fn width_scales_linearly_with_font_size() {
+    fn a_scaled_cache_hit_matches_shaping_at_that_size() {
+        // The cache keeps one measurement per string and scales it, which is
+        // only sound because the engine's advances are linear in the text
+        // size. Each size is compared against the engine measuring that size
+        // directly — comparing two cache reads would only re-check the
+        // multiplication.
         let registry = registry();
         let font = registry.default_font();
-        let small = canvas_text_width("Hello world", font, 12.0, &registry);
-        let large = canvas_text_width("Hello world", font, 36.0, &registry);
-        assert!(small > 0.0, "expected a measurable width, got {small}");
-        assert!(
-            (large - 3.0 * small).abs() < 0.01,
-            "tripling the size should triple the width: {small} -> {large}"
-        );
+        let text = "Hello world";
+        for size in [8.0_f32, 12.0, 36.0, 72.0] {
+            let shaped = shaped_width(text, registry.get(font).iced_font, size);
+            let cached = canvas_text_width(text, font, size, &registry);
+            assert!(shaped > 0.0, "the engine measured nothing at {size}pt");
+            assert!(
+                (cached - shaped).abs() <= 0.01 * shaped,
+                "at {size}pt the cache reports {cached} but the engine shapes {shaped}"
+            );
+        }
     }
 
     #[test]
