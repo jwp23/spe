@@ -66,6 +66,7 @@ validate_scenario() {
 run_scenario() {
     local name="$1" output="$2"
     validate_scenario "$name"
+    local fn="scenario_$name"
 
     "$SCREENSHOT_SH" start >&2
     trap '"$SCREENSHOT_SH" stop >&2 || true' EXIT
