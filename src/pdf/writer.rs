@@ -319,7 +319,11 @@ fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_by
         Object::Reference(stream_id)
     } else {
         let prefix_id = doc.add_object(Stream::new(dictionary! {}, b"q\n".to_vec()));
-        let mut overlay_bytes = b"Q\n".to_vec();
+        // Leading whitespace ensures the `Q` cannot merge with the final token of the
+        // preceding stream when readers concatenate array-referenced content streams
+        // (e.g. a content stream ending in `f` with no trailing whitespace would
+        // otherwise combine with `Q` into the invalid token `fQ`).
+        let mut overlay_bytes = b"\nQ\n".to_vec();
         overlay_bytes.extend(content_bytes);
         let stream_id = doc.add_object(Stream::new(dictionary! {}, overlay_bytes));
 
@@ -585,7 +589,8 @@ mod tests {
             "prefix stream must end with whitespace, got {prefix_bytes:?}"
         );
 
-        let overlay_ops = decode(*content_ids.last().expect("no streams"));
+        let overlay_stream_id = *content_ids.last().expect("no streams");
+        let overlay_ops = decode(overlay_stream_id);
         assert_eq!(
             overlay_ops
                 .first()
@@ -593,6 +598,24 @@ mod tests {
                 .unwrap_or(""),
             "Q",
             "overlay stream must start with `Q` to restore the default graphics state"
+        );
+
+        // The original content stream above ends in `f` with no trailing whitespace
+        // (see create_flipped_ctm_test_pdf), exactly the case where concatenation
+        // could merge the final token with a leading `Q` into the invalid token `fQ`.
+        // The overlay stream must therefore start with whitespace so the split
+        // always falls on a token boundary.
+        let overlay_bytes = &doc
+            .get_object(overlay_stream_id)
+            .expect("stream obj")
+            .as_stream()
+            .expect("stream")
+            .content;
+        assert!(
+            overlay_bytes
+                .first()
+                .is_some_and(|b| b.is_ascii_whitespace()),
+            "overlay stream must start with whitespace, got {overlay_bytes:?}"
         );
     }
 
