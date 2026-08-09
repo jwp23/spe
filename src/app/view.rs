@@ -249,9 +249,16 @@ impl App {
 
         let iced_font = self.editing_font()?;
 
-        let widget: iced::Element<Message> = if let Some(pdf_width) = overlay.width {
+        let widget: iced::Element<Message> = if overlay.width.is_some() {
             let content = self.editor_content.as_ref()?;
-            let screen_width = pdf_width * scale;
+            // Sized from the box the canvas draws for this overlay, so the
+            // editor opens as exactly the rectangle the user dragged out
+            // (spe-x9e). A *minimum* height rather than a fixed one leaves
+            // the editor's own shrink-to-content sizing free to grow the box
+            // as text runs past the bottom (spe-b2h), which is the same rule
+            // `overlay_text_box` applies on the canvas.
+            let text_box =
+                canvas::overlay_text_box(overlay, screen_x, screen_y, scale, &self.font_registry);
             iced::widget::text_editor(content)
                 .on_action(Message::TextEditorAction)
                 .key_binding(overlay_text_editor_key_binding)
@@ -260,7 +267,8 @@ impl App {
                 .size(iced::Pixels(scaled_font_size))
                 .line_height(canvas::TEXT_LINE_HEIGHT)
                 .padding(iced::Padding::ZERO)
-                .width(screen_width)
+                .width(text_box.width)
+                .min_height(text_box.height)
                 .style(overlay_text_editor_style)
                 .into()
         } else {

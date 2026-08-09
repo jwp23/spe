@@ -2,8 +2,8 @@ use super::*;
 use crate::app::Message;
 use crate::coordinate::ConversionParams;
 use crate::fonts::FontRegistry;
-use crate::overlay::{PdfPosition, TextOverlay};
-use crate::ui::test_harness::{Harness, Screenshot};
+use crate::overlay::{OverlayBox, PdfPosition, TextOverlay};
+use crate::ui::test_harness::{Harness, RENDER_SIZE, Screenshot};
 use iced::event;
 use iced::mouse;
 use iced::widget::canvas;
@@ -223,6 +223,7 @@ fn overlay_at(x: f32, y: f32, text: &str) -> TextOverlay {
         font: FontRegistry::new().find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: None,
+        min_height: None,
     }
 }
 
@@ -402,7 +403,7 @@ fn drag_across_a_list_change(
 /// and return the placement the canvas published. The placement drag must be
 /// recorded on press and cleared on release either way, so that is checked
 /// here rather than restated by every caller.
-fn placement_from(press: mouse::Cursor, release: mouse::Cursor) -> (u32, PdfPosition, Option<f32>) {
+fn placement_from(press: mouse::Cursor, release: mouse::Cursor) -> Message {
     let overlays: Vec<TextOverlay> = vec![];
     let dims = test_page_dimensions();
     let registry = FontRegistry::new();
@@ -423,13 +424,32 @@ fn placement_from(press: mouse::Cursor, release: mouse::Cursor) -> (u32, PdfPosi
         state.placement_drag.is_none(),
         "release should end the placement drag"
     );
-    match msg {
-        Some(Message::PlaceOverlay {
-            page,
-            position,
-            width,
-        }) => (page, position, width),
+    msg.expect("a placement gesture must publish a placement")
+}
+
+/// The single-line placement `press`/`release` published, or a panic naming
+/// what came instead.
+fn single_line_placement_from(press: mouse::Cursor, release: mouse::Cursor) -> (u32, PdfPosition) {
+    match placement_from(press, release) {
+        Message::PlaceOverlay { page, position } => (page, position),
         other => panic!("Expected PlaceOverlay, got {other:?}"),
+    }
+}
+
+/// The dragged-out text box `press`/`release` published, as
+/// (page, top-left corner, width, height).
+fn text_box_placement_from(
+    press: mouse::Cursor,
+    release: mouse::Cursor,
+) -> (u32, PdfPosition, f32, f32) {
+    match placement_from(press, release) {
+        Message::PlaceTextBox {
+            page,
+            top_left,
+            width,
+            height,
+        } => (page, top_left, width, height),
+        other => panic!("Expected PlaceTextBox, got {other:?}"),
     }
 }
 
@@ -808,6 +828,7 @@ fn hit_test_ignores_overlays_on_other_pages() {
         font: registry.find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: None,
+        min_height: None,
     }];
     let result = hit_test(80.0, 65.0, &overlays, 1, &params, &registry);
     assert!(result.is_none());
@@ -827,6 +848,7 @@ fn hit_test_finds_explicit_width_overlay_beyond_its_glyphs() {
         font: registry.find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: Some(200.0),
+        min_height: None,
     }];
     // Click well past the glyphs but still inside the explicit-width box.
     let result = hit_test(150.0, 65.0, &overlays, 1, &params, &registry);
@@ -951,14 +973,10 @@ fn update_click_on_empty_page_places_single_line_overlay_on_release() {
     let cursor = cursor_at(300.0, 200.0);
 
     // Release at the same spot (distance < 10px) → single-line PlaceOverlay
-    let (page, position, width) = placement_from(cursor, cursor);
+    let (page, position) = single_line_placement_from(cursor, cursor);
     assert_eq!(page, 1);
     assert!((position.x - 106.0).abs() < 0.5);
     assert!((position.y - 600.0).abs() < 0.5);
-    assert!(
-        width.is_none(),
-        "click should produce single-line (no width)"
-    );
 }
 
 #[test]
@@ -970,12 +988,61 @@ fn update_drag_on_empty_page_places_multi_line_overlay_on_release() {
     // Width = |256 - 106| = 150 pts
     // Press at (300, 200), release at (450, 200) — 150px drag, well over the
     // 10px threshold
-    let (page, position, width) = placement_from(cursor_at(300.0, 200.0), cursor_at(450.0, 200.0));
+    let (page, top_left, width, _) =
+        text_box_placement_from(cursor_at(300.0, 200.0), cursor_at(450.0, 200.0));
     assert_eq!(page, 1);
-    assert!((position.x - 106.0).abs() < 1.0);
-    assert!((position.y - 600.0).abs() < 1.0);
-    let w = width.expect("drag should produce multi-line (width Some)");
-    assert!((w - 150.0).abs() < 1.0, "expected width ~150, got {w}");
+    assert!((top_left.x - 106.0).abs() < 1.0);
+    assert!((top_left.y - 600.0).abs() < 1.0);
+    assert!(
+        (width - 150.0).abs() < 1.0,
+        "expected width ~150, got {width}"
+    );
+}
+
+#[test]
+fn a_placement_drag_publishes_the_whole_rectangle_it_drew() {
+    // spe-x9e: the release kept only the horizontal extent and the y the drag
+    // started at, so the box the editor opened bore no relation to the
+    // rectangle drawn on screen.
+    // Drag (300, 200) -> (450, 300): 150 x 100 screen px, scale 1.
+    let (page, top_left, width, height) =
+        text_box_placement_from(cursor_at(300.0, 200.0), cursor_at(450.0, 300.0));
+    assert_eq!(page, 1);
+    assert!((top_left.x - 106.0).abs() < 1.0, "left: {}", top_left.x);
+    assert!((top_left.y - 600.0).abs() < 1.0, "top: {}", top_left.y);
+    assert!((width - 150.0).abs() < 1.0, "width: {width}");
+    assert!((height - 100.0).abs() < 1.0, "height: {height}");
+}
+
+#[test]
+fn a_placement_drag_reports_the_same_rectangle_whichever_corner_it_started_at() {
+    // Dragging up and left draws the same rectangle as dragging down and
+    // right, so it must place the same box.
+    let downward = text_box_placement_from(cursor_at(300.0, 200.0), cursor_at(450.0, 300.0));
+    let upward = text_box_placement_from(cursor_at(450.0, 300.0), cursor_at(300.0, 200.0));
+    assert_eq!(downward.0, upward.0);
+    assert!((downward.1.x - upward.1.x).abs() < 1.0, "left edge differs");
+    assert!((downward.1.y - upward.1.y).abs() < 1.0, "top edge differs");
+    assert!((downward.2 - upward.2).abs() < 1.0, "width differs");
+    assert!((downward.3 - upward.3).abs() < 1.0, "height differs");
+}
+
+#[test]
+fn a_placement_drag_off_the_page_stops_at_the_page_edge() {
+    // The page occupies screen x 194..806 and y 8..800, so a drag released
+    // far outside it draws a box that ends at the page's bottom-right corner.
+    let (_, top_left, width, height) =
+        text_box_placement_from(cursor_at(300.0, 200.0), cursor_at(2000.0, 2000.0));
+    assert!(
+        (top_left.x + width - 612.0).abs() < 1.0,
+        "box runs to {} but the page ends at 612",
+        top_left.x + width
+    );
+    assert!(
+        (top_left.y - height).abs() < 1.0,
+        "box bottom is {} but the page ends at 0",
+        top_left.y - height
+    );
 }
 
 #[test]
@@ -1587,6 +1654,7 @@ fn multiline_overlay_at(x: f32, y: f32, width: f32, text: &str) -> TextOverlay {
         font: FontRegistry::new().find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: Some(width),
+        min_height: None,
     }
 }
 
@@ -1599,10 +1667,15 @@ fn resize_drag_state_construction() {
             position: PdfPosition { x: 72.0, y: 720.0 },
             width: None,
         },
-        initial_width: 150.0,
+        edge: ResizeEdge::Right,
+        initial_box: OverlayBox {
+            width: 150.0,
+            min_height: 0.0,
+        },
     };
     assert_eq!(state.overlay_index, 2);
-    assert!((state.initial_width - 150.0).abs() < f32::EPSILON);
+    assert_eq!(state.edge, ResizeEdge::Right);
+    assert!((state.initial_box.width - 150.0).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -1638,7 +1711,12 @@ fn click_on_resize_handle_starts_resize_drag() {
     assert!(state.drag.is_none(), "overlay move drag should NOT be set");
     let rd = state.resize_drag.as_ref().unwrap();
     assert_eq!(rd.overlay_index, 0);
-    assert!((rd.initial_width - 150.0).abs() < 0.5);
+    assert!((rd.initial_box.width - 150.0).abs() < 0.5);
+    assert_eq!(
+        rd.edge,
+        ResizeEdge::Right,
+        "the right-edge bar resizes width only"
+    );
 }
 
 #[test]
@@ -1679,10 +1757,11 @@ fn resize_drag_release_publishes_resize_overlay_message() {
     match msg {
         Some(Message::ResizeOverlay {
             index,
-            old_width,
-            new_width,
+            old_box,
+            new_box,
         }) => {
             assert_eq!(index, 0);
+            let (old_width, new_width) = (old_box.width, new_box.width);
             assert!(
                 (old_width - 150.0).abs() < 1.0,
                 "old_width should be 150, got {old_width}"
@@ -1706,10 +1785,11 @@ fn resize_drag_release_enforces_minimum_width() {
     let (_, _, mut state) = press_on(&overlays, Some(0), cursor_at(416.0, 75.0));
     let (msg, _status) = release_on(&mut state, &overlays, Some(0), cursor_at(271.0, 75.0));
     match msg {
-        Some(Message::ResizeOverlay { new_width, .. }) => {
+        Some(Message::ResizeOverlay { new_box, .. }) => {
             assert!(
-                new_width >= 20.0,
-                "new_width should be at least 20, got {new_width}"
+                new_box.width >= super::MIN_BOX_DIMENSION,
+                "new width should be at least the minimum, got {}",
+                new_box.width
             );
         }
         other => panic!("Expected ResizeOverlay, got {other:?}"),
@@ -1744,7 +1824,8 @@ fn cursor_move_requests_redraw_during_resize_drag() {
     state.resize_drag = Some(ResizeDragState {
         overlay_index: 0,
         anchor: OverlayAnchor::of(&overlays[0]),
-        initial_width: 150.0,
+        edge: ResizeEdge::Right,
+        initial_box: OverlayBox::of(&overlays[0]).unwrap(),
     });
     let bounds = test_canvas_bounds();
     let cursor = cursor_at(450.0, 75.0);
@@ -2014,6 +2095,99 @@ fn text_line_height_ratio_matches_the_canvas_text_default() {
     );
 }
 
+/// Courier 12pt advances 7.2pt per character, so a 72pt-wide box holds ten
+/// characters. This text has no explicit line breaks and cannot fit.
+const WRAPPING_TEXT: &str = "mmmm mmmm mmmm mmmm mmmm mmmm";
+const WRAPPING_BOX_WIDTH: f32 = 72.0;
+
+#[test]
+fn a_text_box_spans_the_lines_its_text_wraps_onto() {
+    // spe-0hl: the box counted `\n`s, so text that wrapped inside the box the
+    // user drew was framed as if it were a single line.
+    let overlay = multiline_overlay_at(72.0, 720.0, WRAPPING_BOX_WIDTH, WRAPPING_TEXT);
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        rect.height >= 3.0 * LINE_12PT,
+        "{WRAPPING_TEXT:?} wraps onto at least 3 lines in a {WRAPPING_BOX_WIDTH}pt box, \
+         but the box is {} tall (one line is {LINE_12PT})",
+        rect.height
+    );
+}
+
+#[test]
+fn the_resize_handle_reaches_the_last_wrapped_line() {
+    // spe-0hl: the handle spans the text box's right edge, so it only reaches
+    // every wrapped line once the box itself does.
+    let overlays = vec![multiline_overlay_at(
+        72.0,
+        720.0,
+        WRAPPING_BOX_WIDTH,
+        WRAPPING_TEXT,
+    )];
+    let dims = test_page_dimensions();
+    let registry = FontRegistry::new();
+    let program = OverlayCanvasProgram {
+        active_overlay: Some(0),
+        ..test_program(&overlays, &dims, &registry)
+    };
+    // Baseline is screen (266, 80), so the box starts at y = 68 and the third
+    // wrapped line runs from 96.8 to 111.2.
+    let mut state = ProgramState::default();
+    let cursor = cursor_at(266.0 + WRAPPING_BOX_WIDTH, 68.0 + 2.5 * LINE_12PT);
+
+    program.update(
+        &mut state,
+        &left_press_event(),
+        test_canvas_bounds(),
+        cursor,
+    );
+    assert!(
+        state.resize_drag.is_some(),
+        "pressing beside the last wrapped line should start a resize"
+    );
+}
+
+#[test]
+fn a_box_dragged_taller_than_its_text_keeps_the_room_it_was_given() {
+    // spe-x9e: the box the user dragged out is the box they get, whitespace
+    // below the text included.
+    let mut overlay = multiline_overlay_at(72.0, 720.0, 150.0, "one");
+    overlay.min_height = Some(100.0);
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        (rect.height - 100.0).abs() < 0.1,
+        "a 100pt box holding one line should stay 100pt tall, got {}",
+        rect.height
+    );
+}
+
+#[test]
+fn a_box_grows_past_its_minimum_once_the_text_needs_the_room() {
+    // spe-b2h: typing past the bottom of the box grows it rather than
+    // scrolling inside it.
+    let mut overlay = multiline_overlay_at(72.0, 720.0, 150.0, "one\ntwo\nthree\nfour\nfive");
+    overlay.min_height = Some(20.0);
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        (rect.height - 5.0 * LINE_12PT).abs() < 0.1,
+        "five lines need {} but the box is {}",
+        5.0 * LINE_12PT,
+        rect.height
+    );
+}
+
+#[test]
+fn a_minimum_height_scales_with_the_render_scale() {
+    let mut overlay = multiline_overlay_at(72.0, 720.0, 150.0, "one");
+    overlay.min_height = Some(100.0);
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 2.0, &FontRegistry::new());
+    assert!(
+        (rect.height - 200.0).abs() < 0.1,
+        "at double scale a 100pt box is 200px tall, got {}",
+        rect.height
+    );
+}
+
 #[test]
 fn empty_overlay_text_box_is_one_line_tall() {
     let overlay = multiline_overlay_at(72.0, 720.0, 150.0, "");
@@ -2239,12 +2413,6 @@ fn should_draw_selection_box_false_when_nothing_selected() {
 // these prove it actually reaches the screen.
 // =====================================================================
 
-/// Size of the headless render surface, in logical pixels.
-const RENDER_SIZE: iced::Size = iced::Size {
-    width: 900.0,
-    height: 700.0,
-};
-
 /// Render an overlay canvas program over a white page, headlessly.
 ///
 /// When `cursor` is given it is delivered as a real cursor-moved event first,
@@ -2363,21 +2531,6 @@ fn multiline_tint_covers_the_rows_its_text_occupies() {
     );
 }
 
-/// Pixels of `shot` painted in a strong, saturated blue — the selection
-/// border and resize handle, which are opaque, unlike the pale overlay tint.
-///
-/// The threshold is derived from `SELECTION_COLOR` itself (halfway to its
-/// blue/red channel gap) so it tracks the renderer's actual selection color
-/// instead of a magic number that could silently fall out of sync.
-fn selection_blue_pixels(shot: &Screenshot) -> usize {
-    let blue_red_gap = (super::SELECTION_COLOR.b - super::SELECTION_COLOR.r) * 255.0;
-    let threshold = blue_red_gap / 2.0;
-    shot.rgba
-        .chunks_exact(4)
-        .filter(|p| p[2] as f32 - p[0] as f32 > threshold)
-        .count()
-}
-
 #[test]
 fn selected_overlay_paints_a_selection_border() {
     let dims = uniform_page_dims(1);
@@ -2388,7 +2541,7 @@ fn selected_overlay_paints_a_selection_border() {
 
     let canvas = render_overlay_canvas(program, None);
     assert!(
-        selection_blue_pixels(&canvas) > 0,
+        canvas.selection_blue_pixels() > 0,
         "a selected overlay should paint a selection border and resize handle"
     );
 }
@@ -2406,7 +2559,7 @@ fn overlay_being_edited_paints_no_selection_border() {
 
     let canvas = render_overlay_canvas(program, None);
     assert_eq!(
-        selection_blue_pixels(&canvas),
+        canvas.selection_blue_pixels(),
         0,
         "the canvas must not draw a second selection border while editing"
     );
@@ -2415,30 +2568,6 @@ fn overlay_being_edited_paints_no_selection_border() {
 // =====================================================================
 // spe-x2z: the selection box outlines the same geometry as the tint
 // =====================================================================
-
-/// Bounding box of `shot`'s strongly blue pixels — the selection border and
-/// resize handle — as (left, top, right, bottom), or None if none exist.
-fn selection_blue_bounds(shot: &Screenshot) -> Option<(u32, u32, u32, u32)> {
-    {
-        let blue_red_gap = (super::SELECTION_COLOR.b - super::SELECTION_COLOR.r) * 255.0;
-        let threshold = blue_red_gap / 2.0;
-        let height = shot.height;
-        let mut bounds: Option<(u32, u32, u32, u32)> = None;
-        for y in 0..height {
-            for x in 0..shot.width {
-                let (r, _, b) = shot.pixel(x, y);
-                if b as f32 - r as f32 <= threshold {
-                    continue;
-                }
-                bounds = Some(match bounds {
-                    None => (x, y, x, y),
-                    Some((l, t, rt, bt)) => (l.min(x), t.min(y), rt.max(x), bt.max(y)),
-                });
-            }
-        }
-        bounds
-    }
-}
 
 /// Render a selected (not editing) overlay and return the drawn selection
 /// bounds together with the text box they are supposed to outline.
@@ -2457,7 +2586,8 @@ fn selection_bounds_and_text_box(overlay: TextOverlay) -> ((u32, u32, u32, u32),
         crate::coordinate::render_scale(TEST_ZOOM, TEST_DPI),
         &registry,
     );
-    let bounds = selection_blue_bounds(&render_overlay_canvas(program, None))
+    let bounds = render_overlay_canvas(program, None)
+        .selection_blue_bounds()
         .expect("a selected overlay must paint a selection border");
     (bounds, text_box)
 }
@@ -2732,6 +2862,7 @@ fn overlay_with_font(font_name: &str, font_size: f32, text: &str) -> TextOverlay
         font: FontRegistry::new().find_by_name(font_name).unwrap(),
         font_size,
         width: None,
+        min_height: None,
     }
 }
 
@@ -2745,15 +2876,43 @@ fn rightmost_ink_column(shot: &Screenshot, top: u32, bottom: u32) -> Option<u32>
         .next_back()
 }
 
+/// Last row of the surface holding glyph ink, scanning the whole height.
+fn lowest_ink_row(shot: &Screenshot) -> Option<u32> {
+    (0..shot.height)
+        .rev()
+        .find(|y| (0..shot.width).any(|x| shot.darkening(x, *y) >= 150.0))
+}
+
+/// How far below a line box a glyph's descender may reach, as a fraction of
+/// the font size.
+///
+/// A [`TEXT_LINE_HEIGHT_RATIO`] line box is a *layout* box: it spaces
+/// baselines, and makes no promise to contain the ink hanging below the last
+/// one. Measured across the registry, a descender fills its line box almost
+/// exactly and overhangs it by under 0.03em — so this allowance is loose
+/// enough for that and far tighter than the 1.2em a wrongly-escaped line of
+/// text would need.
+const DESCENDER_ALLOWANCE: f32 = 0.25;
+
 #[test]
 fn the_text_box_covers_every_glyph_of_a_proportional_font_overlay() {
     // The box width came from the PDF AFM widths, but the canvas renders with
     // whatever system font resolves for the family — Times' advances there run
     // up to a third wider — so trailing glyphs were drawn past the tint and
     // outside the click target.
+    assert_rendered_text_stays_inside_its_box(overlay_with_font("Times Bold", 36.0, "Hello world"));
+}
+
+/// Render `overlay` alone and assert none of its glyph ink is drawn past the
+/// right edge of the box `overlay_text_box` reports for it.
+///
+/// Ink outside that box is ink outside the tint the user sees and outside the
+/// area a click lands on, whatever put it there.
+#[track_caller]
+fn assert_rendered_text_stays_inside_its_box(overlay: TextOverlay) {
     let dims = uniform_page_dims(1);
     let registry = FontRegistry::new();
-    let overlays = vec![overlay_with_font("Times Bold", 36.0, "Hello world")];
+    let overlays = vec![overlay];
     let canvas = render_overlay_canvas(test_program(&overlays, &dims, &registry), None);
 
     let (sx, sy) = rendered_baseline(&overlays[0], &dims);
@@ -2775,6 +2934,27 @@ fn the_text_box_covers_every_glyph_of_a_proportional_font_overlay() {
     assert!(
         rightmost as f32 <= box_right,
         "text reaches column {rightmost} but the box ends at {box_right}"
+    );
+
+    // Vertically the box bounds the *layout*, not the ink: the last line's
+    // descenders reach the bottom of its line box and may overhang it by a
+    // hair, which is ordinary typography rather than text escaping its box.
+    // What must never happen is a whole line drawn outside — the failure the
+    // wrapped-line count exists to prevent — so the bound is the box plus one
+    // descender's worth, well inside the next line box.
+    let lowest = lowest_ink_row(&canvas).expect("the overlay text should have been rendered");
+    let scaled_font_size =
+        overlays[0].font_size * crate::coordinate::render_scale(TEST_ZOOM, TEST_DPI);
+    let ink_limit = text_box.y + text_box.height + DESCENDER_ALLOWANCE * scaled_font_size;
+    assert!(
+        (lowest as f32) < ink_limit,
+        "text reaches row {lowest}, past the box bottom {} by more than a descender",
+        text_box.y + text_box.height
+    );
+    assert!(
+        lowest as f32 >= text_box.y,
+        "text was drawn above the box top {}",
+        text_box.y
     );
 }
 
@@ -2902,5 +3082,530 @@ fn both_edit_widgets_put_their_first_line_on_the_same_row() {
     assert!(
         input_top.abs_diff(editor_top) <= 1,
         "single-line edit starts at row {input_top} but multi-line edit starts at {editor_top}"
+    );
+}
+
+// =====================================================================
+// spe-x9e: a box resizes vertically and diagonally, not only sideways
+// =====================================================================
+//
+// The reference overlay is at PDF (72, 720), 150pt wide, holding one line of
+// 12pt Courier. At scale 1 on a 1000x1000 canvas its text box is x 266..416,
+// y 68..82.4, so the right-edge bar sits at x=416, the bottom bar at y=82.4,
+// and the corner where they meet.
+
+const RIGHT_HANDLE_X: f32 = 416.0;
+const BOTTOM_HANDLE_Y: f32 = 82.4;
+
+fn reference_box_overlay() -> TextOverlay {
+    multiline_overlay_at(72.0, 720.0, 150.0, "Hello")
+}
+
+/// Press a handle of the reference overlay and release at `release`, returning
+/// the box the canvas published.
+fn resize_box_from(press: mouse::Cursor, release: mouse::Cursor) -> OverlayBox {
+    let overlays = vec![reference_box_overlay()];
+    let (_, _, mut state) = press_on(&overlays, Some(0), press);
+    assert!(
+        state.resize_drag.is_some(),
+        "the press should have grabbed a resize handle"
+    );
+    let (msg, _) = release_on(&mut state, &overlays, Some(0), release);
+    match msg {
+        Some(Message::ResizeOverlay { new_box, .. }) => new_box,
+        other => panic!("Expected ResizeOverlay, got {other:?}"),
+    }
+}
+
+/// The handle a press at (`x`, `y`) grabs on the reference overlay.
+fn grabbed_edge(x: f32, y: f32) -> Option<ResizeEdge> {
+    let overlays = vec![reference_box_overlay()];
+    let (_, _, state) = press_on(&overlays, Some(0), cursor_at(x, y));
+    state.resize_drag.map(|drag| drag.edge)
+}
+
+#[test]
+fn the_right_edge_bar_grabs_a_width_resize() {
+    assert_eq!(grabbed_edge(RIGHT_HANDLE_X, 75.0), Some(ResizeEdge::Right));
+}
+
+#[test]
+fn the_bottom_edge_bar_grabs_a_height_resize() {
+    assert_eq!(
+        grabbed_edge(300.0, BOTTOM_HANDLE_Y),
+        Some(ResizeEdge::Bottom)
+    );
+}
+
+#[test]
+fn the_corner_grabs_a_resize_of_both_dimensions() {
+    assert_eq!(
+        grabbed_edge(RIGHT_HANDLE_X, BOTTOM_HANDLE_Y),
+        Some(ResizeEdge::Corner),
+        "where the two bars meet, the drag should resize diagonally"
+    );
+}
+
+#[test]
+fn dragging_the_bottom_edge_changes_the_height_and_leaves_the_width() {
+    // Release at screen y=200 → PDF y=600. The box top is one 12pt font size
+    // above the baseline at 720, so the box becomes 732 - 600 = 132 tall.
+    let new_box = resize_box_from(cursor_at(300.0, BOTTOM_HANDLE_Y), cursor_at(300.0, 200.0));
+    assert!(
+        (new_box.min_height - 132.0).abs() < 1.0,
+        "expected a 132pt box, got {}",
+        new_box.min_height
+    );
+    assert!(
+        (new_box.width - 150.0).abs() < 0.01,
+        "a vertical drag must leave the width alone, got {}",
+        new_box.width
+    );
+}
+
+#[test]
+fn dragging_the_right_edge_changes_the_width_and_leaves_the_height() {
+    let overlays = vec![TextOverlay {
+        min_height: Some(90.0),
+        ..reference_box_overlay()
+    }];
+    let (_, _, mut state) = press_on(&overlays, Some(0), cursor_at(RIGHT_HANDLE_X, 75.0));
+    let (msg, _) = release_on(&mut state, &overlays, Some(0), cursor_at(516.0, 75.0));
+    match msg {
+        Some(Message::ResizeOverlay { new_box, .. }) => {
+            assert!((new_box.width - 250.0).abs() < 1.0, "{}", new_box.width);
+            assert!(
+                (new_box.min_height - 90.0).abs() < 0.01,
+                "a horizontal drag must leave the height alone, got {}",
+                new_box.min_height
+            );
+        }
+        other => panic!("Expected ResizeOverlay, got {other:?}"),
+    }
+}
+
+#[test]
+fn dragging_the_corner_changes_both_dimensions() {
+    let new_box = resize_box_from(
+        cursor_at(RIGHT_HANDLE_X, BOTTOM_HANDLE_Y),
+        cursor_at(516.0, 200.0),
+    );
+    assert!((new_box.width - 250.0).abs() < 1.0, "{}", new_box.width);
+    assert!(
+        (new_box.min_height - 132.0).abs() < 1.0,
+        "{}",
+        new_box.min_height
+    );
+}
+
+#[test]
+fn a_resize_dragged_off_the_page_stops_at_the_page_edge() {
+    // The page occupies screen x 194..806 and y 8..800, so the box can grow
+    // no further than its own left/top edge to the page's bottom-right corner.
+    let new_box = resize_box_from(
+        cursor_at(RIGHT_HANDLE_X, BOTTOM_HANDLE_Y),
+        cursor_at(2000.0, 2000.0),
+    );
+    assert!(
+        (new_box.width - 540.0).abs() < 1.0,
+        "the box should stop at the page's right edge, got {}",
+        new_box.width
+    );
+    assert!(
+        (new_box.min_height - 732.0).abs() < 1.0,
+        "the box should stop at the page's bottom edge, got {}",
+        new_box.min_height
+    );
+}
+
+#[test]
+fn a_vertical_resize_enforces_the_minimum_height() {
+    // Dragging the bottom edge up past the box's own top.
+    let new_box = resize_box_from(cursor_at(300.0, BOTTOM_HANDLE_Y), cursor_at(300.0, 20.0));
+    assert!(
+        new_box.min_height >= super::MIN_BOX_DIMENSION,
+        "got {}",
+        new_box.min_height
+    );
+}
+
+/// The pointer shape the canvas asks for with the cursor at (`x`, `y`) over
+/// the selected reference overlay.
+fn interaction_at(x: f32, y: f32) -> mouse::Interaction {
+    let overlays = vec![reference_box_overlay()];
+    let dims = test_page_dimensions();
+    let registry = FontRegistry::new();
+    let program = OverlayCanvasProgram {
+        active_overlay: Some(0),
+        ..test_program(&overlays, &dims, &registry)
+    };
+    program.mouse_interaction(
+        &ProgramState::default(),
+        test_canvas_bounds(),
+        cursor_at(x, y),
+    )
+}
+
+#[test]
+fn each_handle_asks_for_the_pointer_that_matches_the_way_it_moves() {
+    assert_eq!(
+        interaction_at(RIGHT_HANDLE_X, 75.0),
+        mouse::Interaction::ResizingHorizontally
+    );
+    assert_eq!(
+        interaction_at(300.0, BOTTOM_HANDLE_Y),
+        mouse::Interaction::ResizingVertically
+    );
+    assert_eq!(
+        interaction_at(RIGHT_HANDLE_X, BOTTOM_HANDLE_Y),
+        mouse::Interaction::ResizingDiagonallyDown
+    );
+}
+
+#[test]
+fn a_resize_in_flight_keeps_showing_its_own_pointer() {
+    let overlays = vec![reference_box_overlay()];
+    let dims = test_page_dimensions();
+    let registry = FontRegistry::new();
+    let program = OverlayCanvasProgram {
+        active_overlay: Some(0),
+        ..test_program(&overlays, &dims, &registry)
+    };
+    let state = ProgramState {
+        resize_drag: Some(ResizeDragState {
+            overlay_index: 0,
+            anchor: OverlayAnchor::of(&overlays[0]),
+            edge: ResizeEdge::Bottom,
+            initial_box: OverlayBox::of(&overlays[0]).unwrap(),
+        }),
+        ..ProgramState::default()
+    };
+    assert_eq!(
+        program.mouse_interaction(&state, test_canvas_bounds(), cursor_at(500.0, 500.0)),
+        mouse::Interaction::ResizingVertically,
+        "the pointer must not revert to horizontal once the drag leaves the handle"
+    );
+}
+
+#[test]
+fn a_single_line_overlay_has_no_resize_handles_anywhere() {
+    let overlays = vec![overlay_at(72.0, 720.0, "Hello")];
+    let dims = test_page_dimensions();
+    let registry = FontRegistry::new();
+    let params = ConversionParams {
+        offset_x: 194.0,
+        offset_y: 8.0,
+        ..default_params()
+    };
+    let _ = dims;
+    assert_eq!(
+        super::resize_handle_hit(
+            RIGHT_HANDLE_X,
+            BOTTOM_HANDLE_Y,
+            &overlays[0],
+            &params,
+            &registry
+        ),
+        None
+    );
+}
+
+#[test]
+fn the_resize_handles_are_drawn_along_the_bottom_of_the_box_as_well_as_its_side() {
+    // The handles are what the user aims at, so they have to be visible where
+    // the hit test says they are.
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![multiline_overlay_at(72.0, 600.0, 150.0, "one\ntwo")];
+    let mut program = test_program(&overlays, &dims, &registry);
+    program.active_overlay = Some(0);
+
+    let (sx, sy) = rendered_baseline(&overlays[0], &dims);
+    let text_box = super::overlay_text_box(
+        &overlays[0],
+        sx,
+        sy,
+        crate::coordinate::render_scale(TEST_ZOOM, TEST_DPI),
+        &registry,
+    );
+    let canvas = render_overlay_canvas(program, None);
+    let (_, _, _, bottom) = canvas
+        .selection_blue_bounds()
+        .expect("a selected box paints its handles");
+
+    // The bottom handle straddles the box's bottom edge, so blue ink must
+    // reach past where the selection border alone would end.
+    let border_bottom = text_box.y + text_box.height + super::SELECTION_BOX_PADDING;
+    assert!(
+        bottom as f32 >= border_bottom - 1.0,
+        "blue ink stops at row {bottom} but the bottom handle should reach {border_bottom}"
+    );
+}
+
+// =====================================================================
+// spe-qrj: a resize drag shows the box it would commit, the way a
+// placement drag shows the box it would place
+// =====================================================================
+
+/// Grab a resize handle at (`grab_x`, `grab_y`) and drag to (`x`, `y`) without
+/// releasing, returning the blue bounds the canvas draws mid-drag.
+fn resize_preview_bounds(
+    overlay: TextOverlay,
+    grab_x: f32,
+    grab_y: f32,
+    x: f32,
+    y: f32,
+) -> (u32, u32, u32, u32) {
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![overlay];
+    let mut program = test_program(&overlays, &dims, &registry);
+    program.active_overlay = Some(0);
+    let element: iced::Element<Message> = iced::widget::canvas(program)
+        .width(iced::Length::Fill)
+        .height(iced::Length::Fill)
+        .into();
+    let mut harness = Harness::new(element, RENDER_SIZE);
+    harness.move_cursor(iced::Point::new(grab_x, grab_y));
+    harness.press_left();
+    harness.move_cursor(iced::Point::new(x, y));
+    harness
+        .screenshot()
+        .selection_blue_bounds()
+        .expect("a resize in flight must draw the box it would commit")
+}
+
+/// Grab a handle of a 150x100pt box at PDF (72, 600) — on the 900px surface
+/// its text box is x 216..366, y 188..288 — and drag to (`to_x`, `to_y`)
+/// without releasing, returning the previewed box's (right, bottom) edges.
+fn preview_edges_after_dragging(grab_x: f32, grab_y: f32, to_x: f32, to_y: f32) -> (u32, u32) {
+    let mut overlay = multiline_overlay_at(72.0, 600.0, 150.0, "one");
+    overlay.min_height = Some(100.0);
+    let (_, _, right, bottom) = resize_preview_bounds(overlay, grab_x, grab_y, to_x, to_y);
+    (right, bottom)
+}
+
+/// Assert a previewed edge landed on `expected`, allowing for the selection
+/// padding the box is drawn with and a pixel of rasterisation slack.
+#[track_caller]
+fn assert_preview_edge(actual: u32, expected: f32, edge: &str) {
+    let target = expected + super::SELECTION_BOX_PADDING;
+    assert!(
+        (actual as f32 - target).abs() <= 2.0,
+        "the preview's {edge} edge is at {actual}, expected ~{target}"
+    );
+}
+
+#[test]
+fn a_resize_in_flight_draws_the_box_it_would_commit() {
+    // Dragging the corner in to screen (300, 250) shrinks the box to
+    // x 216..300, y 188..250, so the blue ink must stop there rather than at
+    // the box's committed edges.
+    let (right, bottom) = preview_edges_after_dragging(366.0, 288.0, 300.0, 250.0);
+    assert_preview_edge(right, 300.0, "right");
+    assert_preview_edge(bottom, 250.0, "bottom");
+}
+
+#[test]
+fn a_vertical_resize_in_flight_previews_only_the_height() {
+    // Grabbing the bottom bar rather than the corner leaves the right edge
+    // where the committed box has it.
+    let (right, bottom) = preview_edges_after_dragging(300.0, 288.0, 300.0, 250.0);
+    assert_preview_edge(right, 366.0, "right");
+    assert_preview_edge(bottom, 250.0, "bottom");
+}
+
+#[test]
+fn committed_text_wraps_inside_the_box_it_was_given() {
+    // The canvas drew overlay text with no width bound, so a wrapping
+    // overlay's committed text ran off the right of its own box in one long
+    // line — disagreeing with both the box the user drew and the wrapped
+    // lines the PDF writer emits.
+    assert_rendered_text_stays_inside_its_box(multiline_overlay_at(
+        72.0,
+        600.0,
+        150.0,
+        "The quick brown fox jumps over the lazy dog and keeps on running",
+    ));
+}
+
+#[test]
+fn a_mostly_vertical_placement_drag_still_places_a_grabbable_box() {
+    // A tall, near-zero-width drag clears the 10px threshold on its vertical
+    // extent alone. Left unclamped it committed a box a fraction of a point
+    // wide — one word per line, with a resize handle too narrow to grab.
+    let (_, _, width, height) =
+        text_box_placement_from(cursor_at(300.0, 200.0), cursor_at(301.0, 320.0));
+    assert!(
+        width >= super::MIN_BOX_DIMENSION,
+        "a placed box must be at least {} wide, got {width}",
+        super::MIN_BOX_DIMENSION
+    );
+    assert!(
+        (height - 120.0).abs() < 1.0,
+        "the drag's own height should survive, got {height}"
+    );
+}
+
+#[test]
+fn a_mostly_horizontal_placement_drag_still_places_a_grabbable_box() {
+    let (_, _, width, height) =
+        text_box_placement_from(cursor_at(300.0, 200.0), cursor_at(420.0, 201.0));
+    assert!(
+        height >= super::MIN_BOX_DIMENSION,
+        "a placed box must be at least {} tall, got {height}",
+        super::MIN_BOX_DIMENSION
+    );
+    assert!(
+        (width - 120.0).abs() < 1.0,
+        "the drag's own width should survive, got {width}"
+    );
+}
+
+/// A blank single-page canvas laid out on the standard render surface, ready
+/// for a placement drag. Returned as an element so the caller owns the borrows
+/// the harness needs.
+fn blank_page_canvas<'a>(
+    overlays: &'a [TextOverlay],
+    dims: &'a HashMap<u32, (f32, f32)>,
+    registry: &'a FontRegistry,
+) -> iced::Element<'a, Message> {
+    iced::widget::canvas(test_program(overlays, dims, registry))
+        .width(iced::Length::Fill)
+        .height(iced::Length::Fill)
+        .into()
+}
+
+/// Press at `from` and drag to `to` without releasing, returning the harness
+/// so the caller can read the preview it drew and, if it likes, release it.
+fn placement_drag_in_flight(
+    element: iced::Element<'_, Message>,
+    from: iced::Point,
+    to: iced::Point,
+) -> Harness<'_, Message> {
+    let mut harness = Harness::new(element, RENDER_SIZE);
+    harness.move_cursor(from);
+    harness.press_left();
+    harness.move_cursor(to);
+    harness
+}
+
+#[test]
+fn a_placement_preview_stops_at_the_page_edge_like_the_resize_preview() {
+    // The rectangle drawn mid-drag has to promise the box the release will
+    // actually place, and the release clamps to the page.
+    let overlays: Vec<TextOverlay> = vec![];
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let mut harness = placement_drag_in_flight(
+        blank_page_canvas(&overlays, &dims, &registry),
+        iced::Point::new(300.0, 200.0),
+        iced::Point::new(880.0, 690.0),
+    );
+    let (_, _, right, bottom) = harness
+        .screenshot()
+        .selection_blue_bounds()
+        .expect("a placement drag in flight must draw its rectangle");
+
+    // The page occupies x 144..756 and y 8..800 on a 900x700 surface.
+    assert!(
+        right <= 757,
+        "the preview reaches column {right} but the page ends at 756"
+    );
+    assert!(
+        bottom <= 699,
+        "the preview reaches row {bottom} but the surface ends at 699"
+    );
+}
+
+#[test]
+fn a_placement_drag_at_the_page_edge_keeps_the_whole_floored_box_on_the_page() {
+    // Flooring a near-degenerate drag widens the box past the edge the drag
+    // ended on, so the floored box has to give ground on position instead:
+    // size wins, position gives. The page spans screen x 194..806.
+    let (_, top_left, width, _) =
+        text_box_placement_from(cursor_at(804.0, 200.0), cursor_at(806.0, 320.0));
+    assert!(
+        (width - super::MIN_BOX_DIMENSION).abs() < 0.01,
+        "the box keeps its floored width, got {width}"
+    );
+    assert!(
+        top_left.x >= -0.01 && top_left.x + width <= 612.01,
+        "the box runs from {} to {} but the page is 0..612",
+        top_left.x,
+        top_left.x + width
+    );
+}
+
+#[test]
+fn a_placement_drag_at_the_page_bottom_keeps_the_whole_floored_box_on_the_page() {
+    // The page spans screen y 8..800, i.e. PDF y 792..0.
+    let (_, top_left, _, height) =
+        text_box_placement_from(cursor_at(300.0, 798.0), cursor_at(420.0, 800.0));
+    assert!(
+        (height - super::MIN_BOX_DIMENSION).abs() < 0.01,
+        "the box keeps its floored height, got {height}"
+    );
+    assert!(
+        top_left.y - height >= -0.01 && top_left.y <= 792.01,
+        "the box runs from {} down to {} but the page is 792..0",
+        top_left.y,
+        top_left.y - height
+    );
+}
+
+#[test]
+fn a_placement_preview_at_the_page_edge_draws_the_box_the_release_will_place() {
+    // The preview must promise the same nudged-inward box the release places.
+    // On the 900px surface the page spans x 144..756.
+    let overlays: Vec<TextOverlay> = vec![];
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let mut harness = placement_drag_in_flight(
+        blank_page_canvas(&overlays, &dims, &registry),
+        iced::Point::new(754.0, 200.0),
+        iced::Point::new(756.0, 320.0),
+    );
+    let (left, top, right, bottom) = harness
+        .screenshot()
+        .selection_blue_bounds()
+        .expect("a placement drag in flight must draw its rectangle");
+
+    let placed = harness
+        .release_left()
+        .into_iter()
+        .find_map(|msg| match msg {
+            Message::PlaceTextBox {
+                top_left,
+                width,
+                height,
+                ..
+            } => Some((top_left, width, height)),
+            _ => None,
+        })
+        .expect("releasing must place the box");
+
+    // Page origin on the 900px surface: x 144, y 8, at scale 1.
+    let (top_left, width, height) = placed;
+    let expected_left = 144.0 + top_left.x;
+    let expected_top = 8.0 + (792.0 - top_left.y);
+    assert!(
+        (left as f32 - expected_left).abs() <= 2.0
+            && (top as f32 - expected_top).abs() <= 2.0
+            && ((right - left) as f32 - width).abs() <= 2.0
+            && ((bottom - top) as f32 - height).abs() <= 2.0,
+        "the preview drew ({left}, {top}) {}x{} but the release placed \
+         ({expected_left}, {expected_top}) {width}x{height}",
+        right - left,
+        bottom - top
+    );
+    assert!(
+        (width - super::MIN_BOX_DIMENSION).abs() < 0.01,
+        "the box keeps its floored width, got {width}"
+    );
+    assert!(
+        top_left.x + width <= 612.01,
+        "the box runs to {} but the page ends at 612",
+        top_left.x + width
     );
 }

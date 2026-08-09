@@ -7,6 +7,7 @@ use super::{
 };
 
 use crate::command::{Command as UndoCommand, SessionStep};
+use crate::overlay::OverlayBox;
 use crate::pdf::renderer::PdftoppmRenderer;
 use crate::ui::canvas;
 use crate::ui::toolbar;
@@ -106,22 +107,57 @@ impl App {
         &mut self,
         page: u32,
         position: PdfPosition,
-        width: Option<f32>,
     ) -> iced::Task<Message> {
+        self.place(TextOverlay {
+            page,
+            position,
+            text: String::new(),
+            font: self.toolbar.font,
+            font_size: self.toolbar.font_size,
+            width: None,
+            min_height: None,
+        })
+    }
+
+    /// Place a wrapping overlay filling the rectangle a drag drew out.
+    ///
+    /// The rectangle's top edge is where its first *line* starts, but an
+    /// overlay is anchored by its first *baseline*, which sits one font size
+    /// below the top of the line — the same offset `draw_overlay_text` and
+    /// `overlay_text_box` apply. Placing the baseline at the top edge instead
+    /// is what floated the edit box a whole line above the drawn rectangle
+    /// (spe-x9e).
+    pub(super) fn handle_place_text_box(
+        &mut self,
+        page: u32,
+        top_left: PdfPosition,
+        width: f32,
+        height: f32,
+    ) -> iced::Task<Message> {
+        let font_size = self.toolbar.font_size;
+        self.place(TextOverlay {
+            page,
+            position: PdfPosition {
+                x: top_left.x,
+                y: top_left.y - font_size,
+            },
+            text: String::new(),
+            font: self.toolbar.font,
+            font_size,
+            width: Some(width),
+            min_height: Some(height),
+        })
+    }
+
+    /// Add `overlay` to the document and open an edit session on it.
+    fn place(&mut self, overlay: TextOverlay) -> iced::Task<Message> {
         let commit_task = if self.canvas.editing {
             self.handle_commit_text()
         } else {
             iced::Task::none()
         };
         if self.document.is_some() {
-            let overlay = TextOverlay {
-                page,
-                position,
-                text: String::new(),
-                font: self.toolbar.font,
-                font_size: self.toolbar.font_size,
-                width,
-            };
+            let width = overlay.width;
             let fresh_placement_base = self.undo_stack.len();
             let cmd = UndoCommand::PlaceOverlay {
                 overlay: overlay.clone(),
@@ -228,14 +264,19 @@ impl App {
         }
     }
 
-    pub(super) fn handle_resize_overlay(&mut self, index: usize, old_width: f32, new_width: f32) {
+    pub(super) fn handle_resize_overlay(
+        &mut self,
+        index: usize,
+        old_box: OverlayBox,
+        new_box: OverlayBox,
+    ) {
         if let Some(doc) = &self.document
             && index < doc.overlays.len()
         {
             let cmd = UndoCommand::ResizeOverlay {
                 index,
-                old_width,
-                new_width,
+                old_box,
+                new_box,
             };
             self.execute_command(cmd);
         }
@@ -531,7 +572,7 @@ impl App {
         };
         if let Some(base_len) = fresh_placement {
             doc.overlays.remove(index);
-            self.undo_stack.truncate(base_len);
+            self.discard_placement_history(base_len, index);
             // Redo entries address overlays by index, so none of them can
             // survive the list shrinking outside the command history.
             self.redo_stack.clear();
@@ -546,6 +587,32 @@ impl App {
         }
     }
 
+    /// Drop a freshly placed overlay's own history: the placement recorded at
+    /// `base_len` and any command recorded during its edit that addressed it.
+    ///
+    /// Commands recorded meanwhile that changed a *different* overlay are
+    /// kept. Their effect on the document outlives the abandoned placement, so
+    /// rewinding the whole stack left the document ahead of the history meant
+    /// to describe it — reachable by resizing or moving another overlay by
+    /// index (as IPC can) while a placement is open. Their indices survive
+    /// untouched because the placement is always appended last, so nothing
+    /// recorded before it can address a higher slot.
+    fn discard_placement_history(&mut self, base_len: usize, index: usize) {
+        // Session steps address the document stack by position — a
+        // `SessionStep::Document` means "the newest command" — so any marker
+        // outliving this would name a command that is no longer there, or a
+        // different one. The session dies with the placement it was opened
+        // for, so clearing it here keeps that invariant local to the code
+        // that breaks it rather than resting on a later caller.
+        self.canvas.session_history.clear();
+        let mut recorded_since = self.undo_stack.split_off(base_len);
+        if !recorded_since.is_empty() {
+            recorded_since.remove(0);
+        }
+        recorded_since.retain(|cmd| cmd.target_index() != Some(index));
+        self.undo_stack.append(&mut recorded_since);
+    }
+
     /// Remove an overlay whose text is blank, since it would only render as an
     /// empty selection box. Abandoning a freshly placed overlay leaves no undo
     /// history, including any style commands (font, font size) recorded while
@@ -557,7 +624,7 @@ impl App {
         };
         let mut overlay = doc.overlays.remove(index);
         if let Some(base_len) = self.canvas.fresh_placement.take() {
-            self.undo_stack.truncate(base_len);
+            self.discard_placement_history(base_len, index);
         } else {
             overlay.text = text_at_edit_start;
             self.undo_stack

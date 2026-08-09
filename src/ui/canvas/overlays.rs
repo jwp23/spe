@@ -6,14 +6,15 @@ use iced::widget::canvas;
 use crate::app::Message;
 use crate::coordinate::{ConversionParams, pdf_to_screen, render_scale, screen_to_pdf};
 use crate::fonts::FontRegistry;
-use crate::overlay::{PdfPosition, TextOverlay};
+use crate::overlay::{OverlayBox, PdfPosition, TextOverlay};
 
 use super::{
     DOUBLE_CLICK_DISTANCE_PX, DOUBLE_CLICK_TIMEOUT_MS, LocalDragState, MIN_DRAG_DISTANCE,
     OVERLAY_TINT_HOVER_BORDER_ALPHA, OverlayAnchor, PageLayout, PlacementDragState, ProgramState,
-    ResizeDragState, SELECTION_BORDER_WIDTH, SELECTION_COLOR, draw_overlay_text, hit_test,
-    overlay_text_box, page_rect_in_canvas, resize_handle_hit, selection_box_rect,
-    should_draw_overlay_text, should_draw_selection_box, tint_alpha, to_screen_rect, visible_pages,
+    ResizeDragState, ResizeEdge, SELECTION_BORDER_WIDTH, SELECTION_COLOR, clamp_to_rect,
+    drag_box_within, draw_overlay_text, hit_test, overlay_text_box, page_rect_in_canvas,
+    resize_handle_hit, resized_box, selection_box_rect, should_draw_overlay_text,
+    should_draw_selection_box, tint_alpha, to_screen_rect, visible_pages,
 };
 
 /// Canvas program that renders text overlays using native Iced drawing primitives.
@@ -158,20 +159,18 @@ impl OverlayCanvasProgram<'_> {
         if overlay.page != page {
             return None;
         }
-        let width_pts = overlay.width?;
-        if !resize_handle_hit(
+        let edge = resize_handle_hit(
             cursor_pos.x,
             cursor_pos.y,
             overlay,
             params,
             self.font_registry,
-        ) {
-            return None;
-        }
+        )?;
         state.resize_drag = Some(ResizeDragState {
             overlay_index: active_idx,
             anchor: OverlayAnchor::of(overlay),
-            initial_width: width_pts,
+            edge,
+            initial_box: OverlayBox::of(overlay)?,
         });
         Some(canvas::Action::capture())
     }
@@ -297,25 +296,28 @@ impl OverlayCanvasProgram<'_> {
                 canvas::Action::publish(Message::PlaceOverlay {
                     page: placement.page,
                     position: PdfPosition { x: pdf_x, y: pdf_y },
-                    width: None,
                 })
                 .and_capture(),
             )
         } else {
-            // Drag: multi-line overlay — width defined by horizontal drag distance
-            let (start_pdf_x, start_pdf_y) =
-                screen_to_pdf(placement.start_screen.x, placement.start_screen.y, &params);
-            let (end_pdf_x, _) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
-            let width_pts = (end_pdf_x - start_pdf_x).abs();
-            let pdf_x = start_pdf_x.min(end_pdf_x);
+            // Drag: a wrapping overlay filling the rectangle just drawn. The
+            // whole rectangle travels, not just its horizontal extent, so the
+            // box the editor opens is the box the user saw (spe-x9e).
+            let box_screen = drag_box_within(
+                placement.start_screen,
+                cursor_pos,
+                placement.page_screen_rect,
+            );
+            // The screen box's top-left corner is the box's first line; its
+            // size converts straight across, the scale being a pure multiplier.
+            let (pdf_x, pdf_y) = screen_to_pdf(box_screen.x, box_screen.y, &params);
+            let scale = params.scale();
             Some(
-                canvas::Action::publish(Message::PlaceOverlay {
+                canvas::Action::publish(Message::PlaceTextBox {
                     page: placement.page,
-                    position: PdfPosition {
-                        x: pdf_x,
-                        y: start_pdf_y,
-                    },
-                    width: Some(width_pts),
+                    top_left: PdfPosition { x: pdf_x, y: pdf_y },
+                    width: box_screen.width / scale,
+                    height: box_screen.height / scale,
                 })
                 .and_capture(),
             )
@@ -332,23 +334,37 @@ impl OverlayCanvasProgram<'_> {
         let resize = state.resize_drag.take()?;
         let index = resize.anchor.resolve(self.overlays, resize.overlay_index)?;
         let overlay = &self.overlays[index];
-        let page_rect = page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
-        let page_screen_rect = to_screen_rect(page_rect, &bounds);
-        let params = self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
-        let (cursor_pdf_x, _) = screen_to_pdf(cursor_pos.x, cursor_pos.y, &params);
-        let new_width = (cursor_pdf_x - overlay.position.x).max(20.0);
-        if (new_width - resize.initial_width).abs() > 0.1 {
+        let new_box = self.resize_target(overlay, resize.edge, cursor_pos, bounds)?;
+        if new_box != resize.initial_box {
             Some(
                 canvas::Action::publish(Message::ResizeOverlay {
                     index,
-                    old_width: resize.initial_width,
-                    new_width,
+                    old_box: resize.initial_box,
+                    new_box,
                 })
                 .and_capture(),
             )
         } else {
             Some(canvas::Action::capture())
         }
+    }
+
+    /// The box a resize of `edge` would give `overlay` with the cursor at
+    /// `cursor_pos`, with the cursor held to the page so a box can never be
+    /// dragged off the paper it is written on.
+    fn resize_target(
+        &self,
+        overlay: &TextOverlay,
+        edge: ResizeEdge,
+        cursor_pos: iced::Point,
+        bounds: iced::Rectangle,
+    ) -> Option<OverlayBox> {
+        let page_rect = page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
+        let page_screen_rect = to_screen_rect(page_rect, &bounds);
+        let params = self.conversion_params_for_page(overlay.page, &page_screen_rect)?;
+        let held = clamp_to_rect(cursor_pos, &page_screen_rect);
+        let (pdf_x, pdf_y) = screen_to_pdf(held.x, held.y, &params);
+        resized_box(overlay, edge, pdf_x, pdf_y)
     }
 
     /// Finalize a drag-move: compute new PDF position from cursor offset.
@@ -388,7 +404,10 @@ impl OverlayCanvasProgram<'_> {
         }
     }
 
-    /// Draw a single overlay: tint, hover border, text, selection box, and resize handle.
+    /// Draw a single overlay: tint, hover border, text, selection box, and
+    /// resize handles. `resizing` is the overlay a resize drag has hold of,
+    /// whose box is drawn as a live preview instead (see
+    /// [`Self::draw_resize_preview`]).
     #[allow(clippy::too_many_arguments)]
     fn draw_single_overlay(
         &self,
@@ -399,9 +418,9 @@ impl OverlayCanvasProgram<'_> {
         params: &ConversionParams,
         scale: f32,
         overlay_color: iced::Color,
+        resizing: Option<usize>,
     ) {
         let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
-        let scaled_size = overlay.font_size * scale;
         let text_box = overlay_text_box(overlay, sx, sy, scale, self.font_registry);
 
         if should_draw_overlay_text(self.editing, self.active_overlay, index) {
@@ -412,19 +431,19 @@ impl OverlayCanvasProgram<'_> {
             }
             draw_overlay_text(
                 frame,
-                &overlay.text,
-                sx,
-                sy,
-                scaled_size,
-                iced::Color::BLACK,
-                self.font_registry.get(overlay.font).iced_font,
+                overlay,
+                iced::Point::new(sx, sy),
+                scale,
+                self.font_registry,
             );
         }
 
-        if should_draw_selection_box(self.editing, self.active_overlay, index) {
+        if resizing != Some(index)
+            && should_draw_selection_box(self.editing, self.active_overlay, index)
+        {
             draw_selection_box(frame, text_box);
             if overlay.width.is_some() {
-                draw_resize_handle(frame, text_box);
+                draw_resize_handles(frame, text_box);
             }
         }
     }
@@ -443,17 +462,51 @@ impl OverlayCanvasProgram<'_> {
             let overlay = &self.overlays[index];
             let preview_screen_x = cursor_pos.x - drag.grab_offset_x - bounds.x;
             let preview_screen_y = cursor_pos.y - drag.grab_offset_y - bounds.y;
-            let scaled_size = overlay.font_size * scale;
             draw_overlay_text(
                 frame,
-                &overlay.text,
-                preview_screen_x,
-                preview_screen_y,
-                scaled_size,
-                iced::Color::BLACK,
-                self.font_registry.get(overlay.font).iced_font,
+                overlay,
+                iced::Point::new(preview_screen_x, preview_screen_y),
+                scale,
+                self.font_registry,
             );
         }
+    }
+
+    /// Draw the box a resize drag would commit if released now.
+    ///
+    /// Without it the box only changed on release, so the user resized blind
+    /// (spe-qrj). The rectangle comes from the same `resized_box` the release
+    /// publishes, so the preview cannot promise a box the release won't give.
+    fn draw_resize_preview(
+        &self,
+        frame: &mut canvas::Frame,
+        state: &ProgramState,
+        bounds: iced::Rectangle,
+        scale: f32,
+    ) {
+        let (Some(resize), Some(cursor_pos)) = (&state.resize_drag, state.cursor_position) else {
+            return;
+        };
+        let Some(index) = resize.anchor.resolve(self.overlays, resize.overlay_index) else {
+            return;
+        };
+        let overlay = &self.overlays[index];
+        let Some(new_box) = self.resize_target(overlay, resize.edge, cursor_pos, bounds) else {
+            return;
+        };
+
+        let page_rect = page_rect_in_canvas(&self.page_layout, overlay.page, bounds.width);
+        let Some(params) = self.conversion_params_for_page(overlay.page, &page_rect) else {
+            return;
+        };
+        let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, &params);
+
+        // A stand-in carrying the prospective dimensions, so the preview is
+        // measured by the same geometry that will draw the committed box.
+        let mut preview = overlay.clone();
+        new_box.apply_to(&mut preview);
+        let text_box = overlay_text_box(&preview, sx, sy, scale, self.font_registry);
+        stroke_preview_rect(frame, selection_box_rect(text_box));
     }
 
     /// Draw the placement drag rectangle preview. Returns true if the frame should be
@@ -478,22 +531,20 @@ impl OverlayCanvasProgram<'_> {
             return true;
         }
 
-        let start_canvas = iced::Point::new(
-            placement.start_screen.x - bounds.x,
-            placement.start_screen.y - bounds.y,
+        // The very box the release will place, so the rectangle drawn here
+        // cannot promise a box the release won't give.
+        let box_screen = drag_box_within(
+            placement.start_screen,
+            cursor_pos,
+            placement.page_screen_rect,
         );
-        let end_canvas = iced::Point::new(cursor_pos.x - bounds.x, cursor_pos.y - bounds.y);
-        let rect_x = start_canvas.x.min(end_canvas.x);
-        let rect_y = start_canvas.y.min(end_canvas.y);
-        let rect_w = (end_canvas.x - start_canvas.x).abs();
-        let rect_h = (end_canvas.y - start_canvas.y).abs();
-
-        frame.stroke_rectangle(
-            iced::Point::new(rect_x, rect_y),
-            iced::Size::new(rect_w, rect_h),
-            canvas::Stroke::default()
-                .with_color(SELECTION_COLOR)
-                .with_width(SELECTION_BORDER_WIDTH),
+        stroke_preview_rect(
+            frame,
+            iced::Rectangle {
+                x: box_screen.x - bounds.x,
+                y: box_screen.y - bounds.y,
+                ..box_screen
+            },
         );
         false
     }
@@ -583,6 +634,10 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
             .drag
             .as_ref()
             .and_then(|drag| drag.anchor.resolve(self.overlays, drag.overlay_index));
+        let resizing = state
+            .resize_drag
+            .as_ref()
+            .and_then(|resize| resize.anchor.resolve(self.overlays, resize.overlay_index));
 
         // Draw overlays for each visible page
         for page in first..=last {
@@ -615,11 +670,13 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                     &local_params,
                     scale,
                     overlay_color,
+                    resizing,
                 );
             }
         }
 
         self.draw_drag_preview(&mut frame, state, bounds, scale);
+        self.draw_resize_preview(&mut frame, state, bounds, scale);
         if self.draw_placement_preview(&mut frame, state, bounds) {
             return vec![frame.into_geometry()];
         }
@@ -637,8 +694,8 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
             return mouse::Interaction::Grabbing;
         }
 
-        if state.resize_drag.is_some() {
-            return mouse::Interaction::ResizingHorizontally;
+        if let Some(resize) = &state.resize_drag {
+            return resize.edge.mouse_interaction();
         }
 
         let Some(cursor_pos) = cursor.position() else {
@@ -649,12 +706,12 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
             return mouse::Interaction::default();
         };
 
-        // Show resize cursor when hovering the resize handle of the selected multi-line overlay.
+        // Show the matching resize cursor when hovering a handle of the
+        // selected multi-line overlay.
         if let Some(active_idx) = self.active_overlay
             && let Some(overlay) = self.overlays.get(active_idx)
             && overlay.page == page
-            && overlay.width.is_some()
-            && resize_handle_hit(
+            && let Some(edge) = resize_handle_hit(
                 cursor_pos.x,
                 cursor_pos.y,
                 overlay,
@@ -662,7 +719,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
                 self.font_registry,
             )
         {
-            return mouse::Interaction::ResizingHorizontally;
+            return edge.mouse_interaction();
         }
 
         if hit_test(
@@ -721,9 +778,9 @@ fn draw_overlay_hover_border(
     );
 }
 
-/// Draw a selection bounding box framing an overlay's text box.
-fn draw_selection_box(frame: &mut canvas::Frame, text_box: iced::Rectangle) {
-    let rect = selection_box_rect(text_box);
+/// Outline a prospective rectangle in the selection color — the box a
+/// placement or resize drag would commit if released now.
+fn stroke_preview_rect(frame: &mut canvas::Frame, rect: iced::Rectangle) {
     frame.stroke_rectangle(
         rect.position(),
         rect.size(),
@@ -733,11 +790,40 @@ fn draw_selection_box(frame: &mut canvas::Frame, text_box: iced::Rectangle) {
     );
 }
 
-/// Draw a vertical bar resize handle down the right edge of a multi-line overlay.
-fn draw_resize_handle(frame: &mut canvas::Frame, text_box: iced::Rectangle) {
+/// Draw a selection bounding box framing an overlay's text box.
+fn draw_selection_box(frame: &mut canvas::Frame, text_box: iced::Rectangle) {
+    stroke_preview_rect(frame, selection_box_rect(text_box));
+}
+
+/// Thickness of the resize handle bars, in screen pixels.
+const RESIZE_HANDLE_THICKNESS: f32 = 4.0;
+/// Side length of the square corner handle, in screen pixels.
+const RESIZE_CORNER_SIZE: f32 = 8.0;
+
+/// Draw the resize handles of a multi-line overlay: a bar down the right edge
+/// for width, a bar along the bottom edge for height, and a square where they
+/// meet for both at once.
+fn draw_resize_handles(frame: &mut canvas::Frame, text_box: iced::Rectangle) {
+    let half = RESIZE_HANDLE_THICKNESS / 2.0;
+    let right = text_box.x + text_box.width;
+    let bottom = text_box.y + text_box.height;
+
     frame.fill_rectangle(
-        iced::Point::new(text_box.x + text_box.width - 2.0, text_box.y),
-        iced::Size::new(4.0, text_box.height),
+        iced::Point::new(right - half, text_box.y),
+        iced::Size::new(RESIZE_HANDLE_THICKNESS, text_box.height),
+        SELECTION_COLOR,
+    );
+    frame.fill_rectangle(
+        iced::Point::new(text_box.x, bottom - half),
+        iced::Size::new(text_box.width, RESIZE_HANDLE_THICKNESS),
+        SELECTION_COLOR,
+    );
+    frame.fill_rectangle(
+        iced::Point::new(
+            right - RESIZE_CORNER_SIZE / 2.0,
+            bottom - RESIZE_CORNER_SIZE / 2.0,
+        ),
+        iced::Size::new(RESIZE_CORNER_SIZE, RESIZE_CORNER_SIZE),
         SELECTION_COLOR,
     );
 }

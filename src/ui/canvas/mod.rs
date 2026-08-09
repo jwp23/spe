@@ -11,13 +11,13 @@ pub use overlays::*;
 pub use pages::*;
 pub use zoom::*;
 
-pub(crate) use text_metrics::canvas_text_width;
+pub(crate) use text_metrics::{canvas_line_count, canvas_text_width};
 
 use iced::widget::canvas;
 
 use crate::coordinate::{ConversionParams, pdf_to_screen};
 use crate::fonts::FontRegistry;
-use crate::overlay::{PdfPosition, TextOverlay};
+use crate::overlay::{OverlayBox, PdfPosition, TextOverlay};
 
 /// Time window for double-click detection (milliseconds).
 pub(crate) const DOUBLE_CLICK_TIMEOUT_MS: u128 = 500;
@@ -171,7 +171,9 @@ impl OverlayAnchor {
 pub struct ResizeDragState {
     pub overlay_index: usize,
     pub anchor: OverlayAnchor,
-    pub initial_width: f32,
+    /// Which handle was grabbed, and so which dimensions the drag changes.
+    pub edge: ResizeEdge,
+    pub initial_box: OverlayBox,
 }
 
 /// Tracks an in-progress placement drag (click-and-drag to create a multi-line overlay).
@@ -230,25 +232,39 @@ pub(crate) fn text_top(screen_y: f32, scaled_font_size: f32) -> f32 {
     screen_y - scaled_font_size
 }
 
-/// Draw overlay text at a screen position on the canvas frame.
+/// Draw overlay text at a screen position on the canvas frame, wrapping it
+/// within `max_width` screen pixels.
+///
+/// A wrapping overlay must be drawn inside the box it was given: left
+/// unbounded, its committed text ran off the right of its own box in one line,
+/// agreeing neither with the box the user drew nor with the wrapped lines the
+/// PDF writer emits.
 pub(crate) fn draw_overlay_text(
     frame: &mut canvas::Frame,
-    content: &str,
-    screen_x: f32,
-    screen_y: f32,
-    scaled_font_size: f32,
-    color: iced::Color,
-    font: iced::Font,
+    overlay: &TextOverlay,
+    baseline: iced::Point,
+    scale: f32,
+    registry: &FontRegistry,
 ) {
+    let scaled_font_size = overlay.font_size * scale;
     let text = canvas::Text {
-        content: content.to_string(),
-        position: iced::Point::new(screen_x, text_top(screen_y, scaled_font_size)),
-        color,
+        content: overlay.text.clone(),
+        position: iced::Point::new(baseline.x, text_top(baseline.y, scaled_font_size)),
+        max_width: overlay_wrap_width(overlay, scale),
+        color: iced::Color::BLACK,
         size: iced::Pixels(scaled_font_size),
-        font,
+        font: registry.get(overlay.font).iced_font,
         ..canvas::Text::default()
     };
     frame.fill_text(text);
+}
+
+/// How wide `overlay`'s text may run on screen before it wraps. A single-line
+/// overlay has no box to stay inside, so it never wraps.
+pub(crate) fn overlay_wrap_width(overlay: &TextOverlay, scale: f32) -> f32 {
+    overlay
+        .width
+        .map_or(f32::INFINITY, |width_pts| width_pts * scale)
 }
 
 /// Line height iced applies to canvas text, as a multiple of the font size
@@ -281,6 +297,14 @@ pub(crate) fn tint_alpha(hovered: bool) -> f32 {
 /// the user dragged; single-line overlays are as wide as the canvas actually
 /// shapes their text — the PDF's own width tables describe a different face
 /// and leave trailing glyphs outside the box (spe-x2z).
+///
+/// A multi-line overlay's text wraps inside that width, so its lines are
+/// counted by the text engine rather than by counting `\n`s: text the user
+/// never broke still lays out on several lines, and a box that missed them
+/// framed only the first (spe-0hl). The box never shrinks below the overlay's
+/// own [`TextOverlay::min_height`], so a box dragged taller than its text keeps
+/// the whitespace the user asked for (spe-x9e), and never below its text
+/// either, so typing past the bottom grows it (spe-b2h).
 pub(crate) fn overlay_text_box(
     overlay: &TextOverlay,
     screen_x: f32,
@@ -289,16 +313,38 @@ pub(crate) fn overlay_text_box(
     registry: &FontRegistry,
 ) -> iced::Rectangle {
     let scaled_font_size = overlay.font_size * scale;
-    let width = match overlay.width {
-        Some(width_pts) => width_pts * scale,
-        None => canvas_text_width(&overlay.text, overlay.font, scaled_font_size, registry),
+    let (width, line_count) = match overlay.width {
+        Some(width_pts) => (
+            width_pts * scale,
+            canvas_line_count(
+                &overlay.text,
+                overlay.font,
+                wrap_ratio(width_pts, overlay.font_size),
+                registry,
+            ),
+        ),
+        None => (
+            canvas_text_width(&overlay.text, overlay.font, scaled_font_size, registry),
+            overlay.text.lines().count().max(1),
+        ),
     };
-    let line_count = overlay.text.lines().count().max(1) as f32;
+    let text_height = line_count as f32 * scaled_font_size * TEXT_LINE_HEIGHT_RATIO;
     iced::Rectangle {
         x: screen_x,
         y: text_top(screen_y, scaled_font_size),
         width,
-        height: line_count * scaled_font_size * TEXT_LINE_HEIGHT_RATIO,
+        height: text_height.max(overlay.min_height.unwrap_or(0.0) * scale),
+    }
+}
+
+/// A wrap width expressed in font sizes, which is what decides where lines
+/// break. A degenerate font size would make the ratio meaningless, so it
+/// reports a box too narrow to hold anything rather than a NaN.
+fn wrap_ratio(width_pts: f32, font_size: f32) -> f32 {
+    if font_size > 0.0 {
+        width_pts / font_size
+    } else {
+        0.0
     }
 }
 
@@ -344,27 +390,161 @@ pub(crate) fn overlay_text_box_contains_pdf(
 /// Half-width of the resize handle hit area in screen pixels.
 pub(crate) const RESIZE_HANDLE_HIT_RADIUS: f32 = 4.0;
 
-/// Return true if a screen-space click lands on the resize handle of a multi-line overlay.
+/// Which handle of an overlay's box a resize drag grabbed, and therefore which
+/// dimensions the drag changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResizeEdge {
+    /// The right edge: width only.
+    Right,
+    /// The bottom edge: height only.
+    Bottom,
+    /// The bottom-right corner: both at once.
+    Corner,
+}
+
+impl ResizeEdge {
+    /// Whether dragging this handle changes the box's width.
+    pub fn resizes_width(self) -> bool {
+        matches!(self, Self::Right | Self::Corner)
+    }
+
+    /// Whether dragging this handle changes the box's height.
+    pub fn resizes_height(self) -> bool {
+        matches!(self, Self::Bottom | Self::Corner)
+    }
+
+    /// The pointer shape that says which way this handle moves.
+    pub fn mouse_interaction(self) -> iced::mouse::Interaction {
+        match self {
+            Self::Right => iced::mouse::Interaction::ResizingHorizontally,
+            Self::Bottom => iced::mouse::Interaction::ResizingVertically,
+            Self::Corner => iced::mouse::Interaction::ResizingDiagonallyDown,
+        }
+    }
+}
+
+/// Which resize handle of a multi-line overlay a screen-space click lands on,
+/// if any.
 ///
-/// The handle runs down the whole right edge of the overlay's text box, so the
-/// hit area is derived from the same box the handle is drawn against.
+/// The handles run down the right edge and along the bottom edge of the
+/// overlay's text box, meeting at a corner that resizes both. The hit areas are
+/// derived from the same box the handles are drawn against, and the corner is
+/// tested first so the shared pixels resize diagonally rather than picking
+/// whichever edge happened to be checked first.
 pub(crate) fn resize_handle_hit(
     screen_x: f32,
     screen_y: f32,
     overlay: &TextOverlay,
     params: &ConversionParams,
     registry: &FontRegistry,
-) -> bool {
+) -> Option<ResizeEdge> {
+    overlay.width?;
     let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
     let text_box = overlay_text_box(overlay, sx, sy, params.scale(), registry);
-    let handle_x = text_box.x + text_box.width;
-    (screen_x - handle_x).abs() <= RESIZE_HANDLE_HIT_RADIUS
-        && screen_y >= text_box.y
-        && screen_y <= text_box.y + text_box.height
+    let on_right = (screen_x - (text_box.x + text_box.width)).abs() <= RESIZE_HANDLE_HIT_RADIUS;
+    let on_bottom = (screen_y - (text_box.y + text_box.height)).abs() <= RESIZE_HANDLE_HIT_RADIUS;
+    let within_rows = screen_y >= text_box.y
+        && screen_y <= text_box.y + text_box.height + RESIZE_HANDLE_HIT_RADIUS;
+    let within_columns = screen_x >= text_box.x
+        && screen_x <= text_box.x + text_box.width + RESIZE_HANDLE_HIT_RADIUS;
+
+    match (on_right && within_rows, on_bottom && within_columns) {
+        (true, true) => Some(ResizeEdge::Corner),
+        (true, false) => Some(ResizeEdge::Right),
+        (false, true) => Some(ResizeEdge::Bottom),
+        (false, false) => None,
+    }
+}
+
+/// Smallest box a placement or resize drag can produce, in PDF points. A box
+/// dragged to nothing would wrap one word per line and leave a handle too
+/// narrow to grab again, so every gesture that sizes a box floors it here.
+pub const MIN_BOX_DIMENSION: f32 = 20.0;
+
+/// The box a drag between `from` and `to` draws: floored to
+/// [`MIN_BOX_DIMENSION`] on both axes and lying entirely within `bounds`.
+///
+/// Size wins, position gives. A drag can clear the placement threshold on its
+/// vertical extent alone, so the floor belongs on the box rather than on the
+/// gesture — but flooring a drag that ended at the page edge widens the box
+/// past that edge, which is the one place clamping the cursor cannot help.
+/// The floored box is therefore translated back inside rather than trimmed:
+/// near an edge the user gets a usable box nudged inward, never a sliver and
+/// never a box hanging off the paper. A page always exceeds the minimum, so
+/// the floored box always fits.
+///
+/// Pure rectangle geometry, so any caller can use it — but only in a space
+/// where y grows *downward*, as screen space does, since that is the direction
+/// a floored box grows. A PDF-space caller measures y from the page top and
+/// converts back.
+pub fn drag_box_within(
+    from: iced::Point,
+    to: iced::Point,
+    bounds: iced::Rectangle,
+) -> iced::Rectangle {
+    let from = clamp_to_rect(from, &bounds);
+    let to = clamp_to_rect(to, &bounds);
+    let width = (to.x - from.x).abs().max(MIN_BOX_DIMENSION);
+    let height = (to.y - from.y).abs().max(MIN_BOX_DIMENSION);
+    iced::Rectangle {
+        x: from
+            .x
+            .min(to.x)
+            .min(bounds.x + bounds.width - width)
+            .max(bounds.x),
+        y: from
+            .y
+            .min(to.y)
+            .min(bounds.y + bounds.height - height)
+            .max(bounds.y),
+        width,
+        height,
+    }
+}
+
+/// The box `overlay` would occupy if a resize of `edge` finished with the
+/// cursor at the PDF-space point (`pdf_x`, `pdf_y`).
+///
+/// Shared by the release handler and the live preview so the rectangle drawn
+/// during the drag is the rectangle the release commits.
+pub(crate) fn resized_box(
+    overlay: &TextOverlay,
+    edge: ResizeEdge,
+    pdf_x: f32,
+    pdf_y: f32,
+) -> Option<OverlayBox> {
+    let current = OverlayBox::of(overlay)?;
+    // The box's top edge sits one font size above the first baseline, matching
+    // `overlay_text_box`, so a height dragged out here means the same height
+    // the box draws.
+    let box_top = overlay.position.y + overlay.font_size;
+    Some(OverlayBox {
+        width: if edge.resizes_width() {
+            (pdf_x - overlay.position.x).max(MIN_BOX_DIMENSION)
+        } else {
+            current.width
+        },
+        min_height: if edge.resizes_height() {
+            (box_top - pdf_y).max(MIN_BOX_DIMENSION)
+        } else {
+            current.min_height
+        },
+    })
 }
 
 /// Minimum drag distance in pixels to initiate a resize. Clicks below this distance are treated as single-line overlays.
 pub(crate) const MIN_DRAG_DISTANCE: f32 = 10.0;
+
+/// The point in `rect` nearest to `point`.
+///
+/// A drag that leaves the page still ends somewhere, and a box sized from a
+/// cursor out in the margin would run off the paper it is written on.
+pub(crate) fn clamp_to_rect(point: iced::Point, rect: &iced::Rectangle) -> iced::Point {
+    iced::Point::new(
+        point.x.clamp(rect.x, rect.x + rect.width),
+        point.y.clamp(rect.y, rect.y + rect.height),
+    )
+}
 
 #[cfg(test)]
 mod tests;

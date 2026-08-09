@@ -90,7 +90,6 @@ fn place_overlay_adds_to_overlays() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
     assert_eq!(app.undo_stack.len(), 1);
@@ -105,7 +104,6 @@ fn undo_redo_through_update() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hi".to_string()));
     app.update(Message::CommitText);
@@ -128,7 +126,6 @@ fn new_action_clears_redo_stack() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hi".to_string()));
     app.update(Message::CommitText);
@@ -138,7 +135,6 @@ fn new_action_clears_redo_stack() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 200.0, y: 600.0 },
-        width: None,
     });
     assert!(app.redo_stack.is_empty());
 }
@@ -149,7 +145,6 @@ fn delete_overlay_removes_selected() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     // PlaceOverlay sets active_overlay
     app.update(Message::DeleteOverlay);
@@ -163,7 +158,6 @@ fn change_font_updates_overlay_and_toolbar() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::ChangeFont(courier));
@@ -268,7 +262,6 @@ fn select_overlay_updates_toolbar() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     let courier_bold = app.font_registry.find_by_name("Courier Bold").unwrap();
     app.update(Message::ChangeFont(courier_bold));
@@ -1161,7 +1154,6 @@ fn noop_preserves_active_overlay() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     assert!(app.canvas.active_overlay.is_some());
     assert!(app.canvas.editing);
@@ -1195,7 +1187,6 @@ fn save_app_with_text(text: &str) -> App {
         position: PdfPosition { x: 100.0, y: 700.0 },
         // No wrap width, so the text reaches the writer exactly as typed —
         // embedded newlines included.
-        width: None,
     });
     app.update(Message::UpdateOverlayText(text.to_string()));
     app.update(Message::DeselectOverlay);
@@ -1412,7 +1403,6 @@ fn place_overlay_sets_edit_start_text_to_empty_string() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     assert_eq!(app.canvas.edit_start_text, Some(String::new()));
 }
@@ -1423,7 +1413,6 @@ fn commit_text_clears_edit_start_text() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::CommitText);
     assert!(app.canvas.edit_start_text.is_none());
@@ -1435,7 +1424,6 @@ fn deselect_overlay_while_editing_records_the_text_edit() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     assert!(app.canvas.editing);
@@ -1455,7 +1443,6 @@ fn deselect_overlay_when_not_editing_clears_selection() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::CommitText); // exit edit mode
     assert!(!app.canvas.editing);
@@ -1471,7 +1458,6 @@ fn view_with_editing_overlay_does_not_panic() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     assert!(app.canvas.editing);
     let _element = app.view();
@@ -1482,10 +1468,11 @@ fn view_with_editing_overlay_does_not_panic() {
 #[test]
 fn place_multiline_overlay_initializes_editor_content() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    app.update(Message::PlaceTextBox {
         page: 1,
-        position: PdfPosition { x: 100.0, y: 500.0 },
-        width: Some(200.0),
+        top_left: PdfPosition { x: 100.0, y: 500.0 },
+        width: 200.0,
+        height: 60.0,
     });
     assert!(app.editor_content.is_some());
 }
@@ -1496,7 +1483,6 @@ fn place_singleline_overlay_does_not_initialize_editor_content() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 500.0 },
-        width: None,
     });
     assert!(app.editor_content.is_none());
 }
@@ -1504,10 +1490,11 @@ fn place_singleline_overlay_does_not_initialize_editor_content() {
 #[test]
 fn text_editor_action_syncs_text_to_overlay() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    app.update(Message::PlaceTextBox {
         page: 1,
-        position: PdfPosition { x: 100.0, y: 500.0 },
-        width: Some(200.0),
+        top_left: PdfPosition { x: 100.0, y: 500.0 },
+        width: 200.0,
+        height: 60.0,
     });
     // Insert the character 'H' into the editor
     app.update(Message::TextEditorAction(
@@ -1523,10 +1510,11 @@ fn text_editor_action_syncs_text_to_overlay() {
 #[test]
 fn commit_text_clears_editor_content() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    app.update(Message::PlaceTextBox {
         page: 1,
-        position: PdfPosition { x: 100.0, y: 500.0 },
-        width: Some(200.0),
+        top_left: PdfPosition { x: 100.0, y: 500.0 },
+        width: 200.0,
+        height: 60.0,
     });
     assert!(app.editor_content.is_some());
     app.update(Message::CommitText);
@@ -1540,10 +1528,11 @@ fn update_overlay_text_syncs_editor_content_for_multiline_overlay() {
     // renders from editor_content, so editor_content must converge on the
     // same text real typing would have produced.
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    app.update(Message::PlaceTextBox {
         page: 1,
-        position: PdfPosition { x: 100.0, y: 500.0 },
-        width: Some(200.0),
+        top_left: PdfPosition { x: 100.0, y: 500.0 },
+        width: 200.0,
+        height: 60.0,
     });
     app.update(Message::UpdateOverlayText("Hello\nWorld".to_string()));
     let editor_text = app
@@ -1563,7 +1552,6 @@ fn update_overlay_text_leaves_editor_content_none_for_singleline_overlay() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 500.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     assert!(app.editor_content.is_none());
@@ -1591,6 +1579,7 @@ fn update_overlay_text_does_not_clobber_editor_content_for_unrelated_singleline_
             font,
             font_size,
             width: Some(200.0), // multiline
+            min_height: None,
         });
         doc.overlays.push(TextOverlay {
             page: 1,
@@ -1599,6 +1588,7 @@ fn update_overlay_text_does_not_clobber_editor_content_for_unrelated_singleline_
             font,
             font_size,
             width: None, // single-line
+            min_height: None,
         });
     }
     // Simulate overlay 0 (multiline) having just been dragged into edit mode.
@@ -1641,7 +1631,6 @@ fn test_app_with_overlay() -> App {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     // Give the overlay text so it survives the commit, then leave editing state.
     app.update(Message::UpdateOverlayText("Hello".to_string()));
@@ -1719,7 +1708,6 @@ fn edit_overlay_syncs_toolbar_font_and_size() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     let courier = app.font_registry.find_by_name("Courier").unwrap();
@@ -1739,12 +1727,19 @@ fn edit_overlay_syncs_toolbar_font_and_size() {
     assert_eq!(app.toolbar.font_size_input, "18");
 }
 
-#[test]
-fn undo_font_change_syncs_toolbar_to_active_overlay() {
+/// An app holding one committed overlay whose font was then changed to
+/// Courier, so the change is the last thing in the history.
+fn app_with_a_font_change_to_undo() -> App {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "Hello");
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::ChangeFont(courier));
+    app
+}
+
+#[test]
+fn undo_font_change_syncs_toolbar_to_active_overlay() {
+    let mut app = app_with_a_font_change_to_undo();
 
     app.update(Message::Undo);
 
@@ -1758,7 +1753,6 @@ fn undo_font_size_change_syncs_toolbar_to_active_overlay() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::CommitText);
@@ -1997,10 +1991,7 @@ fn font_size_arrow_key_result_decrements_when_focused() {
 
 #[test]
 fn redo_font_change_syncs_toolbar_to_active_overlay() {
-    let mut app = test_app_with_document();
-    place_committed_overlay(&mut app, 100.0, "Hello");
-    let courier = app.font_registry.find_by_name("Courier").unwrap();
-    app.update(Message::ChangeFont(courier));
+    let mut app = app_with_a_font_change_to_undo();
     app.update(Message::Undo);
     // Toolbar drifts away from the overlay's (reverted) font between the
     // undo and the redo, so the redo assertion can't pass by coincidence.
@@ -2009,6 +2000,7 @@ fn redo_font_change_syncs_toolbar_to_active_overlay() {
 
     app.update(Message::Redo);
 
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
     let doc = app.document.as_ref().unwrap();
     assert_eq!(app.toolbar.font, doc.overlays[0].font);
     assert_eq!(app.toolbar.font, courier);
@@ -2020,7 +2012,6 @@ fn undo_does_not_panic_when_undo_stack_is_empty() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
 
@@ -2037,7 +2028,6 @@ fn edit_overlay_snapshots_text_to_edit_start_text() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     // Type some text
     app.update(Message::UpdateOverlayText("original text".to_string()));
@@ -2053,10 +2043,11 @@ fn edit_overlay_snapshots_text_to_edit_start_text() {
 #[test]
 fn edit_overlay_initializes_editor_content_for_multiline() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    app.update(Message::PlaceTextBox {
         page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: Some(200.0),
+        top_left: PdfPosition { x: 100.0, y: 700.0 },
+        width: 200.0,
+        height: 60.0,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::CommitText);
@@ -2103,7 +2094,6 @@ fn commit_text_pushes_edit_text_command_when_text_changed() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     // PlaceOverlay should push one command
     assert_eq!(app.undo_stack.len(), 1);
@@ -2141,32 +2131,40 @@ fn commit_text_no_command_when_text_unchanged() {
     assert_eq!(app.undo_stack.len(), commands_before);
 }
 
+/// The text of the document's only overlay.
+fn only_overlay_text(app: &App) -> &str {
+    &app.document.as_ref().unwrap().overlays[0].text
+}
+
+/// Place an overlay, type `text` into it and commit, then undo — leaving the
+/// overlay blank again with the edit sitting on the redo stack. Asserts the
+/// commit and the undo each landed, so callers only state what happens next.
+fn place_type_commit_then_undo(text: &str) -> App {
+    let mut app = test_app_with_document();
+    place_and_commit_raw_text(&mut app, text);
+
+    let _ = app.update(Message::Undo);
+    app
+}
+
 #[test]
 fn undo_after_text_edit_restores_previous_text() {
-    let mut app = test_app_with_document();
-    place_and_commit_raw_text(&mut app, "Hello");
-
-    // Undo
-    let _ = app.update(Message::Undo);
+    let app = place_type_commit_then_undo("Hello");
 
     // Text should be restored to empty
-    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "");
+    assert_eq!(only_overlay_text(&app), "");
 }
 
 #[test]
 fn redo_after_undo_restores_edited_text() {
-    let mut app = test_app_with_document();
-    place_and_commit_raw_text(&mut app, "Hello");
-
-    // Undo
-    let _ = app.update(Message::Undo);
-    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "");
+    let mut app = place_type_commit_then_undo("Hello");
+    assert_eq!(only_overlay_text(&app), "");
 
     // Redo
     let _ = app.update(Message::Redo);
 
     // Text should be restored to "Hello"
-    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+    assert_eq!(only_overlay_text(&app), "Hello");
 }
 
 #[test]
@@ -2180,7 +2178,6 @@ fn stack_overlay_element_returns_placeholder_when_not_editing() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::CommitText);
     // After commit: editing=false, active_overlay=Some(0)
@@ -2205,7 +2202,6 @@ fn stack_overlay_element_returns_widget_when_editing() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     // After PlaceOverlay: editing=true
     assert!(app.canvas.editing);
@@ -2228,7 +2224,6 @@ fn place_overlay_returns_focus_task() {
     let task = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     let debug = format!("{task:?}");
     assert!(
@@ -2240,10 +2235,11 @@ fn place_overlay_returns_focus_task() {
 #[test]
 fn place_multiline_overlay_returns_focus_task() {
     let mut app = test_app_with_document();
-    let task = app.update(Message::PlaceOverlay {
+    let task = app.update(Message::PlaceTextBox {
         page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: Some(200.0),
+        top_left: PdfPosition { x: 100.0, y: 700.0 },
+        width: 200.0,
+        height: 60.0,
     });
     let debug = format!("{task:?}");
     assert!(
@@ -2266,10 +2262,11 @@ fn edit_overlay_returns_focus_task() {
 #[test]
 fn edit_multiline_overlay_returns_focus_task() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    app.update(Message::PlaceTextBox {
         page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: Some(200.0),
+        top_left: PdfPosition { x: 100.0, y: 700.0 },
+        width: 200.0,
+        height: 60.0,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::CommitText);
@@ -2548,7 +2545,6 @@ fn save_with_existing_path_while_editing_returns_focus_task() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     assert!(app.canvas.editing);
@@ -2587,7 +2583,6 @@ fn save_destination_chosen_while_editing_returns_focus_task() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     assert!(app.canvas.editing);
@@ -3335,7 +3330,6 @@ fn commit_text_removes_overlay_left_empty() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::CommitText);
     assert!(
@@ -3350,7 +3344,6 @@ fn commit_text_clears_selection_when_empty_overlay_removed() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::CommitText);
     assert!(
@@ -3365,7 +3358,6 @@ fn commit_text_keeps_overlay_that_has_text() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::CommitText);
@@ -3379,7 +3371,6 @@ fn abandoned_empty_placement_leaves_no_undo_history() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::CommitText);
     assert!(
@@ -3394,7 +3385,6 @@ fn abandoned_empty_placement_leaves_no_undo_history_after_style_change() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::ChangeFont(courier));
@@ -3413,7 +3403,6 @@ fn erasing_an_existing_overlay_records_a_deletion_for_undo() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::CommitText);
@@ -3435,7 +3424,6 @@ fn escape_while_editing_empty_overlay_removes_it() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::DeselectOverlay);
     assert!(app.document.as_ref().unwrap().overlays.is_empty());
@@ -3449,7 +3437,6 @@ fn escape_while_editing_commits_text_then_clears_selection() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::DeselectOverlay);
@@ -3467,14 +3454,12 @@ fn discarding_an_empty_overlay_clears_the_redo_stack() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::CommitText);
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 200.0, y: 600.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("World".to_string()));
     app.update(Message::CommitText);
@@ -3504,7 +3489,6 @@ fn discarding_an_earlier_overlay_keeps_a_later_placement_in_history() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("one".to_string()));
     app.update(Message::DeselectOverlay);
@@ -3513,7 +3497,6 @@ fn discarding_an_earlier_overlay_keeps_a_later_placement_in_history() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 200.0, y: 600.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("two".to_string()));
     app.update(Message::EditOverlay(0));
@@ -3543,7 +3526,6 @@ fn commit_text_removes_overlay_left_with_only_whitespace() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("   ".to_string()));
     app.update(Message::DeselectOverlay);
@@ -3565,7 +3547,6 @@ fn erasing_an_existing_overlay_to_whitespace_records_a_deletion_for_undo() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::CommitText);
@@ -3594,7 +3575,6 @@ fn editing_font_is_none_when_not_editing() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::CommitText);
     assert!(!app.canvas.editing);
@@ -3609,7 +3589,6 @@ fn editing_font_matches_selected_bundled_font() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     assert!(app.canvas.editing);
     let expected = app.font_registry.get(great_vibes).iced_font;
@@ -3623,7 +3602,6 @@ fn editing_font_follows_font_change_during_edit() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::ChangeFont(courier));
@@ -3637,10 +3615,11 @@ fn editing_font_for_multiline_overlay_matches_selected_font() {
     let mut app = test_app_with_document();
     let times = app.font_registry.find_by_name("Times Bold").unwrap();
     app.update(Message::ChangeFont(times));
-    app.update(Message::PlaceOverlay {
+    app.update(Message::PlaceTextBox {
         page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: Some(200.0),
+        top_left: PdfPosition { x: 100.0, y: 700.0 },
+        width: 200.0,
+        height: 60.0,
     });
     assert!(app.editor_content.is_some());
     let expected = app.font_registry.get(times).iced_font;
@@ -3660,7 +3639,6 @@ fn place_and_commit_raw_text(app: &mut App, text: &str) {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.document.as_mut().unwrap().overlays[0].text = text.to_string();
     let _ = app.update(Message::CommitText);
@@ -3671,7 +3649,6 @@ fn place_committed_overlay(app: &mut App, x: f32, text: &str) {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText(text.to_string()));
     app.update(Message::CommitText);
@@ -3700,25 +3677,42 @@ fn xorshift(state: &mut u64) -> u64 {
 /// which legitimately holds text the history has not recorded yet. Style is
 /// included only for pools that actually change it — it stays on the document
 /// history even mid-session, so it is always safe to compare when present.
+/// Box shape is compared always, for the same reason: a resize is a document
+/// command whether or not a session is open, so it is never uncommitted.
 fn describe_overlay(app: &App, index: usize, overlay: &TextOverlay, include_style: bool) -> String {
     let style = if include_style {
         format!("#{:?}/{}", overlay.font, overlay.font_size)
     } else {
         String::new()
     };
+    let shape = format!("[{:?}x{:?}]", overlay.width, overlay.min_height);
     if app.canvas.editing && app.canvas.active_overlay == Some(index) {
-        format!("@{}{style}", overlay.position.x)
+        format!("@{}{style}{shape}", overlay.position.x)
     } else {
-        format!("{}@{}{style}", overlay.text, overlay.position.x)
+        format!("{}@{}{style}{shape}", overlay.text, overlay.position.x)
     }
 }
 
+/// Size of the pool [`core_interleaving_message`] draws from.
+const CORE_POOL_SIZE: u64 = 11;
+
 /// The message pool both property checks draw from, indexed by `draw` in
-/// `0..9`: placement, typing, blanking, commit, deletion, selection, re-entry
-/// and undo/redo. Selection cases fall through to undo when the document is
-/// empty, so there is always a message to send.
+/// `0..CORE_POOL_SIZE`: placement of a point and of a dragged box, typing,
+/// blanking, commit, deletion, selection, re-entry, resize and undo/redo.
+/// Cases needing an overlay fall through to undo when the document is empty,
+/// so there is always a message to send.
 fn core_interleaving_message(app: &App, rng: &mut u64, step: u64, draw: u64) -> Message {
     let len = app.document.as_ref().unwrap().overlays.len();
+    let boxes: Vec<usize> = app
+        .document
+        .as_ref()
+        .unwrap()
+        .overlays
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.width.is_some())
+        .map(|(i, _)| i)
+        .collect();
     match draw {
         0 => Message::PlaceOverlay {
             page: 1,
@@ -3726,7 +3720,6 @@ fn core_interleaving_message(app: &App, rng: &mut u64, step: u64, draw: u64) -> 
                 x: (step * 7) as f32,
                 y: 700.0,
             },
-            width: None,
         },
         1 => Message::UpdateOverlayText(format!("t{step}")),
         2 => Message::UpdateOverlayText(String::new()),
@@ -3736,6 +3729,30 @@ fn core_interleaving_message(app: &App, rng: &mut u64, step: u64, draw: u64) -> 
         6 if len > 0 => Message::EditOverlay((xorshift(rng) % len as u64) as usize),
         7 => Message::Undo,
         8 => Message::Redo,
+        9 => Message::PlaceTextBox {
+            page: 1,
+            top_left: PdfPosition {
+                x: (step * 7) as f32,
+                y: 700.0,
+            },
+            width: 100.0 + step as f32,
+            height: 50.0 + step as f32,
+        },
+        // Resizes read the box they replace off the live overlay, exactly as
+        // the canvas and IPC producers do — a stale `old_box` is a divergence
+        // neither can create.
+        10 if !boxes.is_empty() => {
+            let index = boxes[(xorshift(rng) % boxes.len() as u64) as usize];
+            let overlays = &app.document.as_ref().unwrap().overlays;
+            Message::ResizeOverlay {
+                index,
+                old_box: crate::overlay::OverlayBox::of(&overlays[index]).unwrap(),
+                new_box: crate::overlay::OverlayBox {
+                    width: 30.0 + step as f32,
+                    min_height: (step % 4) as f32 * 25.0,
+                },
+            }
+        }
         _ => Message::Undo,
     }
 }
@@ -3787,18 +3804,20 @@ fn assert_history_tracks_document(
 }
 
 fn assert_history_matches_document(app: &App, context: &str) {
-    let live: Vec<(String, f32)> = app
+    /// Text, place and box shape — everything a command can change that the
+    /// history has to be able to reproduce.
+    fn describe(o: &TextOverlay) -> (String, f32, Option<f32>, Option<f32>) {
+        (o.text.clone(), o.position.x, o.width, o.min_height)
+    }
+    let live: Vec<_> = app
         .document
         .as_ref()
         .unwrap()
         .overlays
         .iter()
-        .map(|o| (o.text.clone(), o.position.x))
+        .map(describe)
         .collect();
-    let replayed: Vec<(String, f32)> = replay_undo_stack(app)
-        .iter()
-        .map(|o| (o.text.clone(), o.position.x))
-        .collect();
+    let replayed: Vec<_> = replay_undo_stack(app).iter().map(describe).collect();
     assert_eq!(
         live, replayed,
         "{context}: document diverged from its undo history"
@@ -3813,7 +3832,6 @@ fn undo_during_fresh_placement_removes_the_overlay_being_placed() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 200.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::Undo);
 
@@ -3828,7 +3846,6 @@ fn undo_during_fresh_placement_ends_the_edit_session() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::Undo);
 
@@ -3847,7 +3864,6 @@ fn redo_after_undoing_a_fresh_placement_does_not_resurrect_a_ghost() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::Undo);
     app.update(Message::CommitText);
@@ -3886,7 +3902,6 @@ fn deleting_the_overlay_being_placed_ends_the_edit_session() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::DeleteOverlay);
 
@@ -3936,13 +3951,11 @@ fn stale_edit_session_cannot_discard_an_unrelated_overlay() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::DeleteOverlay);
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 200.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::Undo);
     app.update(Message::Undo);
@@ -3959,7 +3972,7 @@ fn stale_edit_session_cannot_discard_an_unrelated_overlay() {
 #[test]
 fn document_always_matches_undo_history_under_arbitrary_interleavings() {
     assert_history_tracks_document(1..2000, false, |app, rng, step| {
-        let draw = xorshift(rng) % 9;
+        let draw = xorshift(rng) % CORE_POOL_SIZE;
         core_interleaving_message(app, rng, step, draw)
     });
 }
@@ -4041,7 +4054,6 @@ fn redo_while_typing_into_a_fresh_placement_keeps_the_placement() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("draft".to_string()));
     app.update(Message::Redo);
@@ -4109,7 +4121,6 @@ fn undoing_a_delete_made_while_typing_restores_only_recorded_text() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("typed".to_string()));
     app.update(Message::DeleteOverlay);
@@ -4124,14 +4135,12 @@ fn placing_an_overlay_while_editing_commits_the_pending_text() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     app.update(Message::UpdateOverlayText("first".to_string()));
     // The canvas commits before placing, but IPC `click` does not.
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 200.0, y: 600.0 },
-        width: None,
     });
 
     assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "first");
@@ -4141,10 +4150,11 @@ fn placing_an_overlay_while_editing_commits_the_pending_text() {
 #[test]
 fn selecting_a_different_overlay_ends_the_multiline_edit_session() {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
+    app.update(Message::PlaceTextBox {
         page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: Some(200.0),
+        top_left: PdfPosition { x: 100.0, y: 700.0 },
+        width: 200.0,
+        height: 60.0,
     });
     app.update(Message::UpdateOverlayText("multi".to_string()));
     place_committed_overlay(&mut app, 300.0, "single");
@@ -4338,6 +4348,161 @@ fn check_ipc_frame_wait_keeps_pending_when_not_yet_presented() {
     assert!(app.pending_frame_wait.is_some());
 }
 
+// =====================================================================
+// spe-x9e / spe-b2h: the floating editor fills the same box the canvas
+// draws for the overlay, so the box the user dragged out is the box
+// they type into
+// =====================================================================
+
+/// Put `overlay` into edit mode, render the floating edit widget the app
+/// builds for it, and return the size of the blue outline it drew alongside
+/// the canvas text box that outline is supposed to match.
+fn edit_widget_and_text_box(overlay: crate::overlay::TextOverlay) -> (iced::Size, iced::Rectangle) {
+    let mut app = test_app_with_document();
+    let doc = app.document.as_mut().unwrap();
+    doc.page_dimensions.insert(1, (612.0, 792.0));
+    doc.overlays.push(overlay.clone());
+    app.canvas.active_overlay = Some(0);
+    app.canvas.editing = true;
+    if overlay.width.is_some() {
+        app.editor_content = Some(iced::widget::text_editor::Content::with_text(&overlay.text));
+    }
+
+    let doc = app.document.as_ref().unwrap();
+    let dpi = canvas::effective_dpi(app.canvas.zoom);
+    let layout = canvas::page_layout(&doc.page_dimensions, doc.page_count, app.canvas.zoom, dpi);
+    let element = app.stack_overlay_element(doc, &layout);
+    let (left, top, right, bottom) =
+        crate::ui::test_harness::Harness::new(element, crate::ui::test_harness::RENDER_SIZE)
+            .screenshot()
+            .selection_blue_bounds()
+            .expect("the floating editor outlines itself in the selection color");
+
+    let text_box = canvas::overlay_text_box(
+        &overlay,
+        0.0,
+        0.0,
+        crate::coordinate::render_scale(app.canvas.zoom, dpi),
+        &app.font_registry,
+    );
+    let drawn = iced::Size::new((right - left + 1) as f32, (bottom - top + 1) as f32);
+    (drawn, text_box)
+}
+
+/// A multi-line overlay 150pt wide holding `text`, with an optional dragged
+/// minimum height.
+fn box_overlay(text: &str, min_height: Option<f32>) -> crate::overlay::TextOverlay {
+    let registry = crate::fonts::FontRegistry::new();
+    crate::overlay::TextOverlay {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 700.0 },
+        text: text.to_string(),
+        font: registry.find_by_name("Courier").unwrap(),
+        font_size: 12.0,
+        width: Some(150.0),
+        min_height,
+    }
+}
+
+fn assert_editor_matches_box(overlay: crate::overlay::TextOverlay) {
+    let (drawn, text_box) = edit_widget_and_text_box(overlay);
+    assert!(
+        (drawn.width - text_box.width).abs() <= 2.0,
+        "the editor is {} wide but the canvas box is {}",
+        drawn.width,
+        text_box.width
+    );
+    assert!(
+        (drawn.height - text_box.height).abs() <= 2.0,
+        "the editor is {} tall but the canvas box is {}",
+        drawn.height,
+        text_box.height
+    );
+}
+
+#[test]
+fn the_editor_fills_the_box_that_was_dragged_out_for_it() {
+    // spe-x9e: the editor sized itself to its content, so a box dragged 100pt
+    // tall opened as a single-line strip.
+    assert_editor_matches_box(box_overlay("", Some(100.0)));
+}
+
+#[test]
+fn the_editor_grows_with_text_beyond_the_dragged_height() {
+    // spe-b2h: past the bottom of the box, typing grows the box.
+    assert_editor_matches_box(box_overlay("one\ntwo\nthree\nfour\nfive", Some(30.0)));
+}
+
+#[test]
+fn the_editor_spans_the_lines_its_text_wraps_onto() {
+    // The editor wraps at the box width just as the canvas does, so both must
+    // count the same lines even where the user typed no line breaks.
+    assert_editor_matches_box(box_overlay(
+        "mmmm mmmm mmmm mmmm mmmm mmmm mmmm mmmm mmmm",
+        None,
+    ));
+}
+
+#[test]
+fn a_placed_text_box_starts_its_first_line_below_the_boxs_top_edge() {
+    // spe-x9e: the drag rectangle's top edge is where the first *line*
+    // starts, but an overlay is anchored by its first *baseline*, one font
+    // size lower. Anchoring at the top edge floated the whole box a line
+    // above the rectangle the user drew.
+    let mut app = test_app_with_document();
+    app.document
+        .as_mut()
+        .unwrap()
+        .page_dimensions
+        .insert(1, (612.0, 792.0));
+    app.toolbar.font_size = 20.0;
+
+    app.update(Message::PlaceTextBox {
+        page: 1,
+        top_left: PdfPosition { x: 100.0, y: 700.0 },
+        width: 200.0,
+        height: 90.0,
+    });
+
+    let overlay = &app.document.as_ref().unwrap().overlays[0];
+    assert!((overlay.position.x - 100.0).abs() < f32::EPSILON);
+    assert!(
+        (overlay.position.y - 680.0).abs() < f32::EPSILON,
+        "the first baseline should sit one 20pt font size below the box top, got {}",
+        overlay.position.y
+    );
+    assert!((overlay.width.unwrap() - 200.0).abs() < f32::EPSILON);
+    assert!(
+        (overlay.min_height.unwrap() - 90.0).abs() < f32::EPSILON,
+        "the box keeps the height it was dragged to, got {:?}",
+        overlay.min_height
+    );
+}
+
+#[test]
+fn a_placed_text_box_opens_an_edit_session_with_a_multiline_editor() {
+    let mut app = test_app_with_document();
+    app.document
+        .as_mut()
+        .unwrap()
+        .page_dimensions
+        .insert(1, (612.0, 792.0));
+
+    app.update(Message::PlaceTextBox {
+        page: 1,
+        top_left: PdfPosition { x: 100.0, y: 700.0 },
+        width: 200.0,
+        height: 90.0,
+    });
+
+    assert!(app.canvas.editing);
+    assert_eq!(app.canvas.active_overlay, Some(0));
+    assert!(
+        app.editor_content.is_some(),
+        "a wrapping overlay is edited through the multi-line editor"
+    );
+}
+
 // --- Session-granular undo (spe-5d1) ---
 //
 // While an edit box is open, Ctrl+Z steps back through the edits made inside
@@ -4429,6 +4594,56 @@ fn session_undo_of_a_font_size_change_restores_the_previous_size() {
 }
 
 #[test]
+fn abandoning_a_fresh_placement_keeps_history_for_other_overlays_changed_meanwhile() {
+    // Abandoning a freshly placed overlay rewinds the history to before the
+    // placement, which is only sound for commands that concern that overlay.
+    // A resize of a *different* overlay stays in the document, so throwing its
+    // command away leaves the document ahead of the history describing it.
+    let mut app = test_app_with_document();
+    app.document
+        .as_mut()
+        .unwrap()
+        .page_dimensions
+        .insert(1, (612.0, 792.0));
+
+    app.update(Message::PlaceTextBox {
+        page: 1,
+        top_left: PdfPosition { x: 100.0, y: 700.0 },
+        width: 200.0,
+        height: 80.0,
+    });
+    app.update(Message::UpdateOverlayText("established".to_string()));
+    app.update(Message::CommitText);
+
+    // A new placement opens a fresh session; resizing the established overlay
+    // records a command on top of it.
+    app.update(Message::PlaceTextBox {
+        page: 1,
+        top_left: PdfPosition { x: 300.0, y: 700.0 },
+        width: 150.0,
+        height: 60.0,
+    });
+    let established = crate::overlay::OverlayBox::of(&app.document.as_ref().unwrap().overlays[0])
+        .expect("the established overlay is a box");
+    app.update(Message::ResizeOverlay {
+        index: 0,
+        old_box: established,
+        new_box: crate::overlay::OverlayBox {
+            width: 400.0,
+            min_height: 250.0,
+        },
+    });
+
+    // Abandon the blank placement.
+    app.update(Message::CommitText);
+
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 1, "the blank placement should be discarded");
+    assert_eq!(overlays[0].width, Some(400.0), "the resize stands");
+    assert_history_matches_document(&app, "after abandoning a placement over a resize");
+}
+
+#[test]
 fn exhausting_the_session_history_cancels_the_session_then_reaches_the_document() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "committed");
@@ -4504,7 +4719,6 @@ fn session_undo_inside_a_fresh_placement_stops_at_the_placement() {
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     type_text(&mut app, "draft");
 
@@ -4551,11 +4765,15 @@ fn document_always_matches_undo_history_under_session_undo_interleavings() {
     assert_history_tracks_document(1..1500, true, |app, rng, step| {
         let courier = app.font_registry.find_by_name("Courier").unwrap();
         let helvetica = app.font_registry.default_font();
-        match xorshift(rng) % 11 {
+        match xorshift(rng) % 13 {
             7 => Message::ChangeFont(if step % 2 == 0 { courier } else { helvetica }),
             8 => Message::ChangeFontSize(10.0 + (step % 5) as f32),
             9 => core_interleaving_message(app, rng, step, 7),
             10 => core_interleaving_message(app, rng, step, 8),
+            // A box placed and resized mid-session is how a resize reaches the
+            // session history as a `SessionStep::Document`.
+            11 => core_interleaving_message(app, rng, step, 9),
+            12 => core_interleaving_message(app, rng, step, 10),
             draw => core_interleaving_message(app, rng, step, draw),
         }
     });
@@ -4607,4 +4825,66 @@ fn an_open_session_is_always_undoable_because_closing_it_is_work() {
         app.can_undo(),
         "the box is open, so undo has the close to spend itself on"
     );
+}
+
+#[test]
+fn a_resize_made_mid_session_is_undone_before_the_session_closes() {
+    // A resize goes through `execute_command`, so an open session records it
+    // as a `SessionStep::Document`. Ctrl+Z must therefore walk the resize back
+    // while leaving the box open, the same way it walks back a typing burst.
+    let mut app = test_app_with_document();
+    app.document
+        .as_mut()
+        .unwrap()
+        .page_dimensions
+        .insert(1, (612.0, 792.0));
+
+    app.update(Message::PlaceTextBox {
+        page: 1,
+        top_left: PdfPosition { x: 100.0, y: 700.0 },
+        width: 200.0,
+        height: 80.0,
+    });
+    type_text(&mut app, "boxed");
+
+    let before = crate::overlay::OverlayBox::of(&app.document.as_ref().unwrap().overlays[0])
+        .expect("a placed text box is resizable");
+    app.update(Message::ResizeOverlay {
+        index: 0,
+        old_box: before,
+        new_box: crate::overlay::OverlayBox {
+            width: 400.0,
+            min_height: 250.0,
+        },
+    });
+    assert_eq!(
+        app.document.as_ref().unwrap().overlays[0].width,
+        Some(400.0)
+    );
+
+    // 1: the resize, with the box still open.
+    app.update(Message::Undo);
+    let overlay = &app.document.as_ref().unwrap().overlays[0];
+    assert_eq!(overlay.width, Some(200.0), "the resize is walked back");
+    assert_eq!(overlay.min_height, Some(80.0));
+    assert_eq!(overlay.text, "boxed", "the typing is untouched");
+    assert!(
+        app.canvas.editing,
+        "undoing a mid-session resize must leave the box open"
+    );
+
+    // 2: the typing burst, still inside the session.
+    app.update(Message::Undo);
+    assert_eq!(overlay_text(&app), "");
+    assert!(app.canvas.editing);
+
+    // 3: redo reapplies the burst, then the resize, in the order they were made.
+    app.update(Message::Redo);
+    assert_eq!(overlay_text(&app), "boxed");
+    app.update(Message::Redo);
+    assert_eq!(
+        app.document.as_ref().unwrap().overlays[0].width,
+        Some(400.0)
+    );
+    assert!(app.canvas.editing, "redo keeps the box open too");
 }

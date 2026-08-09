@@ -6,6 +6,14 @@ use iced_test::core::clipboard;
 use iced_test::core::renderer::Headless;
 use iced_test::runtime::{UserInterface, user_interface};
 
+/// Size of the headless render surface, in logical pixels. Wide enough to
+/// hold a US Letter page at zoom 1 with margins on both sides. The page is
+/// taller than the surface, so its bottom edge falls outside the capture.
+pub const RENDER_SIZE: iced::Size = iced::Size {
+    width: 900.0,
+    height: 700.0,
+};
+
 /// Drives a single element through the real Iced runtime without a window.
 ///
 /// Events go in the way the runtime delivers them, so widgets react through
@@ -56,11 +64,24 @@ impl<'a, Message> Harness<'a, Message> {
     /// Move to `position` and press-and-release the left button there.
     pub fn click(&mut self, position: iced::Point) -> Vec<Message> {
         let mut messages = self.move_cursor(position);
-        messages.extend(self.publish(&[
-            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
-            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
-        ]));
+        messages.extend(self.press_left());
+        messages.extend(self.release_left());
         messages
+    }
+
+    /// Press the left button without releasing it, so a drag can be left in
+    /// flight and drawn mid-gesture.
+    pub fn press_left(&mut self) -> Vec<Message> {
+        self.publish(&[iced::Event::Mouse(mouse::Event::ButtonPressed(
+            mouse::Button::Left,
+        ))])
+    }
+
+    /// Release the left button.
+    pub fn release_left(&mut self) -> Vec<Message> {
+        self.publish(&[iced::Event::Mouse(mouse::Event::ButtonReleased(
+            mouse::Button::Left,
+        ))])
     }
 
     /// Press `key` with no modifiers held.
@@ -155,6 +176,50 @@ impl Screenshot {
         (0..height)
             .filter(|y| self.darkening(x, *y) >= threshold)
             .collect()
+    }
+
+    /// Pixels painted in a strong, saturated blue — selection borders, resize
+    /// handles, and the floating editor's own outline, which are opaque,
+    /// unlike the pale overlay tint.
+    ///
+    /// The threshold is derived from `SELECTION_COLOR` itself (halfway to its
+    /// blue/red channel gap) so it tracks the renderer's actual selection
+    /// color instead of a magic number that could silently fall out of sync.
+    pub fn selection_blue_pixels(&self) -> usize {
+        self.rgba
+            .chunks_exact(4)
+            .filter(|p| Self::is_selection_blue(p[0], p[2]))
+            .count()
+    }
+
+    /// Bounding box of the strongly blue pixels as (left, top, right, bottom),
+    /// or None if none exist.
+    pub fn selection_blue_bounds(&self) -> Option<(u32, u32, u32, u32)> {
+        let mut bounds: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let (r, _, b) = self.pixel(x, y);
+                if !Self::is_selection_blue(r, b) {
+                    continue;
+                }
+                bounds = Some(match bounds {
+                    None => (x, y, x, y),
+                    Some((l, t, rt, bt)) => (l.min(x), t.min(y), rt.max(x), bt.max(y)),
+                });
+            }
+        }
+        bounds
+    }
+
+    /// Shared by `selection_blue_pixels` and `selection_blue_bounds` so the
+    /// count and the bounding box always describe the same pixel set.
+    fn is_selection_blue(r: u8, b: u8) -> bool {
+        f32::from(b) - f32::from(r) > Self::selection_blue_threshold()
+    }
+
+    fn selection_blue_threshold() -> f32 {
+        let color = crate::ui::canvas::SELECTION_COLOR;
+        (color.b - color.r) * 255.0 / 2.0
     }
 
     /// Number of pixels inside `region` whose colour differs from `other`'s.

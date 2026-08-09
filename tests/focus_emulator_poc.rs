@@ -107,7 +107,6 @@ fn editing_preset() -> Preset<App, Message> {
         let place_task = app.update(Message::PlaceOverlay {
             page: 1,
             position: PdfPosition { x: 100.0, y: 700.0 },
-            width: None,
         });
 
         (app, iced::Task::batch([boot_task, place_task]))

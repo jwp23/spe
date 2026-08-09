@@ -15,7 +15,7 @@ use iced::widget::image::Handle;
 use crate::command::Command as UndoCommand;
 use crate::config::AppConfig;
 use crate::fonts::{FontId, FontRegistry};
-use crate::overlay::{PdfPosition, TextOverlay};
+use crate::overlay::{OverlayBox, PdfPosition, TextOverlay};
 use crate::ui::canvas::CanvasState;
 use crate::ui::sidebar::SidebarState;
 use crate::ui::toolbar::{self, ToolbarState};
@@ -131,10 +131,20 @@ pub enum Message {
     PageBatchRendered(Vec<(u32, Handle)>),
 
     // Overlay editing (undoable)
+    /// Place a single-line overlay whose first baseline sits at `position` —
+    /// what a click on blank page area asks for.
     PlaceOverlay {
         page: u32,
         position: PdfPosition,
-        width: Option<f32>,
+    },
+    /// Place a wrapping overlay filling the rectangle a drag drew out.
+    /// `top_left` is the box's upper-left corner in PDF space, not a
+    /// baseline: the first line is laid out inside the box, below its top.
+    PlaceTextBox {
+        page: u32,
+        top_left: PdfPosition,
+        width: f32,
+        height: f32,
     },
     UpdateOverlayText(String),
     TextEditorAction(iced::widget::text_editor::Action),
@@ -180,8 +190,8 @@ pub enum Message {
 
     ResizeOverlay {
         index: usize,
-        old_width: f32,
-        new_width: f32,
+        old_box: OverlayBox,
+        new_box: OverlayBox,
     },
 
     // Undo/Redo
@@ -457,11 +467,15 @@ impl App {
             Message::PageBatchRendered(pages) => return self.handle_page_batch_rendered(pages),
 
             // --- Overlay editing (undoable) ---
-            Message::PlaceOverlay {
+            Message::PlaceOverlay { page, position } => {
+                return self.handle_place_overlay(page, position);
+            }
+            Message::PlaceTextBox {
                 page,
-                position,
+                top_left,
                 width,
-            } => return self.handle_place_overlay(page, position, width),
+                height,
+            } => return self.handle_place_text_box(page, top_left, width, height),
             Message::UpdateOverlayText(text) => self.handle_update_overlay_text(text),
             Message::TextEditorAction(action) => self.handle_text_editor_action(action),
             Message::CommitText => {
@@ -472,9 +486,9 @@ impl App {
             }
             Message::ResizeOverlay {
                 index,
-                old_width,
-                new_width,
-            } => self.handle_resize_overlay(index, old_width, new_width),
+                old_box,
+                new_box,
+            } => self.handle_resize_overlay(index, old_box, new_box),
             Message::ChangeFont(font) => return self.handle_change_font(font),
             Message::ChangeFontSize(size) => return self.handle_change_font_size(size),
             Message::FontSizeArrowPressed(increment) => {

@@ -87,7 +87,6 @@ fn undo_redo_with_view_rebuild() {
     let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
     let _ = app.update(Message::CommitText);
@@ -171,7 +170,6 @@ fn delete_overlay_with_selection() {
     let _ = app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
     });
     assert!(app.canvas.active_overlay.is_some());
     verify_view_renders(&app);
@@ -348,6 +346,7 @@ fn canvas_renders_with_overlays_on_page() {
         font: app.font_registry.default_font(),
         font_size: 12.0,
         width: None,
+        min_height: None,
     });
     app.document = Some(doc);
     verify_view_renders(&app);
@@ -367,6 +366,7 @@ fn canvas_renders_with_selected_overlay() {
         font: app.font_registry.find_by_name("Courier").unwrap(),
         font_size: 14.0,
         width: None,
+        min_height: None,
     });
     app.document = Some(doc);
     app.canvas.active_overlay = Some(0);

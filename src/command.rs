@@ -1,7 +1,7 @@
 // Undo/redo command model: each variant captures enough state to apply and reverse the operation.
 
 use crate::fonts::FontId;
-use crate::overlay::{PdfPosition, TextOverlay};
+use crate::overlay::{OverlayBox, PdfPosition, TextOverlay};
 
 /// A reversible editing operation on the overlay list.
 #[derive(Debug, Clone)]
@@ -35,8 +35,8 @@ pub enum Command {
     },
     ResizeOverlay {
         index: usize,
-        old_width: f32,
-        new_width: f32,
+        old_box: OverlayBox,
+        new_box: OverlayBox,
     },
 }
 
@@ -141,6 +141,20 @@ impl Command {
         matches!(self, Self::PlaceOverlay { .. } | Self::DeleteOverlay { .. })
     }
 
+    /// The overlay this command changes, or `None` for one that adds an
+    /// overlay rather than addressing an existing one.
+    pub fn target_index(&self) -> Option<usize> {
+        match self {
+            Self::PlaceOverlay { .. } => None,
+            Self::DeleteOverlay { index, .. }
+            | Self::MoveOverlay { index, .. }
+            | Self::EditText { index, .. }
+            | Self::ChangeOverlayFont { index, .. }
+            | Self::ChangeOverlayFontSize { index, .. }
+            | Self::ResizeOverlay { index, .. } => Some(*index),
+        }
+    }
+
     /// Applies this command to the overlay list.
     pub fn apply(&self, overlays: &mut Vec<TextOverlay>) {
         match self {
@@ -160,11 +174,7 @@ impl Command {
             } => {
                 overlays[*index].font_size = *new_size;
             }
-            Self::ResizeOverlay {
-                index, new_width, ..
-            } => {
-                overlays[*index].width = Some(*new_width);
-            }
+            Self::ResizeOverlay { index, new_box, .. } => new_box.apply_to(&mut overlays[*index]),
         }
     }
 
@@ -187,11 +197,7 @@ impl Command {
             } => {
                 overlays[*index].font_size = *old_size;
             }
-            Self::ResizeOverlay {
-                index, old_width, ..
-            } => {
-                overlays[*index].width = Some(*old_width);
-            }
+            Self::ResizeOverlay { index, old_box, .. } => old_box.apply_to(&mut overlays[*index]),
         }
     }
 }
@@ -210,6 +216,7 @@ mod tests {
             font: registry.default_font(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         }
     }
 
@@ -350,6 +357,7 @@ mod tests {
                 font: courier,
                 font_size: 14.0,
                 width: None,
+                min_height: None,
             },
             TextOverlay {
                 page: 1,
@@ -358,6 +366,7 @@ mod tests {
                 font: times,
                 font_size: 16.0,
                 width: None,
+                min_height: None,
             },
         ];
         let deleted = overlays[1].clone();
@@ -403,10 +412,51 @@ mod tests {
         assert!(
             !Command::ResizeOverlay {
                 index: 0,
-                old_width: 1.0,
-                new_width: 2.0,
+                old_box: OverlayBox {
+                    width: 1.0,
+                    min_height: 0.0
+                },
+                new_box: OverlayBox {
+                    width: 2.0,
+                    min_height: 0.0
+                },
             }
             .changes_overlay_count()
+        );
+    }
+
+    #[test]
+    fn only_a_placement_addresses_no_existing_overlay() {
+        assert_eq!(
+            Command::PlaceOverlay {
+                overlay: sample_overlay()
+            }
+            .target_index(),
+            None
+        );
+        assert_eq!(
+            Command::EditText {
+                index: 3,
+                old_text: String::new(),
+                new_text: String::new(),
+            }
+            .target_index(),
+            Some(3)
+        );
+        assert_eq!(
+            Command::ResizeOverlay {
+                index: 7,
+                old_box: OverlayBox {
+                    width: 1.0,
+                    min_height: 0.0
+                },
+                new_box: OverlayBox {
+                    width: 2.0,
+                    min_height: 0.0
+                },
+            }
+            .target_index(),
+            Some(7)
         );
     }
 
@@ -503,12 +553,50 @@ mod tests {
         let mut overlays = vec![overlay];
         let cmd = Command::ResizeOverlay {
             index: 0,
-            old_width: 200.0,
-            new_width: 300.0,
+            old_box: OverlayBox {
+                width: 200.0,
+                min_height: 0.0,
+            },
+            new_box: OverlayBox {
+                width: 300.0,
+                min_height: 120.0,
+            },
         };
         cmd.apply(&mut overlays);
-        assert!((overlays[0].width.unwrap() - 300.0).abs() < f32::EPSILON);
+        assert_eq!(overlays[0].width, Some(300.0));
+        assert_eq!(overlays[0].min_height, Some(120.0));
         cmd.reverse(&mut overlays);
-        assert!((overlays[0].width.unwrap() - 200.0).abs() < f32::EPSILON);
+        assert_eq!(overlays[0].width, Some(200.0));
+        assert_eq!(
+            overlays[0].min_height, None,
+            "a zero minimum is stored as the absence of one"
+        );
+    }
+
+    #[test]
+    fn resize_overlay_reverses_a_height_only_change() {
+        // Dragging the bottom edge leaves the width alone, and undo must put
+        // the height back without disturbing it.
+        let mut overlay = sample_overlay();
+        overlay.width = Some(200.0);
+        overlay.min_height = Some(50.0);
+        let mut overlays = vec![overlay];
+        let cmd = Command::ResizeOverlay {
+            index: 0,
+            old_box: OverlayBox {
+                width: 200.0,
+                min_height: 50.0,
+            },
+            new_box: OverlayBox {
+                width: 200.0,
+                min_height: 300.0,
+            },
+        };
+        cmd.apply(&mut overlays);
+        assert_eq!(overlays[0].min_height, Some(300.0));
+        assert_eq!(overlays[0].width, Some(200.0));
+        cmd.reverse(&mut overlays);
+        assert_eq!(overlays[0].min_height, Some(50.0));
+        assert_eq!(overlays[0].width, Some(200.0));
     }
 }
