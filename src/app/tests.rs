@@ -352,6 +352,50 @@ fn escape_maps_to_deselect() {
 }
 
 #[test]
+fn ctrl_enter_maps_to_deselect_same_as_escape() {
+    let msg = key_to_message(
+        keyboard::Key::Named(keyboard::key::Named::Enter),
+        keyboard::Modifiers::COMMAND,
+    );
+    assert!(matches!(msg, Some(Message::DeselectOverlay)));
+}
+
+fn enter_key_press(modifiers: keyboard::Modifiers) -> iced::widget::text_editor::KeyPress {
+    iced::widget::text_editor::KeyPress {
+        key: keyboard::Key::Named(keyboard::key::Named::Enter),
+        modified_key: keyboard::Key::Named(keyboard::key::Named::Enter),
+        physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Enter),
+        modifiers,
+        text: None,
+        status: iced::widget::text_editor::Status::Focused { is_hovered: false },
+    }
+}
+
+#[test]
+fn ctrl_enter_key_binding_does_not_capture_in_text_editor() {
+    let key_press = enter_key_press(keyboard::Modifiers::COMMAND);
+
+    let binding = super::view::overlay_text_editor_key_binding(key_press);
+
+    // Returning None lets the KeyPressed event bubble to the app-level
+    // subscription instead of being captured by the text_editor, matching
+    // how Escape (Binding::Unfocus) bubbles today.
+    assert!(binding.is_none());
+}
+
+#[test]
+fn plain_enter_key_binding_still_inserts_newline_in_text_editor() {
+    let key_press = enter_key_press(keyboard::Modifiers::empty());
+
+    let binding = super::view::overlay_text_editor_key_binding(key_press);
+
+    assert!(matches!(
+        binding,
+        Some(iced::widget::text_editor::Binding::Enter)
+    ));
+}
+
+#[test]
 fn delete_maps_to_delete_overlay() {
     let msg = key_to_message(
         keyboard::Key::Named(keyboard::key::Named::Delete),
