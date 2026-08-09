@@ -508,9 +508,8 @@ async fn handle_connection(
 
 /// Bind the IPC listener and restrict the socket to its owner.
 ///
-/// The socket is a full remote-control channel for the app, and the fallback
-/// path lives in world-writable `/tmp`, so it is chmod'd to 0600 immediately
-/// after bind. A failure to lock it down is fatal to the bind: the socket is
+/// The socket is a full remote-control channel for the app, so it is chmod'd
+/// to 0600 immediately after bind. A failure to lock it down is fatal to the bind: the socket is
 /// removed and the error propagated rather than left readable by other users.
 /// (The window between `bind` and `set_permissions` is unavoidable with
 /// `UnixListener::bind`; the harness mitigates it by placing the socket in a
