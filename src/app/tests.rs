@@ -1659,17 +1659,19 @@ fn edit_overlay_syncs_toolbar_font_and_size() {
     assert_eq!(app.toolbar.font_size_input, "18");
 }
 
-#[test]
-fn undo_font_change_syncs_toolbar_to_active_overlay() {
+/// An app holding one committed overlay whose font was then changed to
+/// Courier, so the change is the last thing in the history.
+fn app_with_a_font_change_to_undo() -> App {
     let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-    });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
+    place_committed_overlay(&mut app, 100.0, "Hello");
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::ChangeFont(courier));
+    app
+}
+
+#[test]
+fn undo_font_change_syncs_toolbar_to_active_overlay() {
+    let mut app = app_with_a_font_change_to_undo();
 
     app.update(Message::Undo);
 
@@ -1921,15 +1923,7 @@ fn font_size_arrow_key_result_decrements_when_focused() {
 
 #[test]
 fn redo_font_change_syncs_toolbar_to_active_overlay() {
-    let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-    });
-    app.update(Message::UpdateOverlayText("Hello".to_string()));
-    app.update(Message::CommitText);
-    let courier = app.font_registry.find_by_name("Courier").unwrap();
-    app.update(Message::ChangeFont(courier));
+    let mut app = app_with_a_font_change_to_undo();
     app.update(Message::Undo);
     // Toolbar drifts away from the overlay's (reverted) font between the
     // undo and the redo, so the redo assertion can't pass by coincidence.
@@ -1938,6 +1932,7 @@ fn redo_font_change_syncs_toolbar_to_active_overlay() {
 
     app.update(Message::Redo);
 
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
     let doc = app.document.as_ref().unwrap();
     assert_eq!(app.toolbar.font, doc.overlays[0].font);
     assert_eq!(app.toolbar.font, courier);
@@ -2068,54 +2063,51 @@ fn commit_text_no_command_when_text_unchanged() {
     assert_eq!(app.undo_stack.len(), commands_before);
 }
 
-#[test]
-fn undo_after_text_edit_restores_previous_text() {
+/// The text of the document's only overlay.
+fn only_overlay_text(app: &App) -> &str {
+    &app.document.as_ref().unwrap().overlays[0].text
+}
+
+/// Place an overlay, type `text` into it and commit, then undo — leaving the
+/// overlay blank again with the edit sitting on the redo stack. Asserts the
+/// commit and the undo each landed, so callers only state what happens next.
+fn place_type_commit_then_undo(text: &str) -> App {
     let mut app = test_app_with_document();
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
     });
+    app.document.as_mut().unwrap().overlays[0].text = text.to_string();
 
-    // Type text
-    let overlay = &mut app.document.as_mut().unwrap().overlays[0];
-    overlay.text = "Hello".to_string();
-
-    // Commit
     let _ = app.update(Message::CommitText);
-    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+    assert_eq!(
+        only_overlay_text(&app),
+        text,
+        "the text should have committed"
+    );
 
-    // Undo
     let _ = app.update(Message::Undo);
+    app
+}
+
+#[test]
+fn undo_after_text_edit_restores_previous_text() {
+    let app = place_type_commit_then_undo("Hello");
 
     // Text should be restored to empty
-    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "");
+    assert_eq!(only_overlay_text(&app), "");
 }
 
 #[test]
 fn redo_after_undo_restores_edited_text() {
-    let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-    });
-
-    // Type text
-    let overlay = &mut app.document.as_mut().unwrap().overlays[0];
-    overlay.text = "Hello".to_string();
-
-    // Commit
-    let _ = app.update(Message::CommitText);
-    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
-
-    // Undo
-    let _ = app.update(Message::Undo);
-    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "");
+    let mut app = place_type_commit_then_undo("Hello");
+    assert_eq!(only_overlay_text(&app), "");
 
     // Redo
     let _ = app.update(Message::Redo);
 
     // Text should be restored to "Hello"
-    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+    assert_eq!(only_overlay_text(&app), "Hello");
 }
 
 #[test]

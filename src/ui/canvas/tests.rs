@@ -2882,9 +2882,19 @@ fn the_text_box_covers_every_glyph_of_a_proportional_font_overlay() {
     // whatever system font resolves for the family — Times' advances there run
     // up to a third wider — so trailing glyphs were drawn past the tint and
     // outside the click target.
+    assert_rendered_text_stays_inside_its_box(overlay_with_font("Times Bold", 36.0, "Hello world"));
+}
+
+/// Render `overlay` alone and assert none of its glyph ink is drawn past the
+/// right edge of the box `overlay_text_box` reports for it.
+///
+/// Ink outside that box is ink outside the tint the user sees and outside the
+/// area a click lands on, whatever put it there.
+#[track_caller]
+fn assert_rendered_text_stays_inside_its_box(overlay: TextOverlay) {
     let dims = uniform_page_dims(1);
     let registry = FontRegistry::new();
-    let overlays = vec![overlay_with_font("Times Bold", 36.0, "Hello world")];
+    let overlays = vec![overlay];
     let canvas = render_overlay_canvas(test_program(&overlays, &dims, &registry), None);
 
     let (sx, sy) = rendered_baseline(&overlays[0], &dims);
@@ -3326,46 +3336,44 @@ fn resize_preview_bounds(
         .expect("a resize in flight must draw the box it would commit")
 }
 
-#[test]
-fn a_resize_in_flight_draws_the_box_it_would_commit() {
-    // The overlay is at PDF (72, 600) in a 150x100pt box: on a 900px-wide
-    // surface its text box is x 216..366, y 188..288. Dragging the corner in
-    // to screen (300, 250) shrinks it to x 216..300, y 188..250, so the blue
-    // ink must stop there rather than at the box's committed edges.
+/// Grab a handle of a 150x100pt box at PDF (72, 600) — on the 900px surface
+/// its text box is x 216..366, y 188..288 — and drag to (`to_x`, `to_y`)
+/// without releasing, returning the previewed box's (right, bottom) edges.
+fn preview_edges_after_dragging(grab_x: f32, grab_y: f32, to_x: f32, to_y: f32) -> (u32, u32) {
     let mut overlay = multiline_overlay_at(72.0, 600.0, 150.0, "one");
     overlay.min_height = Some(100.0);
-    let (_, _, right, bottom) = resize_preview_bounds(overlay, 366.0, 288.0, 300.0, 250.0);
+    let (_, _, right, bottom) = resize_preview_bounds(overlay, grab_x, grab_y, to_x, to_y);
+    (right, bottom)
+}
 
-    let pad = super::SELECTION_BOX_PADDING;
+/// Assert a previewed edge landed on `expected`, allowing for the selection
+/// padding the box is drawn with and a pixel of rasterisation slack.
+#[track_caller]
+fn assert_preview_edge(actual: u32, expected: f32, edge: &str) {
+    let target = expected + super::SELECTION_BOX_PADDING;
     assert!(
-        (right as f32 - (300.0 + pad)).abs() <= 2.0,
-        "the preview's right edge is at column {right}, expected ~{}",
-        300.0 + pad
-    );
-    assert!(
-        (bottom as f32 - (250.0 + pad)).abs() <= 2.0,
-        "the preview's bottom edge is at row {bottom}, expected ~{}",
-        250.0 + pad
+        (actual as f32 - target).abs() <= 2.0,
+        "the preview's {edge} edge is at {actual}, expected ~{target}"
     );
 }
 
 #[test]
-fn a_vertical_resize_in_flight_previews_only_the_height() {
-    let mut overlay = multiline_overlay_at(72.0, 600.0, 150.0, "one");
-    overlay.min_height = Some(100.0);
-    let (_, _, right, bottom) = resize_preview_bounds(overlay, 300.0, 288.0, 300.0, 250.0);
+fn a_resize_in_flight_draws_the_box_it_would_commit() {
+    // Dragging the corner in to screen (300, 250) shrinks the box to
+    // x 216..300, y 188..250, so the blue ink must stop there rather than at
+    // the box's committed edges.
+    let (right, bottom) = preview_edges_after_dragging(366.0, 288.0, 300.0, 250.0);
+    assert_preview_edge(right, 300.0, "right");
+    assert_preview_edge(bottom, 250.0, "bottom");
+}
 
-    let pad = super::SELECTION_BOX_PADDING;
-    assert!(
-        (right as f32 - (366.0 + pad)).abs() <= 2.0,
-        "a vertical resize must keep the box's right edge at ~{}, got {right}",
-        366.0 + pad
-    );
-    assert!(
-        (bottom as f32 - (250.0 + pad)).abs() <= 2.0,
-        "the preview's bottom edge is at row {bottom}, expected ~{}",
-        250.0 + pad
-    );
+#[test]
+fn a_vertical_resize_in_flight_previews_only_the_height() {
+    // Grabbing the bottom bar rather than the corner leaves the right edge
+    // where the committed box has it.
+    let (right, bottom) = preview_edges_after_dragging(300.0, 288.0, 300.0, 250.0);
+    assert_preview_edge(right, 366.0, "right");
+    assert_preview_edge(bottom, 250.0, "bottom");
 }
 
 #[test]
@@ -3374,36 +3382,12 @@ fn committed_text_wraps_inside_the_box_it_was_given() {
     // overlay's committed text ran off the right of its own box in one long
     // line — disagreeing with both the box the user drew and the wrapped
     // lines the PDF writer emits.
-    let dims = uniform_page_dims(1);
-    let registry = FontRegistry::new();
-    let overlays = vec![multiline_overlay_at(
+    assert_rendered_text_stays_inside_its_box(multiline_overlay_at(
         72.0,
         600.0,
         150.0,
         "The quick brown fox jumps over the lazy dog and keeps on running",
-    )];
-    let canvas = render_overlay_canvas(test_program(&overlays, &dims, &registry), None);
-
-    let (sx, sy) = rendered_baseline(&overlays[0], &dims);
-    let text_box = super::overlay_text_box(
-        &overlays[0],
-        sx,
-        sy,
-        crate::coordinate::render_scale(TEST_ZOOM, TEST_DPI),
-        &registry,
-    );
-    let rightmost = rightmost_ink_column(
-        &canvas,
-        text_box.y as u32,
-        (text_box.y + text_box.height) as u32,
-    )
-    .expect("the overlay text should have been rendered");
-
-    let box_right = text_box.x + text_box.width;
-    assert!(
-        rightmost as f32 <= box_right + 1.0,
-        "text reaches column {rightmost} but its box ends at {box_right}"
-    );
+    ));
 }
 
 #[test]
@@ -3439,6 +3423,34 @@ fn a_mostly_horizontal_placement_drag_still_places_a_grabbable_box() {
     );
 }
 
+/// A blank single-page canvas laid out on the standard render surface, ready
+/// for a placement drag. Returned as an element so the caller owns the borrows
+/// the harness needs.
+fn blank_page_canvas<'a>(
+    overlays: &'a [TextOverlay],
+    dims: &'a HashMap<u32, (f32, f32)>,
+    registry: &'a FontRegistry,
+) -> iced::Element<'a, Message> {
+    iced::widget::canvas(test_program(overlays, dims, registry))
+        .width(iced::Length::Fill)
+        .height(iced::Length::Fill)
+        .into()
+}
+
+/// Press at `from` and drag to `to` without releasing, returning the harness
+/// so the caller can read the preview it drew and, if it likes, release it.
+fn placement_drag_in_flight(
+    element: iced::Element<'_, Message>,
+    from: iced::Point,
+    to: iced::Point,
+) -> Harness<'_, Message> {
+    let mut harness = Harness::new(element, RENDER_SIZE);
+    harness.move_cursor(from);
+    harness.press_left();
+    harness.move_cursor(to);
+    harness
+}
+
 #[test]
 fn a_placement_preview_stops_at_the_page_edge_like_the_resize_preview() {
     // The rectangle drawn mid-drag has to promise the box the release will
@@ -3446,16 +3458,11 @@ fn a_placement_preview_stops_at_the_page_edge_like_the_resize_preview() {
     let overlays: Vec<TextOverlay> = vec![];
     let dims = uniform_page_dims(1);
     let registry = FontRegistry::new();
-    let element: iced::Element<Message> =
-        iced::widget::canvas(test_program(&overlays, &dims, &registry))
-            .width(iced::Length::Fill)
-            .height(iced::Length::Fill)
-            .into();
-
-    let mut harness = Harness::new(element, RENDER_SIZE);
-    harness.move_cursor(iced::Point::new(300.0, 200.0));
-    harness.press_left();
-    harness.move_cursor(iced::Point::new(880.0, 690.0));
+    let mut harness = placement_drag_in_flight(
+        blank_page_canvas(&overlays, &dims, &registry),
+        iced::Point::new(300.0, 200.0),
+        iced::Point::new(880.0, 690.0),
+    );
     let (_, _, right, bottom) = harness
         .screenshot()
         .selection_blue_bounds()
@@ -3515,16 +3522,11 @@ fn a_placement_preview_at_the_page_edge_draws_the_box_the_release_will_place() {
     let overlays: Vec<TextOverlay> = vec![];
     let dims = uniform_page_dims(1);
     let registry = FontRegistry::new();
-    let element: iced::Element<Message> =
-        iced::widget::canvas(test_program(&overlays, &dims, &registry))
-            .width(iced::Length::Fill)
-            .height(iced::Length::Fill)
-            .into();
-
-    let mut harness = Harness::new(element, RENDER_SIZE);
-    harness.move_cursor(iced::Point::new(754.0, 200.0));
-    harness.press_left();
-    harness.move_cursor(iced::Point::new(756.0, 320.0));
+    let mut harness = placement_drag_in_flight(
+        blank_page_canvas(&overlays, &dims, &registry),
+        iced::Point::new(754.0, 200.0),
+        iced::Point::new(756.0, 320.0),
+    );
     let (left, top, right, bottom) = harness
         .screenshot()
         .selection_blue_bounds()
