@@ -255,7 +255,15 @@ impl App {
         } else {
             toolbar::decrement_font_size(self.toolbar.font_size)
         };
-        self.update(Message::ChangeFontSize(size))
+        // ChangeFontSize's refocus_editing_widget() step sends focus back to
+        // the overlay editor when one is being edited, which steals focus
+        // away from the font-size input this arrow key came from. Chain a
+        // corrective refocus onto the font-size input so a repeated arrow
+        // press still resolves as focused.
+        let change_task = self.update(Message::ChangeFontSize(size));
+        change_task.chain(iced::widget::operation::focus(
+            self.toolbar.font_size_input_id.clone(),
+        ))
     }
 
     /// Return keyboard focus to the floating text widget while an overlay is

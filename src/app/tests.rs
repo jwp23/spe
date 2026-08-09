@@ -1752,6 +1752,24 @@ fn arrow_down_maps_to_font_size_arrow_pressed_decrement() {
 }
 
 #[test]
+fn alt_modified_arrow_up_does_not_map_to_font_size_arrow_pressed() {
+    let msg = key_to_message(
+        keyboard::Key::Named(keyboard::key::Named::ArrowUp),
+        keyboard::Modifiers::ALT,
+    );
+    assert!(msg.is_none());
+}
+
+#[test]
+fn alt_modified_arrow_down_does_not_map_to_font_size_arrow_pressed() {
+    let msg = key_to_message(
+        keyboard::Key::Named(keyboard::key::Named::ArrowDown),
+        keyboard::Modifiers::ALT,
+    );
+    assert!(msg.is_none());
+}
+
+#[test]
 fn font_size_arrow_pressed_returns_a_focus_query_task() {
     let (mut app, _) = App::new(false);
 
@@ -1797,6 +1815,30 @@ fn font_size_arrow_key_result_increments_when_focused() {
     assert!((app.toolbar.font_size - 13.0).abs() < f32::EPSILON);
     let doc = app.document.as_ref().unwrap();
     assert!((doc.overlays[0].font_size - 13.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn font_size_arrow_key_result_refocuses_font_size_input_while_editing() {
+    // While an overlay is being edited, ChangeFontSize's shared
+    // refocus_editing_widget() step steals focus back to the overlay's text
+    // widget. An arrow-key-triggered change must chain a corrective refocus
+    // onto the font-size input afterward, or the next arrow press resolves
+    // as unfocused and does nothing. The units count captures both focus
+    // operations: the editor refocus baked into ChangeFontSize, plus the
+    // corrective one this handler chains on top.
+    let mut app = test_app_with_overlay();
+    app.update(Message::SelectOverlay(0));
+    app.update(Message::EditOverlay(0));
+
+    let task = app.update(Message::FontSizeArrowKeyResult(true));
+
+    assert_eq!(
+        task.units(),
+        2,
+        "arrow-key font-size changes while editing should refocus the \
+         font-size input after ChangeFontSize's editor refocus, so repeated \
+         arrow presses keep working"
+    );
 }
 
 #[test]

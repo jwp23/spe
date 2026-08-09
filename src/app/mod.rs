@@ -581,8 +581,12 @@ fn key_to_message(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<
             (Named::PageUp, false, false) => Some(Message::PreviousPage),
             (Named::PageDown, false, false) => Some(Message::NextPage),
             (Named::F9, false, false) => Some(Message::ToggleSidebar),
-            (Named::ArrowUp, false, false) => Some(Message::FontSizeArrowPressed(true)),
-            (Named::ArrowDown, false, false) => Some(Message::FontSizeArrowPressed(false)),
+            (Named::ArrowUp, false, false) if modifiers.is_empty() => {
+                Some(Message::FontSizeArrowPressed(true))
+            }
+            (Named::ArrowDown, false, false) if modifiers.is_empty() => {
+                Some(Message::FontSizeArrowPressed(false))
+            }
             _ => None,
         },
         keyboard::Key::Character(ref c) => {
