@@ -2759,7 +2759,7 @@ fn selecting_a_later_overlay_while_a_blank_one_is_discarded_selects_the_same_ove
 }
 
 #[test]
-fn editing_another_overlay_while_editing_commits_the_pending_text() {
+fn re_entering_edit_on_the_same_overlay_commits_the_pending_text() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "original");
 
@@ -2884,6 +2884,10 @@ fn selecting_a_different_overlay_ends_the_multiline_edit_session() {
     });
     app.update(Message::UpdateOverlayText("multi".to_string()));
     place_committed_overlay(&mut app, 300.0, "single");
+
+    // Re-open the multiline session so the select is what ends it.
+    app.update(Message::EditOverlay(0));
+    assert!(app.editor_content.is_some());
 
     app.update(Message::SelectOverlay(0));
 
