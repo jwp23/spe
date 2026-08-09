@@ -239,11 +239,21 @@ impl App {
     }
 
     /// Returns true when no render tasks are in flight and all pages have been rendered.
+    ///
+    /// Key presence in `page_images` alone isn't enough: a zoom change bumps
+    /// `zoom_generation` and schedules a debounced re-render, but leaves the
+    /// pre-zoom images cached (for instant visual feedback) until the
+    /// debounce fires. During that window the keys are all present yet
+    /// stale, so idleness also requires `rendered_generation` to have caught
+    /// up (spe-d3m).
     pub fn is_render_idle(&self) -> bool {
         if self.sidebar.active_batch_tasks > 0 {
             return false;
         }
         if let Some(doc) = &self.document {
+            if self.canvas.rendered_generation != self.canvas.zoom_generation {
+                return false;
+            }
             for page in 1..=doc.page_count {
                 if !doc.page_images.contains_key(&page) {
                     return false;

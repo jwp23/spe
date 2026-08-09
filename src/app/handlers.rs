@@ -960,6 +960,9 @@ impl App {
 
     pub(super) fn handle_zoom_debounce_expired(&mut self, generation: u64) -> iced::Task<Message> {
         if generation == self.canvas.zoom_generation {
+            // The re-render for this generation is starting now, so
+            // is_render_idle can stop treating it as stale-but-present.
+            self.canvas.rendered_generation = generation;
             // Clear all cached images so pages get fresh renders at
             // the new DPI (including neighbors on navigation).
             if let Some(doc) = &mut self.document {
