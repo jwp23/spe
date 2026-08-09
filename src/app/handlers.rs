@@ -1104,10 +1104,16 @@ impl App {
     /// that changed nothing is never recorded, and an edit session that
     /// changed nothing falls through to the history.
     pub(super) fn handle_undo(&mut self) {
-        if self.canvas.editing && self.undo_session_step() {
-            return;
-        }
-        if self.cancel_edit_session() {
+        if self.canvas.editing {
+            if self.undo_session_step() {
+                return;
+            }
+            // Closing the box is itself this keystroke's visible change, so
+            // the keystroke stops here whether or not cancelling restored
+            // anything. Falling through would reverse a document command in
+            // the same breath, reaching past the overlay the user was editing
+            // to undo something they never touched.
+            self.cancel_edit_session();
             return;
         }
         self.undo_document_command();
@@ -1121,7 +1127,16 @@ impl App {
         };
         match step {
             SessionStep::Text { old, .. } => self.set_session_text(&old),
+            // Reversing this cannot end the session: only placing and
+            // deleting change the overlay count, and both commit the session
+            // before they run, so neither is ever recorded as a session step.
             SessionStep::Document => {
+                debug_assert!(
+                    self.undo_stack
+                        .last()
+                        .is_none_or(|cmd| !cmd.changes_overlay_count()),
+                    "a command that changes the overlay count was recorded as a session step"
+                );
                 self.undo_document_command();
             }
         }

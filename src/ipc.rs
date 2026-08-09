@@ -74,9 +74,6 @@ pub struct CommandContext<'a> {
     pub undo_depth: usize,
     /// Number of commands available to redo.
     pub redo_depth: usize,
-    /// Number of edits made inside the open edit session that undo could step
-    /// back through before it reaches the session itself.
-    pub session_undo_depth: usize,
     /// Number of session edits redo could reapply.
     pub session_redo_depth: usize,
 }
@@ -326,9 +323,10 @@ impl IpcCommand {
             IpcCommand::Undo => {
                 ctx.require_document()?;
                 // An in-progress edit is itself undoable: undo steps back
-                // through the edits made inside the session, then cancels the
-                // session, before it reaches the command history.
-                if ctx.undo_depth == 0 && ctx.session_undo_depth == 0 && !ctx.editing {
+                // through the edits made inside the session, then closes it,
+                // before it reaches the command history. `editing` therefore
+                // covers every session step on its own.
+                if ctx.undo_depth == 0 && !ctx.editing {
                     return Err(IpcError::NothingToUndo);
                 }
                 Ok(Message::Undo)
@@ -1423,20 +1421,6 @@ mod tests {
         };
         let msg = IpcCommand::Redo.to_message(&ctx, &test_registry()).unwrap();
         assert!(matches!(msg, Message::Redo));
-    }
-
-    #[test]
-    fn undo_with_session_steps_is_allowed_with_an_empty_stack() {
-        let doc = test_document_with_overlay();
-        let ctx = CommandContext {
-            document: Some(&doc),
-            active_overlay: Some(0),
-            editing: true,
-            session_undo_depth: 2,
-            ..CommandContext::default()
-        };
-        let msg = IpcCommand::Undo.to_message(&ctx, &test_registry()).unwrap();
-        assert!(matches!(msg, Message::Undo));
     }
 
     #[test]

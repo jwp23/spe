@@ -286,7 +286,6 @@ impl App {
             editing: self.canvas.editing,
             undo_depth: self.undo_stack.len(),
             redo_depth: self.redo_stack.len(),
-            session_undo_depth: self.canvas.session_history.undo_depth(),
             session_redo_depth: self.canvas.session_history.redo_depth(),
         }
     }
@@ -367,37 +366,15 @@ impl App {
     }
 
     /// Whether an undo keystroke would change anything: a step of the open
-    /// edit session, the session itself, or a command in the history.
+    /// edit session, the session itself, or a command in the history. An open
+    /// session always counts, because closing it is the keystroke's change.
     pub fn can_undo(&self) -> bool {
-        !self.undo_stack.is_empty()
-            || self.canvas.session_history.undo_depth() > 0
-            || self.edit_session_is_cancellable()
+        !self.undo_stack.is_empty() || self.canvas.editing
     }
 
     /// Whether a redo keystroke would change anything.
     pub fn can_redo(&self) -> bool {
         !self.redo_stack.is_empty() || self.canvas.session_history.redo_depth() > 0
-    }
-
-    /// Whether cancelling the open edit session would change the document —
-    /// the predicate [`App::handle_undo`]'s cancel step acts on.
-    fn edit_session_is_cancellable(&self) -> bool {
-        if !self.canvas.editing {
-            return false;
-        }
-        if self.canvas.fresh_placement.is_some() {
-            return true;
-        }
-        let Some(doc) = &self.document else {
-            return false;
-        };
-        let Some(overlay) = self.canvas.active_overlay.and_then(|i| doc.overlays.get(i)) else {
-            return false;
-        };
-        self.canvas
-            .edit_start_text
-            .as_ref()
-            .is_some_and(|start| *start != overlay.text)
     }
 
     fn execute_command(&mut self, cmd: UndoCommand) {

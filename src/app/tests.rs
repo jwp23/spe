@@ -3824,21 +3824,25 @@ fn document_always_matches_undo_history_under_arbitrary_interleavings() {
 }
 
 #[test]
-fn undo_while_editing_without_changes_falls_through_to_the_history() {
+fn undo_while_editing_without_changes_closes_the_session_before_the_history() {
     let mut app = test_app_with_document();
     place_committed_overlay(&mut app, 100.0, "first");
     place_committed_overlay(&mut app, 200.0, "second");
 
-    // Open an edit session but change nothing, so cancelling it is invisible.
+    // Open an edit session but change nothing, so closing it is the only
+    // change the keystroke makes.
     app.update(Message::EditOverlay(1));
     app.update(Message::Undo);
 
-    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert!(!app.canvas.editing, "the keystroke closes the box");
     assert_eq!(
-        overlays[1].text, "",
-        "a no-op edit session must not swallow the undo keystroke"
+        app.document.as_ref().unwrap().overlays[1].text,
+        "second",
+        "closing the box is change enough; the history waits for the next keystroke"
     );
-    assert!(!app.canvas.editing);
+
+    app.update(Message::Undo);
+    assert_eq!(app.document.as_ref().unwrap().overlays[1].text, "");
 }
 
 #[test]
@@ -4472,4 +4476,52 @@ fn document_always_matches_undo_history_under_session_undo_interleavings() {
             );
         }
     }
+}
+
+#[test]
+fn closing_the_session_is_its_own_undo_keystroke() {
+    // The reviewer's probe: with the session's own edits undone, the next
+    // Ctrl+Z must spend itself closing the box. Letting it close the box AND
+    // reverse a document command in one keystroke reverted an unrelated
+    // overlay the user never touched.
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "first");
+    place_committed_overlay(&mut app, 200.0, "second");
+
+    app.update(Message::EditOverlay(0));
+    type_text(&mut app, "X");
+
+    // 1: the typing burst, leaving the session open and changed nothing.
+    app.update(Message::Undo);
+    assert_eq!(overlay_text(&app), "first");
+    assert!(app.canvas.editing);
+
+    // 2: the session itself, and nothing else.
+    app.update(Message::Undo);
+    assert!(!app.canvas.editing, "the box closes");
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 2, "no document command may be undone too");
+    assert_eq!(
+        overlays[1].text, "second",
+        "another overlay's text must survive the keystroke that closed the box"
+    );
+
+    // 3: only now does the document history move.
+    app.update(Message::Undo);
+    assert_eq!(app.document.as_ref().unwrap().overlays[1].text, "");
+}
+
+#[test]
+fn an_open_session_is_always_undoable_because_closing_it_is_work() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "text");
+    app.update(Message::EditOverlay(0));
+    // Isolate the session: with the document history emptied, only the open
+    // box can be the thing undo would act on.
+    app.undo_stack.clear();
+
+    assert!(
+        app.can_undo(),
+        "the box is open, so undo has the close to spend itself on"
+    );
 }
