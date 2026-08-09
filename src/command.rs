@@ -115,6 +115,12 @@ impl SessionHistory {
         Some(step)
     }
 
+    /// Forget every step, as a session ending must: the steps address an
+    /// overlay the next session may not be editing.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
     /// Number of steps an undo could walk back through.
     pub fn undo_depth(&self) -> usize {
         self.undo.len()

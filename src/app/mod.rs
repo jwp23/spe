@@ -286,6 +286,8 @@ impl App {
             editing: self.canvas.editing,
             undo_depth: self.undo_stack.len(),
             redo_depth: self.redo_stack.len(),
+            session_undo_depth: self.canvas.session_history.undo_depth(),
+            session_redo_depth: self.canvas.session_history.redo_depth(),
         }
     }
 

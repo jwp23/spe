@@ -133,7 +133,7 @@ impl App {
             self.canvas.editing = true;
             self.canvas.edit_start_text = Some(String::new());
             self.canvas.fresh_placement = Some(fresh_placement_base);
-            self.canvas.session_history = Default::default();
+            self.canvas.session_history.clear();
             if width.is_some() {
                 self.editor_content = Some(iced::widget::text_editor::Content::with_text(""));
             }
@@ -194,7 +194,7 @@ impl App {
         };
         self.canvas.edit_start_text = Some(overlay.text.clone());
         self.canvas.fresh_placement = None;
-        self.canvas.session_history = Default::default();
+        self.canvas.session_history.clear();
         self.canvas.editing = true;
         true
     }
@@ -407,7 +407,7 @@ impl App {
             self.canvas.editing = false;
             self.canvas.fresh_placement = None;
             self.canvas.edit_start_text = None;
-            self.canvas.session_history = Default::default();
+            self.canvas.session_history.clear();
             self.sync_toolbar_to_active_overlay();
         }
         task
@@ -442,7 +442,7 @@ impl App {
             self.canvas.editing = true;
             self.canvas.fresh_placement = None;
             self.canvas.edit_start_text = Some(doc.overlays[index].text.clone());
-            self.canvas.session_history = Default::default();
+            self.canvas.session_history.clear();
             let width_is_some = doc.overlays[index].width.is_some();
             let text = doc.overlays[index].text.clone();
             self.sync_toolbar_to_active_overlay();
@@ -493,7 +493,7 @@ impl App {
         self.canvas.editing = false;
         self.canvas.edit_start_text = None;
         self.canvas.fresh_placement = None;
-        self.canvas.session_history = Default::default();
+        self.canvas.session_history.clear();
         self.editor_content = None;
         iced::Task::none()
     }
@@ -506,7 +506,7 @@ impl App {
         self.canvas.active_overlay = None;
         self.canvas.edit_start_text = None;
         self.canvas.fresh_placement = None;
-        self.canvas.session_history = Default::default();
+        self.canvas.session_history.clear();
         self.editor_content = None;
     }
 
