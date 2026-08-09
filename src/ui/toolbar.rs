@@ -5,12 +5,14 @@ use iced::widget::{button, pick_list, row, text, text_input};
 use crate::fonts::{FontId, FontRegistry};
 use crate::ui::icons;
 
-/// Lightweight wrapper for the font pick list. Holds a FontId and display name,
-/// implementing Display for the Iced pick_list widget.
+/// One selectable family in the font picker: what to call it, and the Iced
+/// font its name is previewed in so the list shows each family in its own
+/// typeface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FontOption {
     pub id: FontId,
     pub name: String,
+    pub font: iced::Font,
 }
 
 impl std::fmt::Display for FontOption {
@@ -27,6 +29,7 @@ pub fn font_options(registry: &FontRegistry) -> Vec<FontOption> {
         .map(|e| FontOption {
             id: e.id,
             name: e.display_name.to_string(),
+            font: e.iced_font,
         })
         .collect()
 }
@@ -303,12 +306,34 @@ mod tests {
     }
 
     #[test]
+    fn font_options_carry_each_entrys_iced_font() {
+        let registry = FontRegistry::new();
+        let options = font_options(&registry);
+        for entry in registry.all() {
+            let option = options
+                .iter()
+                .find(|o| o.id == entry.id)
+                .unwrap_or_else(|| panic!("no option for {}", entry.display_name));
+            assert_eq!(
+                option.font, entry.iced_font,
+                "{} must be previewed in its own typeface",
+                entry.display_name
+            );
+        }
+    }
+
+    /// The option a registry offers for `name`, as the toolbar would build it.
+    fn option_named(registry: &FontRegistry, name: &str) -> FontOption {
+        font_options(registry)
+            .into_iter()
+            .find(|o| o.name == name)
+            .unwrap_or_else(|| panic!("no font option named {name}"))
+    }
+
+    #[test]
     fn font_option_display() {
         let registry = FontRegistry::new();
-        let opt = FontOption {
-            id: registry.default_font(),
-            name: "Helvetica".to_string(),
-        };
+        let opt = option_named(&registry, "Helvetica");
         assert_eq!(opt.to_string(), "Helvetica");
     }
 
@@ -317,12 +342,7 @@ mod tests {
         let _ = Message::OpenFile;
         let _ = Message::Save;
         let registry = FontRegistry::new();
-        let courier_id = registry.find_by_name("Courier").unwrap();
-        let opt = FontOption {
-            id: courier_id,
-            name: "Courier".to_string(),
-        };
-        let _ = Message::FontSelected(opt);
+        let _ = Message::FontSelected(option_named(&registry, "Courier"));
         let _ = Message::FontSizeInput("14".to_string());
         let _ = Message::FontSizeIncrement;
         let _ = Message::FontSizeDecrement;

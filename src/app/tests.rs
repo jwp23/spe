@@ -1503,6 +1503,14 @@ fn test_app_with_overlay() -> App {
     app
 }
 
+/// The font picker option for `name`, exactly as the toolbar builds it.
+fn font_option_named(app: &App, name: &str) -> toolbar::FontOption {
+    toolbar::font_options(&app.font_registry)
+        .into_iter()
+        .find(|o| o.name == name)
+        .unwrap_or_else(|| panic!("no font option named {name}"))
+}
+
 /// An app with a single selected overlay whose font size has been set to
 /// `size`. Shared setup for the font-size stepper/arrow-key tests below,
 /// which otherwise only differ in which message they dispatch next.
@@ -2188,15 +2196,10 @@ fn change_font_while_editing_returns_focus_task() {
 #[test]
 fn change_font_via_toolbar_message_returns_focus_task() {
     let mut app = test_app_with_overlay();
-    let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::EditOverlay(0));
+    let courier = font_option_named(&app, "Courier");
 
-    let task = app.update(Message::Toolbar(toolbar::Message::FontSelected(
-        crate::ui::toolbar::FontOption {
-            id: courier,
-            name: "Courier".to_string(),
-        },
-    )));
+    let task = app.update(Message::Toolbar(toolbar::Message::FontSelected(courier)));
 
     let debug = format!("{task:?}");
     assert!(
