@@ -1914,3 +1914,50 @@ fn discarding_an_earlier_overlay_keeps_a_later_placement_in_history() {
     assert_eq!(overlays.len(), 2);
     assert_eq!(overlays[0].text, "one", "undo restores the erased overlay");
 }
+
+#[test]
+fn commit_text_removes_overlay_left_with_only_whitespace() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("   ".to_string()));
+    app.update(Message::DeselectOverlay);
+
+    assert!(
+        app.document.as_ref().unwrap().overlays.is_empty(),
+        "an overlay holding only whitespace renders nothing and should be removed"
+    );
+    assert!(app.canvas.active_overlay.is_none());
+    assert!(
+        app.undo_stack.is_empty(),
+        "abandoning a whitespace-only placement should leave no trace"
+    );
+}
+
+#[test]
+fn erasing_an_existing_overlay_to_whitespace_records_a_deletion_for_undo() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    app.update(Message::CommitText);
+
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText("  \t ".to_string()));
+    app.update(Message::CommitText);
+
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+    app.update(Message::Undo);
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 1);
+    assert_eq!(
+        overlays[0].text, "Hello",
+        "undo restores the text as of edit start, not the whitespace"
+    );
+}

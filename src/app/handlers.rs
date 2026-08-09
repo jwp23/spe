@@ -239,7 +239,7 @@ impl App {
             && let Some(old_text) = self.canvas.edit_start_text.take()
         {
             let new_text = doc.overlays[idx].text.clone();
-            if new_text.is_empty() {
+            if new_text.trim().is_empty() {
                 self.discard_empty_overlay(idx, old_text);
             } else if old_text != new_text {
                 let cmd = UndoCommand::EditText {
@@ -257,7 +257,7 @@ impl App {
         iced::Task::none()
     }
 
-    /// Remove an overlay that holds no text, since it would only render as an
+    /// Remove an overlay whose text is blank, since it would only render as an
     /// empty selection box. Abandoning a freshly placed overlay leaves no undo
     /// history; erasing the text of an established overlay records a deletion
     /// that restores `text_at_edit_start` when undone.
