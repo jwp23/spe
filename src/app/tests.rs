@@ -2744,6 +2744,61 @@ fn is_render_idle_true_when_all_pages_rendered() {
     assert!(app.is_render_idle());
 }
 
+// spe-d3m: zoom bumps zoom_generation and schedules a debounced re-render,
+// but the pre-zoom page_images entries stay cached (for instant visual
+// feedback) until the debounce fires. is_render_idle must not report idle
+// during that window, or wait_ready hands back a stale pre-zoom capture.
+
+#[test]
+fn is_render_idle_false_after_zoom_before_debounce_fires() {
+    let mut app = test_app_with_document();
+    let doc = app.document.as_mut().unwrap();
+    let page_count = doc.page_count;
+    let handle = iced::widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]);
+    for page in 1..=page_count {
+        doc.page_images.insert(page, handle.clone());
+    }
+    assert!(app.is_render_idle());
+
+    app.update(Message::ZoomIn);
+    // page_images is still fully populated (stale, pre-zoom) — key presence
+    // alone says idle, but the debounced re-render for the new zoom hasn't
+    // run yet.
+    assert!(
+        !app.is_render_idle(),
+        "wait_ready must not resolve on a stale pre-zoom render"
+    );
+}
+
+#[test]
+fn is_render_idle_true_once_rerender_catches_up_to_zoom_generation() {
+    let mut app = test_app_with_document();
+    let doc = app.document.as_mut().unwrap();
+    let page_count = doc.page_count;
+    let handle = iced::widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]);
+    for page in 1..=page_count {
+        doc.page_images.insert(page, handle.clone());
+    }
+
+    app.update(Message::ZoomIn);
+    assert!(!app.is_render_idle());
+
+    let generation = app.canvas.zoom_generation;
+    app.update(Message::ZoomDebounceExpired(generation));
+    // Debounce fired: cache cleared for the fresh generation, but the
+    // re-render task hasn't delivered images yet.
+    assert!(!app.is_render_idle());
+
+    let doc = app.document.as_mut().unwrap();
+    for page in 1..=page_count {
+        doc.page_images.insert(page, handle.clone());
+    }
+    assert!(
+        app.is_render_idle(),
+        "idle once images reflect the current zoom generation"
+    );
+}
+
 // =====================================================================
 // spe-dr0: IPC event dispatch — commands keep their follow-up task,
 // and responses are delivered for every command.

@@ -56,6 +56,13 @@ pub struct CanvasState {
     pub fresh_placement: Option<usize>,
     /// Counter incremented on each zoom change; used to debounce re-renders.
     pub zoom_generation: u64,
+    /// The `zoom_generation` the currently cached `page_images` are being
+    /// re-rendered for. Bumped when the debounced re-render actually starts
+    /// (clears the stale cache), not when zoom changes — so it lags
+    /// `zoom_generation` for the whole debounce window. `is_render_idle`
+    /// compares the two to tell a fresh-but-not-yet-rendered zoom apart from
+    /// a genuinely idle one (spe-d3m).
+    pub rendered_generation: u64,
     /// Current vertical scroll offset in pixels.
     pub scroll_y: f32,
     /// Visible viewport height in pixels.
@@ -71,6 +78,7 @@ impl Default for CanvasState {
             edit_start_text: None,
             fresh_placement: None,
             zoom_generation: 0,
+            rendered_generation: 0,
             scroll_y: 0.0,
             viewport_height: 0.0,
         }
