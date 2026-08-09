@@ -229,25 +229,40 @@ pub(crate) fn overlay_text_box(
     }
 }
 
+/// The selection border rectangle that frames an overlay's text box.
+///
+/// The border and the tint outline the same content, so the border is the
+/// text box grown by the padding rather than geometry computed on its own —
+/// computing it separately is how the two drifted apart (spe-x2z).
+pub(crate) fn selection_box_rect(text_box: iced::Rectangle) -> iced::Rectangle {
+    iced::Rectangle {
+        x: text_box.x - SELECTION_BOX_PADDING,
+        y: text_box.y - SELECTION_BOX_PADDING,
+        width: text_box.width + 2.0 * SELECTION_BOX_PADDING,
+        height: text_box.height + 2.0 * SELECTION_BOX_PADDING,
+    }
+}
+
 /// Half-width of the resize handle hit area in screen pixels.
 pub(crate) const RESIZE_HANDLE_HIT_RADIUS: f32 = 4.0;
 
 /// Return true if a screen-space click lands on the resize handle of a multi-line overlay.
+///
+/// The handle runs down the whole right edge of the overlay's text box, so the
+/// hit area is derived from the same box the handle is drawn against.
 pub(crate) fn resize_handle_hit(
     screen_x: f32,
     screen_y: f32,
     overlay: &TextOverlay,
-    width_pts: f32,
     params: &ConversionParams,
+    registry: &FontRegistry,
 ) -> bool {
     let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
-    let scale = params.scale();
-    let handle_x = sx + width_pts * scale;
-    let scaled_size = overlay.font_size * scale;
-    // Hit box: x within ±RESIZE_HANDLE_HIT_RADIUS of handle_x, y within [sy - scaled_size, sy]
+    let text_box = overlay_text_box(overlay, sx, sy, params.scale(), registry);
+    let handle_x = text_box.x + text_box.width;
     (screen_x - handle_x).abs() <= RESIZE_HANDLE_HIT_RADIUS
-        && screen_y >= sy - scaled_size
-        && screen_y <= sy
+        && screen_y >= text_box.y
+        && screen_y <= text_box.y + text_box.height
 }
 
 /// Minimum drag distance in pixels to initiate a resize. Clicks below this distance are treated as single-line overlays.

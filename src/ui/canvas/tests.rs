@@ -2425,3 +2425,143 @@ fn overlay_being_edited_paints_no_selection_border() {
         "the canvas must not draw a second selection border while editing"
     );
 }
+
+// =====================================================================
+// spe-x2z: the selection box outlines the same geometry as the tint
+// =====================================================================
+
+impl RenderedCanvas {
+    /// Bounding box of the strongly blue pixels — the selection border and
+    /// resize handle — as (left, top, right, bottom), or None if none exist.
+    fn selection_blue_bounds(&self) -> Option<(u32, u32, u32, u32)> {
+        let blue_red_gap = (super::SELECTION_COLOR.b - super::SELECTION_COLOR.r) * 255.0;
+        let threshold = blue_red_gap / 2.0;
+        let height = self.height();
+        let mut bounds: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..height {
+            for x in 0..self.width {
+                let (r, _, b) = self.pixel(x, y);
+                if b as f32 - r as f32 <= threshold {
+                    continue;
+                }
+                bounds = Some(match bounds {
+                    None => (x, y, x, y),
+                    Some((l, t, rt, bt)) => (l.min(x), t.min(y), rt.max(x), bt.max(y)),
+                });
+            }
+        }
+        bounds
+    }
+}
+
+/// Render a selected (not editing) overlay and return the drawn selection
+/// bounds together with the text box they are supposed to outline.
+fn selection_bounds_and_text_box(overlay: TextOverlay) -> ((u32, u32, u32, u32), iced::Rectangle) {
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let overlays = vec![overlay];
+    let mut program = test_program(&overlays, &dims, &registry);
+    program.active_overlay = Some(0);
+
+    let (sx, sy) = rendered_baseline(&overlays[0], &dims);
+    let text_box = super::overlay_text_box(
+        &overlays[0],
+        sx,
+        sy,
+        crate::coordinate::render_scale(TEST_ZOOM, TEST_DPI),
+        &registry,
+    );
+    let bounds = render_overlay_canvas(program, None)
+        .selection_blue_bounds()
+        .expect("a selected overlay must paint a selection border");
+    (bounds, text_box)
+}
+
+#[test]
+fn multiline_selection_box_outlines_every_line_of_the_text_box() {
+    // spe-x2z: draw_selection_box used a "one font size tall, grows upward"
+    // box, so a multi-line overlay's border cut off after the first line and
+    // disagreed with the tint it is meant to frame.
+    let (bounds, text_box) =
+        selection_bounds_and_text_box(multiline_overlay_at(72.0, 600.0, 150.0, "one\ntwo\nthree"));
+    let (_, top, _, bottom) = bounds;
+
+    let expected_top = text_box.y - super::SELECTION_BOX_PADDING;
+    let expected_bottom = text_box.y + text_box.height + super::SELECTION_BOX_PADDING;
+    assert!(
+        (top as f32 - expected_top).abs() <= 2.0,
+        "selection border starts at row {top}, expected the text box top {expected_top}"
+    );
+    assert!(
+        (bottom as f32 - expected_bottom).abs() <= 2.0,
+        "selection border ends at row {bottom}, expected the text box bottom {expected_bottom}"
+    );
+}
+
+#[test]
+fn selection_box_rect_pads_the_text_box_on_every_side() {
+    // The border frames the tint, so it is the text box grown by the padding
+    // rather than a separately computed rectangle (spe-x2z).
+    let text_box = iced::Rectangle {
+        x: 40.0,
+        y: 88.0,
+        width: 150.0,
+        height: 28.8,
+    };
+    let rect = super::selection_box_rect(text_box);
+    let pad = super::SELECTION_BOX_PADDING;
+    assert!((rect.x - (text_box.x - pad)).abs() < 0.01, "x: {}", rect.x);
+    assert!((rect.y - (text_box.y - pad)).abs() < 0.01, "y: {}", rect.y);
+    assert!(
+        (rect.width - (text_box.width + 2.0 * pad)).abs() < 0.01,
+        "width: {}",
+        rect.width
+    );
+    assert!(
+        (rect.height - (text_box.height + 2.0 * pad)).abs() < 0.01,
+        "height: {}",
+        rect.height
+    );
+}
+
+#[test]
+fn single_line_selection_box_matches_the_tinted_text_box() {
+    // The tint is one line height tall but the border was only one font size,
+    // leaving 0.2 * font_size of tint hanging below the border.
+    let (bounds, text_box) = selection_bounds_and_text_box(overlay_at(72.0, 600.0, "Hello"));
+    let (_, top, _, bottom) = bounds;
+
+    let expected_top = text_box.y - super::SELECTION_BOX_PADDING;
+    let expected_bottom = text_box.y + text_box.height + super::SELECTION_BOX_PADDING;
+    assert!(
+        (top as f32 - expected_top).abs() <= 2.0,
+        "selection border starts at row {top}, expected {expected_top}"
+    );
+    assert!(
+        (bottom as f32 - expected_bottom).abs() <= 2.0,
+        "selection border ends at row {bottom}, expected {expected_bottom}"
+    );
+}
+
+#[test]
+fn resize_handle_hit_area_covers_the_last_line_of_a_multiline_overlay() {
+    // The handle is drawn down the whole right edge of the selection box, so
+    // clicking beside the last line must start a resize, not a move.
+    let overlays = vec![multiline_overlay_at(72.0, 720.0, 150.0, "one\ntwo\nthree")];
+    let dims = test_page_dimensions();
+    let registry = FontRegistry::new();
+    let program = OverlayCanvasProgram {
+        active_overlay: Some(0),
+        ..test_program(&overlays, &dims, &registry)
+    };
+    let mut state = ProgramState::default();
+    let bounds = test_canvas_bounds();
+    // Baseline is screen y=80, so the third line ends at 68 + 3 * 14.4 = 111.2.
+    let cursor = cursor_at(416.0, 105.0);
+
+    program.update(&mut state, &left_press_event(), bounds, cursor);
+    assert!(
+        state.resize_drag.is_some(),
+        "the resize handle must extend beside every line of the overlay"
+    );
+}

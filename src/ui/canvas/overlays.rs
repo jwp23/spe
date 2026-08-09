@@ -5,14 +5,14 @@ use iced::widget::canvas;
 
 use crate::app::Message;
 use crate::coordinate::{ConversionParams, pdf_to_screen, render_scale, screen_to_pdf};
-use crate::fonts::{FontId, FontRegistry};
+use crate::fonts::FontRegistry;
 use crate::overlay::{PdfPosition, TextOverlay};
 
 use super::{
     DOUBLE_CLICK_DISTANCE_PX, DOUBLE_CLICK_TIMEOUT_MS, LocalDragState, MIN_DRAG_DISTANCE,
     OVERLAY_TINT_HOVER_BORDER_ALPHA, PageLayout, PlacementDragState, ProgramState, ResizeDragState,
-    SELECTION_BORDER_WIDTH, SELECTION_BOX_PADDING, SELECTION_COLOR, draw_overlay_text, hit_test,
-    overlay_text_box, page_rect_in_canvas, resize_handle_hit, should_draw_overlay_text,
+    SELECTION_BORDER_WIDTH, SELECTION_COLOR, draw_overlay_text, hit_test, overlay_text_box,
+    page_rect_in_canvas, resize_handle_hit, selection_box_rect, should_draw_overlay_text,
     should_draw_selection_box, tint_alpha, to_screen_rect, visible_pages,
 };
 
@@ -125,7 +125,13 @@ impl OverlayCanvasProgram<'_> {
             return None;
         }
         let width_pts = overlay.width?;
-        if !resize_handle_hit(cursor_pos.x, cursor_pos.y, overlay, width_pts, params) {
+        if !resize_handle_hit(
+            cursor_pos.x,
+            cursor_pos.y,
+            overlay,
+            params,
+            self.font_registry,
+        ) {
             return None;
         }
         state.resize_drag = Some(ResizeDragState {
@@ -366,10 +372,10 @@ impl OverlayCanvasProgram<'_> {
     ) {
         let (sx, sy) = pdf_to_screen(overlay.position.x, overlay.position.y, params);
         let scaled_size = overlay.font_size * scale;
+        let text_box = overlay_text_box(overlay, sx, sy, scale, self.font_registry);
 
         if should_draw_overlay_text(self.editing, self.active_overlay, index) {
             let is_hovered = state.hovered_overlay == Some(index);
-            let text_box = overlay_text_box(overlay, sx, sy, scale, self.font_registry);
             draw_overlay_tint(frame, text_box, overlay_color, tint_alpha(is_hovered));
             if is_hovered {
                 draw_overlay_hover_border(frame, text_box, overlay_color);
@@ -386,18 +392,9 @@ impl OverlayCanvasProgram<'_> {
         }
 
         if should_draw_selection_box(self.editing, self.active_overlay, index) {
-            draw_selection_box(
-                frame,
-                &overlay.text,
-                overlay.font,
-                overlay.font_size,
-                sx,
-                sy,
-                scale,
-                self.font_registry,
-            );
-            if let Some(width_pts) = overlay.width {
-                draw_resize_handle(frame, sx, sy, width_pts, scale, overlay.font_size);
+            draw_selection_box(frame, text_box);
+            if overlay.width.is_some() {
+                draw_resize_handle(frame, text_box);
             }
         }
     }
@@ -628,8 +625,14 @@ impl<'a> canvas::Program<Message> for OverlayCanvasProgram<'a> {
         if let Some(active_idx) = self.active_overlay
             && let Some(overlay) = self.overlays.get(active_idx)
             && overlay.page == page
-            && let Some(width_pts) = overlay.width
-            && resize_handle_hit(cursor_pos.x, cursor_pos.y, overlay, width_pts, &params)
+            && overlay.width.is_some()
+            && resize_handle_hit(
+                cursor_pos.x,
+                cursor_pos.y,
+                overlay,
+                &params,
+                self.font_registry,
+            )
         {
             return mouse::Interaction::ResizingHorizontally;
         }
@@ -689,47 +692,23 @@ fn draw_overlay_hover_border(
     );
 }
 
-/// Draw a selection bounding box around an overlay using native stroke_rectangle.
-#[allow(clippy::too_many_arguments)]
-fn draw_selection_box(
-    frame: &mut canvas::Frame,
-    text: &str,
-    font: FontId,
-    font_size: f32,
-    screen_x: f32,
-    screen_y: f32,
-    scale: f32,
-    registry: &FontRegistry,
-) {
-    let bbox = registry.overlay_bounding_box(text, font, font_size);
-    let w = bbox.width * scale + 2.0 * SELECTION_BOX_PADDING;
-    let h = bbox.height * scale + 2.0 * SELECTION_BOX_PADDING;
+/// Draw a selection bounding box framing an overlay's text box.
+fn draw_selection_box(frame: &mut canvas::Frame, text_box: iced::Rectangle) {
+    let rect = selection_box_rect(text_box);
     frame.stroke_rectangle(
-        iced::Point::new(
-            screen_x - SELECTION_BOX_PADDING,
-            screen_y - bbox.height * scale - SELECTION_BOX_PADDING,
-        ),
-        iced::Size::new(w, h),
+        rect.position(),
+        rect.size(),
         canvas::Stroke::default()
             .with_color(SELECTION_COLOR)
             .with_width(SELECTION_BORDER_WIDTH),
     );
 }
 
-/// Draw a vertical bar resize handle on the right edge of a multi-line overlay using fill_rectangle.
-fn draw_resize_handle(
-    frame: &mut canvas::Frame,
-    overlay_sx: f32,
-    overlay_sy: f32,
-    width_pts: f32,
-    scale: f32,
-    font_size: f32,
-) {
-    let handle_x = overlay_sx + width_pts * scale;
-    let scaled_size = font_size * scale;
+/// Draw a vertical bar resize handle down the right edge of a multi-line overlay.
+fn draw_resize_handle(frame: &mut canvas::Frame, text_box: iced::Rectangle) {
     frame.fill_rectangle(
-        iced::Point::new(handle_x - 2.0, overlay_sy - scaled_size),
-        iced::Size::new(4.0, scaled_size),
+        iced::Point::new(text_box.x + text_box.width - 2.0, text_box.y),
+        iced::Size::new(4.0, text_box.height),
         SELECTION_COLOR,
     );
 }
