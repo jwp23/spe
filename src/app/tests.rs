@@ -1107,10 +1107,20 @@ fn toast_renders_below_toolbar_and_above_content() {
         .find("Open a PDF to get started")
         .expect("placeholder content text should be present in the view")
         .bounds();
+    let toolbar_bounds = simulator
+        .find("100%")
+        .expect("zoom label in the toolbar should be present in the view")
+        .bounds();
 
     assert!(
         toast_bounds.height > 0.0,
         "toast must occupy nonzero height, got {toast_bounds:?}"
+    );
+    assert!(
+        toast_bounds.y >= toolbar_bounds.y + toolbar_bounds.height,
+        "toast (y={}) must render below the toolbar (bottom={})",
+        toast_bounds.y,
+        toolbar_bounds.y + toolbar_bounds.height
     );
     assert!(
         toast_bounds.y < content_bounds.y,
@@ -1152,19 +1162,23 @@ fn commit_text_clears_edit_start_text() {
 }
 
 #[test]
-fn deselect_overlay_while_editing_commits_text_instead_of_deselecting() {
+fn deselect_overlay_while_editing_records_the_text_edit() {
     let mut app = test_app_with_document();
     app.update(Message::PlaceOverlay {
         page: 1,
         position: PdfPosition { x: 100.0, y: 700.0 },
         width: None,
     });
-    // While editing, DeselectOverlay should commit, not deselect
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
     assert!(app.canvas.editing);
+
     app.update(Message::DeselectOverlay);
-    // After commit: editing is false, but selection is preserved
-    assert!(!app.canvas.editing);
-    assert!(app.canvas.active_overlay.is_some());
+
+    // Deselecting commits first, so the edit is undoable.
+    assert!(matches!(
+        app.undo_stack.last(),
+        Some(UndoCommand::EditText { new_text, .. }) if new_text == "Hello"
+    ));
 }
 
 #[test]
@@ -1262,7 +1276,8 @@ fn test_app_with_overlay() -> App {
         position: PdfPosition { x: 100.0, y: 700.0 },
         width: None,
     });
-    // Commit so we start in non-editing state
+    // Give the overlay text so it survives the commit, then leave editing state.
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::CommitText);
     app
 }
@@ -1287,6 +1302,7 @@ fn edit_overlay_syncs_toolbar_font_and_size() {
         position: PdfPosition { x: 100.0, y: 700.0 },
         width: None,
     });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     let helvetica = app.font_registry.default_font();
     app.update(Message::ChangeFont(courier));
@@ -1331,6 +1347,7 @@ fn edit_overlay_initializes_editor_content_for_multiline() {
         position: PdfPosition { x: 100.0, y: 700.0 },
         width: Some(200.0),
     });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::CommitText);
 
     // Before EditOverlay, editor_content is None
@@ -1402,19 +1419,15 @@ fn commit_text_pushes_edit_text_command_when_text_changed() {
 
 #[test]
 fn commit_text_no_command_when_text_unchanged() {
-    let mut app = test_app_with_document();
-    app.update(Message::PlaceOverlay {
-        page: 1,
-        position: PdfPosition { x: 100.0, y: 700.0 },
-        width: None,
-    });
-    assert_eq!(app.undo_stack.len(), 1);
+    let mut app = test_app_with_overlay();
+    let commands_before = app.undo_stack.len();
 
-    // Commit without typing anything (text unchanged from "")
+    // Re-enter and leave the edit session without changing the text.
+    app.update(Message::EditOverlay(0));
     app.update(Message::CommitText);
 
     // Should NOT push EditText command
-    assert_eq!(app.undo_stack.len(), 1);
+    assert_eq!(app.undo_stack.len(), commands_before);
 }
 
 #[test]
@@ -1571,6 +1584,7 @@ fn edit_multiline_overlay_returns_focus_task() {
         position: PdfPosition { x: 100.0, y: 700.0 },
         width: Some(200.0),
     });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::CommitText);
     let task = app.update(Message::EditOverlay(0));
     let debug = format!("{task:?}");
@@ -1848,6 +1862,256 @@ fn deliver_ipc_response_writes_to_channel() {
         .try_recv()
         .expect("a response should have been delivered");
     assert!(received.ok);
+}
+
+// =====================================================================
+// spe-w27: an overlay left empty is removed instead of lingering
+// =====================================================================
+
+#[test]
+fn commit_text_removes_overlay_left_empty() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::CommitText);
+    assert!(
+        app.document.as_ref().unwrap().overlays.is_empty(),
+        "an overlay committed with no text should be removed"
+    );
+}
+
+#[test]
+fn commit_text_clears_selection_when_empty_overlay_removed() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::CommitText);
+    assert!(
+        app.canvas.active_overlay.is_none(),
+        "the removed overlay must not stay selected"
+    );
+}
+
+#[test]
+fn commit_text_keeps_overlay_that_has_text() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    app.update(Message::CommitText);
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
+    assert_eq!(app.canvas.active_overlay, Some(0));
+}
+
+#[test]
+fn abandoned_empty_placement_leaves_no_undo_history() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::CommitText);
+    assert!(
+        app.undo_stack.is_empty(),
+        "placing and abandoning an empty overlay should leave no trace"
+    );
+}
+
+#[test]
+fn abandoned_empty_placement_leaves_no_undo_history_after_style_change() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    let courier = app.font_registry.find_by_name("Courier").unwrap();
+    app.update(Message::ChangeFont(courier));
+    app.update(Message::CommitText);
+    assert!(
+        app.undo_stack.is_empty(),
+        "placing and abandoning an empty overlay should leave no trace, even if \
+         the font was changed before any text was typed"
+    );
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+}
+
+#[test]
+fn erasing_an_existing_overlay_records_a_deletion_for_undo() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    app.update(Message::CommitText);
+
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText(String::new()));
+    app.update(Message::CommitText);
+
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+    app.update(Message::Undo);
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 1, "undo restores the erased overlay");
+    assert_eq!(overlays[0].text, "Hello");
+}
+
+#[test]
+fn escape_while_editing_empty_overlay_removes_it() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::DeselectOverlay);
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+    assert!(app.canvas.active_overlay.is_none());
+    assert!(!app.canvas.editing);
+}
+
+#[test]
+fn escape_while_editing_commits_text_then_clears_selection() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    app.update(Message::DeselectOverlay);
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
+    assert!(!app.canvas.editing);
+    assert!(
+        app.canvas.active_overlay.is_none(),
+        "Escape dismisses the selection as well as the edit session"
+    );
+}
+
+#[test]
+fn discarding_an_empty_overlay_clears_the_redo_stack() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    app.update(Message::CommitText);
+
+    // Undo the text edit mid-session, leaving a redo entry for the overlay.
+    app.update(Message::EditOverlay(0));
+    app.update(Message::Undo);
+    assert_eq!(app.redo_stack.len(), 1);
+
+    // The overlay is now empty, so deselecting discards it.
+    app.update(Message::DeselectOverlay);
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+    assert!(
+        app.redo_stack.is_empty(),
+        "redo entries referencing a discarded overlay must not survive"
+    );
+
+    // Redo must not index into the emptied overlay list.
+    app.update(Message::Redo);
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+}
+
+#[test]
+fn discarding_an_earlier_overlay_keeps_a_later_placement_in_history() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("one".to_string()));
+    app.update(Message::DeselectOverlay);
+
+    // Place a second overlay, then switch the edit session to the first one.
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 200.0, y: 600.0 },
+        width: None,
+    });
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText(String::new()));
+    app.update(Message::DeselectOverlay);
+
+    // Only the erased overlay is gone; the second placement survives.
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
+    assert!(
+        matches!(
+            app.undo_stack.last(),
+            Some(UndoCommand::DeleteOverlay { index: 0, .. })
+        ),
+        "erasing an established overlay records a deletion, got {:?}",
+        app.undo_stack.last()
+    );
+
+    app.update(Message::Undo);
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 2);
+    assert_eq!(overlays[0].text, "one", "undo restores the erased overlay");
+}
+
+#[test]
+fn commit_text_removes_overlay_left_with_only_whitespace() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("   ".to_string()));
+    app.update(Message::DeselectOverlay);
+
+    assert!(
+        app.document.as_ref().unwrap().overlays.is_empty(),
+        "an overlay holding only whitespace renders nothing and should be removed"
+    );
+    assert!(app.canvas.active_overlay.is_none());
+    assert!(
+        app.undo_stack.is_empty(),
+        "abandoning a whitespace-only placement should leave no trace"
+    );
+}
+
+#[test]
+fn erasing_an_existing_overlay_to_whitespace_records_a_deletion_for_undo() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("Hello".to_string()));
+    app.update(Message::CommitText);
+
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText("  \t ".to_string()));
+    app.update(Message::CommitText);
+
+    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+    app.update(Message::Undo);
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 1);
+    assert_eq!(
+        overlays[0].text, "Hello",
+        "undo restores the text as of edit start, not the whitespace"
+    );
 }
 
 // =====================================================================

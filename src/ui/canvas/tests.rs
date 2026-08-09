@@ -1995,3 +1995,40 @@ fn cursor_move_during_drag_skips_hover_tracking() {
         "hover tracking skipped during drag"
     );
 }
+
+// =====================================================================
+// spe-dcj: the floating edit widget draws its own border, so the canvas
+// must not also draw a selection box for the overlay being edited
+// =====================================================================
+
+#[test]
+fn should_draw_selection_box_false_while_editing_active_overlay() {
+    assert!(
+        !super::should_draw_selection_box(true, Some(0), 0),
+        "the floating edit widget already draws a border around the edited overlay"
+    );
+}
+
+#[test]
+fn should_draw_selection_box_true_when_selected_and_not_editing() {
+    assert!(
+        super::should_draw_selection_box(false, Some(0), 0),
+        "a selected overlay that is not being edited shows a selection box"
+    );
+}
+
+#[test]
+fn should_draw_selection_box_false_for_unselected_overlay() {
+    assert!(
+        !super::should_draw_selection_box(false, Some(0), 1),
+        "only the selected overlay gets a selection box"
+    );
+}
+
+#[test]
+fn should_draw_selection_box_false_when_nothing_selected() {
+    assert!(
+        !super::should_draw_selection_box(false, None, 0),
+        "no selection means no selection box"
+    );
+}
