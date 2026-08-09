@@ -109,3 +109,45 @@ pub(crate) fn render_element(
     let rgba = renderer.screenshot(iced::Size::new(width, height), 1.0, iced::Color::WHITE);
     RenderedCanvas { width, rgba }
 }
+
+impl RenderedCanvas {
+    /// Bounding box of the strongly blue pixels — selection borders, resize
+    /// handles, and the floating editor's own outline — as
+    /// (left, top, right, bottom), or None if none exist.
+    ///
+    /// The threshold is derived from `SELECTION_COLOR` itself (halfway to its
+    /// blue/red channel gap) so it tracks the renderer's actual selection
+    /// color instead of a magic number that could silently fall out of sync.
+    pub(crate) fn selection_blue_bounds(&self) -> Option<(u32, u32, u32, u32)> {
+        let threshold = self.selection_blue_threshold();
+        let height = self.height();
+        let mut bounds: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..height {
+            for x in 0..self.width {
+                let (r, _, b) = self.pixel(x, y);
+                if b as f32 - r as f32 <= threshold {
+                    continue;
+                }
+                bounds = Some(match bounds {
+                    None => (x, y, x, y),
+                    Some((l, t, rt, bt)) => (l.min(x), t.min(y), rt.max(x), bt.max(y)),
+                });
+            }
+        }
+        bounds
+    }
+
+    /// Count of strongly blue pixels anywhere on the surface.
+    pub(crate) fn selection_blue_pixels(&self) -> usize {
+        let threshold = self.selection_blue_threshold();
+        self.rgba
+            .chunks_exact(4)
+            .filter(|p| p[2] as f32 - p[0] as f32 > threshold)
+            .count()
+    }
+
+    fn selection_blue_threshold(&self) -> f32 {
+        let color = crate::ui::canvas::SELECTION_COLOR;
+        (color.b - color.r) * 255.0 / 2.0
+    }
+}

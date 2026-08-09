@@ -2377,23 +2377,6 @@ fn multiline_tint_covers_the_rows_its_text_occupies() {
     );
 }
 
-impl RenderedCanvas {
-    /// Pixels painted in a strong, saturated blue — the selection border and
-    /// resize handle, which are opaque, unlike the pale overlay tint.
-    ///
-    /// The threshold is derived from `SELECTION_COLOR` itself (halfway to its
-    /// blue/red channel gap) so it tracks the renderer's actual selection
-    /// color instead of a magic number that could silently fall out of sync.
-    fn selection_blue_pixels(&self) -> usize {
-        let blue_red_gap = (super::SELECTION_COLOR.b - super::SELECTION_COLOR.r) * 255.0;
-        let threshold = blue_red_gap / 2.0;
-        self.rgba
-            .chunks_exact(4)
-            .filter(|p| p[2] as f32 - p[0] as f32 > threshold)
-            .count()
-    }
-}
-
 #[test]
 fn selected_overlay_paints_a_selection_border() {
     let dims = uniform_page_dims(1);
@@ -2431,30 +2414,6 @@ fn overlay_being_edited_paints_no_selection_border() {
 // =====================================================================
 // spe-x2z: the selection box outlines the same geometry as the tint
 // =====================================================================
-
-impl RenderedCanvas {
-    /// Bounding box of the strongly blue pixels — the selection border and
-    /// resize handle — as (left, top, right, bottom), or None if none exist.
-    fn selection_blue_bounds(&self) -> Option<(u32, u32, u32, u32)> {
-        let blue_red_gap = (super::SELECTION_COLOR.b - super::SELECTION_COLOR.r) * 255.0;
-        let threshold = blue_red_gap / 2.0;
-        let height = self.height();
-        let mut bounds: Option<(u32, u32, u32, u32)> = None;
-        for y in 0..height {
-            for x in 0..self.width {
-                let (r, _, b) = self.pixel(x, y);
-                if b as f32 - r as f32 <= threshold {
-                    continue;
-                }
-                bounds = Some(match bounds {
-                    None => (x, y, x, y),
-                    Some((l, t, rt, bt)) => (l.min(x), t.min(y), rt.max(x), bt.max(y)),
-                });
-            }
-        }
-        bounds
-    }
-}
 
 /// Render a selected (not editing) overlay and return the drawn selection
 /// bounds together with the text box they are supposed to outline.
