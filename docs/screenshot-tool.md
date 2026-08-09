@@ -2,6 +2,8 @@
 
 A development tool for Claude Code to take screenshots of the running app and drive interactions programmatically. Not a user-facing feature — requires explicit `--ipc` flag.
 
+For scripted before/after visual regression capture and comparison built on top of this harness, see `docs/visual-regression.md`.
+
 ## Prerequisites
 
 | Tool | Version | Install (Arch) | Purpose |
