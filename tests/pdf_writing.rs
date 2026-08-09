@@ -125,10 +125,10 @@ fn write_and_read_back_overlay() {
             continue;
         };
         for op in &content.operations {
-            if op.operator == "Tj" {
-                if matches!(&op.operands[0], Object::String(b, _) if *b == target) {
-                    found_text = true;
-                }
+            if op.operator == "Tj"
+                && matches!(&op.operands[0], Object::String(b, _) if *b == target)
+            {
+                found_text = true;
             }
         }
     }
@@ -235,10 +235,10 @@ fn write_multiple_overlays_across_pages() {
                 continue;
             };
             for op in &content.operations {
-                if op.operator == "Tj" {
-                    if matches!(&op.operands[0], Object::String(b, _) if b == expected_text) {
-                        found = true;
-                    }
+                if op.operator == "Tj"
+                    && matches!(&op.operands[0], Object::String(b, _) if b == expected_text)
+                {
+                    found = true;
                 }
             }
         }

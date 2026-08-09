@@ -694,7 +694,7 @@ mod tests {
     use crate::fonts::FontRegistry;
     use crate::overlay::{PdfPosition, TextOverlay};
     use std::collections::HashMap;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn test_registry() -> FontRegistry {
         FontRegistry::new()
@@ -731,7 +731,7 @@ mod tests {
         let msg = cmd
             .to_message(&CommandContext::default(), &test_registry())
             .unwrap();
-        assert!(matches!(msg, Message::FileOpened(p) if p == PathBuf::from("/tmp/test.pdf")));
+        assert!(matches!(msg, Message::FileOpened(p) if p == Path::new("/tmp/test.pdf")));
     }
 
     #[test]
@@ -1613,7 +1613,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             msg,
-            Message::SaveDestinationChosen(p) if p == PathBuf::from("/tmp/out.pdf")
+            Message::SaveDestinationChosen(p) if p == Path::new("/tmp/out.pdf")
         ));
     }
 
@@ -1913,9 +1913,8 @@ mod tests {
             assert!(result);
 
             let event = output_rx
-                .try_next()
-                .expect("an event should have been queued")
-                .expect("the output channel must still be open");
+                .try_recv()
+                .expect("an event should have been queued and the output channel still open");
             assert!(
                 matches!(event, IpcEvent::WaitFrame),
                 "wait_frame must dispatch as IpcEvent::WaitFrame, not a generic Command, \

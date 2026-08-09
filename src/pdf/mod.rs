@@ -84,7 +84,7 @@ mod tests {
         let page_id = doc.add_object(dictionary! {
             "Type" => "Page",
             "Parent" => pages_id,
-            "MediaBox" => vec![0.into(), 0.into(), Object::Real(width.into()), Object::Real(height.into())],
+            "MediaBox" => vec![0.into(), 0.into(), Object::Real(width), Object::Real(height)],
             "Contents" => content_id,
         });
         let pages = dictionary! {

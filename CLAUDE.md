@@ -92,7 +92,7 @@ See `.claude/rules/git-workflow.md` for branch naming, PR workflow, worktrees, a
 Pre-commit hook (`.beads/hooks/pre-commit`) runs after beads integration:
 - `betterleaks git --pre-commit --staged --redact` (hard fail; hard fail if not installed)
 - `cargo fmt --check`
-- `cargo clippy -- -D warnings`
+- `cargo clippy --all-targets -- -D warnings`
 - `cargo audit` (optional — warns if not installed, fails if vulnerabilities found)
 - `cargo test`
 
