@@ -446,16 +446,45 @@ pub(crate) fn resize_handle_hit(
 /// narrow to grab again, so every gesture that sizes a box floors it here.
 pub const MIN_BOX_DIMENSION: f32 = 20.0;
 
-/// The size of a box drawn between two PDF-space corners, floored so a gesture
-/// that barely moved on one axis still yields a box the user can work with.
+/// The box a drag between `from` and `to` draws: floored to
+/// [`MIN_BOX_DIMENSION`] on both axes and lying entirely within `bounds`.
 ///
-/// A drag can clear the placement threshold on its vertical extent alone, so
-/// the floor belongs on the box rather than on the gesture.
-pub fn box_size_between(from: PdfPosition, to: PdfPosition) -> (f32, f32) {
-    (
-        (to.x - from.x).abs().max(MIN_BOX_DIMENSION),
-        (to.y - from.y).abs().max(MIN_BOX_DIMENSION),
-    )
+/// Size wins, position gives. A drag can clear the placement threshold on its
+/// vertical extent alone, so the floor belongs on the box rather than on the
+/// gesture — but flooring a drag that ended at the page edge widens the box
+/// past that edge, which is the one place clamping the cursor cannot help.
+/// The floored box is therefore translated back inside rather than trimmed:
+/// near an edge the user gets a usable box nudged inward, never a sliver and
+/// never a box hanging off the paper. A page always exceeds the minimum, so
+/// the floored box always fits.
+///
+/// Pure rectangle geometry, so any caller can use it — but only in a space
+/// where y grows *downward*, as screen space does, since that is the direction
+/// a floored box grows. A PDF-space caller measures y from the page top and
+/// converts back.
+pub fn drag_box_within(
+    from: iced::Point,
+    to: iced::Point,
+    bounds: iced::Rectangle,
+) -> iced::Rectangle {
+    let from = clamp_to_rect(from, &bounds);
+    let to = clamp_to_rect(to, &bounds);
+    let width = (to.x - from.x).abs().max(MIN_BOX_DIMENSION);
+    let height = (to.y - from.y).abs().max(MIN_BOX_DIMENSION);
+    iced::Rectangle {
+        x: from
+            .x
+            .min(to.x)
+            .min(bounds.x + bounds.width - width)
+            .max(bounds.x),
+        y: from
+            .y
+            .min(to.y)
+            .min(bounds.y + bounds.height - height)
+            .max(bounds.y),
+        width,
+        height,
+    }
 }
 
 /// The box `overlay` would occupy if a resize of `edge` finished with the

@@ -3471,3 +3471,100 @@ fn a_placement_preview_stops_at_the_page_edge_like_the_resize_preview() {
         "the preview reaches row {bottom} but the surface ends at 699"
     );
 }
+
+#[test]
+fn a_placement_drag_at_the_page_edge_keeps_the_whole_floored_box_on_the_page() {
+    // Flooring a near-degenerate drag widens the box past the edge the drag
+    // ended on, so the floored box has to give ground on position instead:
+    // size wins, position gives. The page spans screen x 194..806.
+    let (_, top_left, width, _) =
+        text_box_placement_from(cursor_at(804.0, 200.0), cursor_at(806.0, 320.0));
+    assert!(
+        (width - super::MIN_BOX_DIMENSION).abs() < 0.01,
+        "the box keeps its floored width, got {width}"
+    );
+    assert!(
+        top_left.x >= -0.01 && top_left.x + width <= 612.01,
+        "the box runs from {} to {} but the page is 0..612",
+        top_left.x,
+        top_left.x + width
+    );
+}
+
+#[test]
+fn a_placement_drag_at_the_page_bottom_keeps_the_whole_floored_box_on_the_page() {
+    // The page spans screen y 8..800, i.e. PDF y 792..0.
+    let (_, top_left, _, height) =
+        text_box_placement_from(cursor_at(300.0, 798.0), cursor_at(420.0, 800.0));
+    assert!(
+        (height - super::MIN_BOX_DIMENSION).abs() < 0.01,
+        "the box keeps its floored height, got {height}"
+    );
+    assert!(
+        top_left.y - height >= -0.01 && top_left.y <= 792.01,
+        "the box runs from {} down to {} but the page is 792..0",
+        top_left.y,
+        top_left.y - height
+    );
+}
+
+#[test]
+fn a_placement_preview_at_the_page_edge_draws_the_box_the_release_will_place() {
+    // The preview must promise the same nudged-inward box the release places.
+    // On the 900px surface the page spans x 144..756.
+    let overlays: Vec<TextOverlay> = vec![];
+    let dims = uniform_page_dims(1);
+    let registry = FontRegistry::new();
+    let element: iced::Element<Message> =
+        iced::widget::canvas(test_program(&overlays, &dims, &registry))
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
+            .into();
+
+    let mut harness = Harness::new(element, RENDER_SIZE);
+    harness.move_cursor(iced::Point::new(754.0, 200.0));
+    harness.press_left();
+    harness.move_cursor(iced::Point::new(756.0, 320.0));
+    let (left, top, right, bottom) = harness
+        .screenshot()
+        .selection_blue_bounds()
+        .expect("a placement drag in flight must draw its rectangle");
+
+    let placed = harness
+        .release_left()
+        .into_iter()
+        .find_map(|msg| match msg {
+            Message::PlaceTextBox {
+                top_left,
+                width,
+                height,
+                ..
+            } => Some((top_left, width, height)),
+            _ => None,
+        })
+        .expect("releasing must place the box");
+
+    // Page origin on the 900px surface: x 144, y 8, at scale 1.
+    let (top_left, width, height) = placed;
+    let expected_left = 144.0 + top_left.x;
+    let expected_top = 8.0 + (792.0 - top_left.y);
+    assert!(
+        (left as f32 - expected_left).abs() <= 2.0
+            && (top as f32 - expected_top).abs() <= 2.0
+            && ((right - left) as f32 - width).abs() <= 2.0
+            && ((bottom - top) as f32 - height).abs() <= 2.0,
+        "the preview drew ({left}, {top}) {}x{} but the release placed \
+         ({expected_left}, {expected_top}) {width}x{height}",
+        right - left,
+        bottom - top
+    );
+    assert!(
+        (width - super::MIN_BOX_DIMENSION).abs() < 0.01,
+        "the box keeps its floored width, got {width}"
+    );
+    assert!(
+        top_left.x + width <= 612.01,
+        "the box runs to {} but the page ends at 612",
+        top_left.x + width
+    );
+}

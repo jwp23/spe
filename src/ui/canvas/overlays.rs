@@ -11,8 +11,8 @@ use crate::overlay::{OverlayBox, PdfPosition, TextOverlay};
 use super::{
     DOUBLE_CLICK_DISTANCE_PX, DOUBLE_CLICK_TIMEOUT_MS, LocalDragState, MIN_DRAG_DISTANCE,
     OVERLAY_TINT_HOVER_BORDER_ALPHA, OverlayAnchor, PageLayout, PlacementDragState, ProgramState,
-    ResizeDragState, ResizeEdge, SELECTION_BORDER_WIDTH, SELECTION_COLOR, box_size_between,
-    clamp_to_rect, draw_overlay_text, hit_test, overlay_text_box, page_rect_in_canvas,
+    ResizeDragState, ResizeEdge, SELECTION_BORDER_WIDTH, SELECTION_COLOR, clamp_to_rect,
+    drag_box_within, draw_overlay_text, hit_test, overlay_text_box, page_rect_in_canvas,
     resize_handle_hit, resized_box, selection_box_rect, should_draw_overlay_text,
     should_draw_selection_box, tint_alpha, to_screen_rect, visible_pages,
 };
@@ -303,28 +303,21 @@ impl OverlayCanvasProgram<'_> {
             // Drag: a wrapping overlay filling the rectangle just drawn. The
             // whole rectangle travels, not just its horizontal extent, so the
             // box the editor opens is the box the user saw (spe-x9e).
-            let (start_pdf_x, start_pdf_y) =
-                screen_to_pdf(placement.start_screen.x, placement.start_screen.y, &params);
-            let end = clamp_to_rect(cursor_pos, &placement.page_screen_rect);
-            let (end_pdf_x, end_pdf_y) = screen_to_pdf(end.x, end.y, &params);
-            let start = PdfPosition {
-                x: start_pdf_x,
-                y: start_pdf_y,
-            };
-            let finish = PdfPosition {
-                x: end_pdf_x,
-                y: end_pdf_y,
-            };
-            let (width, height) = box_size_between(start, finish);
+            let box_screen = drag_box_within(
+                placement.start_screen,
+                cursor_pos,
+                placement.page_screen_rect,
+            );
+            // The screen box's top-left corner is the box's first line; its
+            // size converts straight across, the scale being a pure multiplier.
+            let (pdf_x, pdf_y) = screen_to_pdf(box_screen.x, box_screen.y, &params);
+            let scale = params.scale();
             Some(
                 canvas::Action::publish(Message::PlaceTextBox {
                     page: placement.page,
-                    top_left: PdfPosition {
-                        x: start.x.min(finish.x),
-                        y: start.y.max(finish.y),
-                    },
-                    width,
-                    height,
+                    top_left: PdfPosition { x: pdf_x, y: pdf_y },
+                    width: box_screen.width / scale,
+                    height: box_screen.height / scale,
                 })
                 .and_capture(),
             )
@@ -538,26 +531,19 @@ impl OverlayCanvasProgram<'_> {
             return true;
         }
 
-        // Held to the page the same way the release is, so the rectangle
-        // drawn here is the box that will actually be placed.
-        let end_screen = clamp_to_rect(cursor_pos, &placement.page_screen_rect);
-        let start_canvas = iced::Point::new(
-            placement.start_screen.x - bounds.x,
-            placement.start_screen.y - bounds.y,
+        // The very box the release will place, so the rectangle drawn here
+        // cannot promise a box the release won't give.
+        let box_screen = drag_box_within(
+            placement.start_screen,
+            cursor_pos,
+            placement.page_screen_rect,
         );
-        let end_canvas = iced::Point::new(end_screen.x - bounds.x, end_screen.y - bounds.y);
-        let rect_x = start_canvas.x.min(end_canvas.x);
-        let rect_y = start_canvas.y.min(end_canvas.y);
-        let rect_w = (end_canvas.x - start_canvas.x).abs();
-        let rect_h = (end_canvas.y - start_canvas.y).abs();
-
         stroke_preview_rect(
             frame,
             iced::Rectangle {
-                x: rect_x,
-                y: rect_y,
-                width: rect_w,
-                height: rect_h,
+                x: box_screen.x - bounds.x,
+                y: box_screen.y - bounds.y,
+                ..box_screen
             },
         );
         false

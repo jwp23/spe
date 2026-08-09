@@ -308,23 +308,35 @@ impl IpcCommand {
                 x2,
                 y2,
             } => {
-                ctx.require_page(page)?;
+                let doc = ctx.require_page(page)?;
                 require_usable_sizes(&[x1, y1, x2, y2])?;
                 // The same rectangle the mouse path reports: both corners,
                 // not just the horizontal extent, so automation places the
                 // box a user dragging the same two points would get.
-                let (width, height) = crate::ui::canvas::box_size_between(
-                    PdfPosition { x: x1, y: y1 },
-                    PdfPosition { x: x2, y: y2 },
+                // The same box the mouse path computes, held inside the page
+                // the same way, so automation cannot place a box a user could
+                // not have dragged out. Measured downward from the page top,
+                // the direction `drag_box_within` grows a floored box, then
+                // converted back to PDF's upward y.
+                let (page_w, page_h) = doc.page_dimensions.get(&page).copied().unwrap_or_default();
+                let placed = crate::ui::canvas::drag_box_within(
+                    iced::Point::new(x1, page_h - y1),
+                    iced::Point::new(x2, page_h - y2),
+                    iced::Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: page_w,
+                        height: page_h,
+                    },
                 );
                 Ok(Message::PlaceTextBox {
                     page,
                     top_left: PdfPosition {
-                        x: x1.min(x2),
-                        y: y1.max(y2),
+                        x: placed.x,
+                        y: page_h - placed.y,
                     },
-                    width,
-                    height,
+                    width: placed.width,
+                    height: placed.height,
                 })
             }
             IpcCommand::Resize {
@@ -838,6 +850,32 @@ mod tests {
             if (x - 100.0).abs() < f32::EPSILON
                 && (y - 700.0).abs() < f32::EPSILON
                 && (w - 200.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn drag_at_the_page_edge_places_the_whole_floored_box_on_the_page() {
+        // The mouse path nudges a floored box back inside the page rather than
+        // letting it hang off; automation asking for the same must land in the
+        // same place.
+        let doc = test_document_with_overlay();
+        let cmd = IpcCommand::Drag {
+            page: 1,
+            x1: 610.0,
+            y1: 700.0,
+            x2: 612.0,
+            y2: 600.0,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        let floor = crate::ui::canvas::MIN_BOX_DIMENSION;
+        assert!(matches!(
+            msg,
+            Message::PlaceTextBox { top_left, width, .. }
+            if (width - floor).abs() < f32::EPSILON
+                && top_left.x >= 0.0
+                && top_left.x + width <= 612.01
         ));
     }
 
