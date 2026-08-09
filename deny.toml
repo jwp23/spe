@@ -5,6 +5,7 @@ all-features = false
 [advisories]
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but only used transitively by wgpu/image; upstream will migrate to pastey" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained and directly depended on by this project; no patched version is available. Exception remains until migration to a maintained parser" },
 ]
 
 [licenses]
