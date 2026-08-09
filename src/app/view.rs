@@ -113,6 +113,10 @@ impl App {
             iced::widget::center(iced::widget::text("Open a PDF to get started").size(20)).into()
         };
 
+        // Sized Fill explicitly instead of leaning on `Column::push`, which
+        // only widens a Shrink column to Fill for as long as some pushed child
+        // is itself Fill. Stating it here keeps the root column spanning the
+        // window even if the toolbar, toast, or content sizing changes.
         let mut main_column = iced::widget::column![toolbar]
             .width(iced::Length::Fill)
             .height(iced::Length::Fill);
