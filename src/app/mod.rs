@@ -131,6 +131,14 @@ pub enum Message {
     MoveOverlay(usize, PdfPosition),
     ChangeFont(FontId),
     ChangeFontSize(f32),
+    /// An ArrowUp (`true`) or ArrowDown (`false`) key was pressed. Only
+    /// affects the font size when the toolbar's font-size input is
+    /// focused, so this queries that focus state before acting.
+    FontSizeArrowPressed(bool),
+    /// The focus query from [`Message::FontSizeArrowPressed`] resolved with
+    /// the font-size input focused: step the size up (`true`) or down
+    /// (`false`).
+    FontSizeArrowKeyResult(bool),
     DeleteOverlay,
     SelectOverlay(usize),
     EditOverlay(usize),
@@ -418,6 +426,12 @@ impl App {
             } => self.handle_resize_overlay(index, old_width, new_width),
             Message::ChangeFont(font) => return self.handle_change_font(font),
             Message::ChangeFontSize(size) => return self.handle_change_font_size(size),
+            Message::FontSizeArrowPressed(increment) => {
+                return self.handle_font_size_arrow_pressed(increment);
+            }
+            Message::FontSizeArrowKeyResult(increment) => {
+                return self.handle_font_size_arrow_key_result(increment);
+            }
             Message::DeleteOverlay => return self.handle_delete_overlay(),
             Message::SelectOverlay(index) => return self.handle_select_overlay(index),
             Message::EditOverlay(index) => return self.handle_edit_overlay(index),
@@ -645,6 +659,17 @@ fn mouse_event_to_message(event: &iced::mouse::Event) -> Option<Message> {
     }
 }
 
+/// Resolve the `is_focused` query [`App::handle_font_size_arrow_pressed`]
+/// dispatches: only step the font size (`FontSizeArrowKeyResult`) when the
+/// font-size input was actually focused, otherwise no-op.
+fn arrow_key_result(focused: bool, increment: bool) -> Message {
+    if focused {
+        Message::FontSizeArrowKeyResult(increment)
+    } else {
+        Message::Noop
+    }
+}
+
 /// Map a keyboard event to an application message.
 fn key_to_message(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<Message> {
     use keyboard::key::Named;
@@ -661,6 +686,12 @@ fn key_to_message(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<
             (Named::PageUp, false, false) => Some(Message::PreviousPage),
             (Named::PageDown, false, false) => Some(Message::NextPage),
             (Named::F9, false, false) => Some(Message::ToggleSidebar),
+            (Named::ArrowUp, false, false) if modifiers.is_empty() => {
+                Some(Message::FontSizeArrowPressed(true))
+            }
+            (Named::ArrowDown, false, false) if modifiers.is_empty() => {
+                Some(Message::FontSizeArrowPressed(false))
+            }
             _ => None,
         },
         keyboard::Key::Character(ref c) => {
