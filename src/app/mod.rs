@@ -586,10 +586,17 @@ impl App {
             iced::Subscription::none()
         };
 
-        // Only tracking redraws matters for wait_frame, so this stays enabled
-        // even without IPC — it costs one bool comparison per event and keeps
-        // state_generation/presented_generation consistent regardless of mode.
-        let frame_sub = iced::event::listen_raw(frame_event_to_message);
+        // Only subscribe while a wait_frame is pending. iced's AboutToWait
+        // handler unconditionally requests another redraw whenever the
+        // message queue was non-empty (see the WaitFrame comment above), so
+        // an unconditional subscription here would turn every RedrawRequested
+        // into a new Message::FramePresented and never let the event loop go
+        // idle — a perpetual redraw loop.
+        let frame_sub = if self.pending_frame_wait.is_some() {
+            iced::event::listen_raw(frame_event_to_message)
+        } else {
+            iced::Subscription::none()
+        };
 
         iced::Subscription::batch([event_sub, shimmer_sub, toast_sub, ipc_sub, frame_sub])
     }
