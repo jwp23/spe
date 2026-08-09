@@ -107,12 +107,16 @@ fn undo_redo_through_update() {
         position: PdfPosition { x: 100.0, y: 700.0 },
         width: None,
     });
+    app.update(Message::UpdateOverlayText("Hi".to_string()));
+    app.update(Message::CommitText);
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
 
-    app.update(Message::Undo);
+    app.update(Message::Undo); // reverse the text edit
+    app.update(Message::Undo); // reverse the placement
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 0);
-    assert_eq!(app.redo_stack.len(), 1);
+    assert_eq!(app.redo_stack.len(), 2);
 
+    app.update(Message::Redo);
     app.update(Message::Redo);
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
     assert!(app.redo_stack.is_empty());
@@ -126,6 +130,8 @@ fn new_action_clears_redo_stack() {
         position: PdfPosition { x: 100.0, y: 700.0 },
         width: None,
     });
+    app.update(Message::UpdateOverlayText("Hi".to_string()));
+    app.update(Message::CommitText);
     app.update(Message::Undo);
     assert_eq!(app.redo_stack.len(), 1);
 
@@ -1413,9 +1419,12 @@ fn update_overlay_text_does_not_clobber_editor_content_for_unrelated_singleline_
     app.update(Message::UpdateOverlayText("AAA".to_string()));
     assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "AAA");
 
-    // IPC `select` targets overlay 1 (single-line).
-    app.update(Message::SelectOverlay(1));
-    assert_eq!(app.canvas.active_overlay, Some(1));
+    // Retarget the live session at overlay 1 (single-line) directly. Going via
+    // Message::SelectOverlay would commit and tear down overlay 0's session
+    // (and its editor_content) first, which is the behaviour asserted by
+    // selecting_a_different_overlay_ends_the_multiline_edit_session below;
+    // this test pins the narrower gate inside handle_update_overlay_text.
+    app.canvas.active_overlay = Some(1);
 
     // IPC `type` now targets overlay 1.
     app.update(Message::UpdateOverlayText("BBB".to_string()));
@@ -1497,6 +1506,7 @@ fn undo_font_change_syncs_toolbar_to_active_overlay() {
         width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
+    app.update(Message::CommitText);
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::ChangeFont(courier));
 
@@ -1515,6 +1525,7 @@ fn undo_font_size_change_syncs_toolbar_to_active_overlay() {
         width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
+    app.update(Message::CommitText);
     app.update(Message::ChangeFontSize(30.0));
 
     app.update(Message::Undo);
@@ -1536,6 +1547,7 @@ fn redo_font_change_syncs_toolbar_to_active_overlay() {
         width: None,
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
+    app.update(Message::CommitText);
     let courier = app.font_registry.find_by_name("Courier").unwrap();
     app.update(Message::ChangeFont(courier));
     app.update(Message::Undo);
@@ -2593,23 +2605,31 @@ fn discarding_an_empty_overlay_clears_the_redo_stack() {
     });
     app.update(Message::UpdateOverlayText("Hello".to_string()));
     app.update(Message::CommitText);
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 200.0, y: 600.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("World".to_string()));
+    app.update(Message::CommitText);
 
-    // Undo the text edit mid-session, leaving a redo entry for the overlay.
-    app.update(Message::EditOverlay(0));
+    // Undo the second overlay's text edit, leaving a redo entry behind.
     app.update(Message::Undo);
     assert_eq!(app.redo_stack.len(), 1);
 
-    // The overlay is now empty, so deselecting discards it.
-    app.update(Message::DeselectOverlay);
-    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+    // Erasing the first overlay's text discards it, shrinking the list.
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText(String::new()));
+    app.update(Message::CommitText);
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
     assert!(
         app.redo_stack.is_empty(),
         "redo entries referencing a discarded overlay must not survive"
     );
 
-    // Redo must not index into the emptied overlay list.
+    // Redo must not index into the shrunken overlay list.
     app.update(Message::Redo);
-    assert!(app.document.as_ref().unwrap().overlays.is_empty());
+    assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
 }
 
 #[test]
@@ -2629,6 +2649,7 @@ fn discarding_an_earlier_overlay_keeps_a_later_placement_in_history() {
         position: PdfPosition { x: 200.0, y: 600.0 },
         width: None,
     });
+    app.update(Message::UpdateOverlayText("two".to_string()));
     app.update(Message::EditOverlay(0));
     app.update(Message::UpdateOverlayText(String::new()));
     app.update(Message::DeselectOverlay);
@@ -2759,4 +2780,455 @@ fn editing_font_for_multiline_overlay_matches_selected_font() {
     let expected = app.font_registry.get(times).iced_font;
     assert_eq!(app.editing_font(), Some(expected));
     assert_eq!(expected.weight, iced::font::Weight::Bold);
+}
+
+// =====================================================================
+// spe-6v8 / spe-164: undo/redo integrity against a live edit session
+// =====================================================================
+
+/// Place an overlay, type `text` into it, and commit the edit session.
+fn place_committed_overlay(app: &mut App, x: f32, text: &str) {
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText(text.to_string()));
+    app.update(Message::CommitText);
+}
+
+/// Rebuild the overlay list by applying every undo-stack command in order.
+/// A well-formed history must reproduce the live document exactly.
+fn replay_undo_stack(app: &App) -> Vec<TextOverlay> {
+    let mut overlays = Vec::new();
+    for cmd in &app.undo_stack {
+        cmd.apply(&mut overlays);
+    }
+    overlays
+}
+
+fn assert_history_matches_document(app: &App, context: &str) {
+    let live: Vec<(String, f32)> = app
+        .document
+        .as_ref()
+        .unwrap()
+        .overlays
+        .iter()
+        .map(|o| (o.text.clone(), o.position.x))
+        .collect();
+    let replayed: Vec<(String, f32)> = replay_undo_stack(app)
+        .iter()
+        .map(|o| (o.text.clone(), o.position.x))
+        .collect();
+    assert_eq!(
+        live, replayed,
+        "{context}: document diverged from its undo history"
+    );
+}
+
+#[test]
+fn undo_during_fresh_placement_removes_the_overlay_being_placed() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "kept");
+
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 200.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::Undo);
+
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 1, "the fresh placement must be gone");
+    assert_eq!(overlays[0].text, "kept");
+}
+
+#[test]
+fn undo_during_fresh_placement_ends_the_edit_session() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::Undo);
+
+    assert!(
+        !app.canvas.editing,
+        "no edit session may outlive its overlay"
+    );
+    assert!(app.canvas.active_overlay.is_none());
+    assert!(app.canvas.fresh_placement.is_none());
+    assert!(app.canvas.edit_start_text.is_none());
+}
+
+#[test]
+fn redo_after_undoing_a_fresh_placement_does_not_resurrect_a_ghost() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::Undo);
+    app.update(Message::CommitText);
+    app.update(Message::Redo);
+
+    assert!(
+        app.document.as_ref().unwrap().overlays.is_empty(),
+        "redo must not restore a text-less overlay the user abandoned"
+    );
+}
+
+#[test]
+fn undo_while_editing_an_existing_overlay_restores_its_pre_edit_text() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "original");
+
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText("scribble".to_string()));
+    app.update(Message::Undo);
+
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 1);
+    assert_eq!(overlays[0].text, "original");
+    assert!(!app.canvas.editing);
+}
+
+#[test]
+fn deleting_the_overlay_being_placed_ends_the_edit_session() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::DeleteOverlay);
+
+    assert!(app.canvas.fresh_placement.is_none());
+    assert!(app.canvas.edit_start_text.is_none());
+    assert!(app.canvas.active_overlay.is_none());
+    assert!(!app.canvas.editing);
+}
+
+#[test]
+fn undoing_a_placement_clears_the_selection_it_could_strand() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "first");
+    place_committed_overlay(&mut app, 200.0, "second");
+    app.update(Message::SelectOverlay(1));
+
+    app.update(Message::Undo); // the text edit: in place
+    app.update(Message::Undo); // the placement: removes an overlay
+
+    assert!(
+        app.canvas.active_overlay.is_none(),
+        "a command that changes the overlay count can strand the selection"
+    );
+}
+
+#[test]
+fn undoing_an_in_place_command_keeps_the_selection() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "first");
+    place_committed_overlay(&mut app, 200.0, "second");
+    app.update(Message::SelectOverlay(1));
+
+    app.update(Message::Undo); // reverses the text edit only
+
+    assert_eq!(
+        app.canvas.active_overlay,
+        Some(1),
+        "an in-place change leaves every index addressing the same overlay"
+    );
+}
+
+/// The exact interleaving that desynchronised the document from its history:
+/// a stale edit session survived undo and then discarded an unrelated overlay.
+#[test]
+fn stale_edit_session_cannot_discard_an_unrelated_overlay() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::DeleteOverlay);
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 200.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::Undo);
+    app.update(Message::Undo);
+    app.update(Message::Undo);
+    app.update(Message::Redo);
+    app.update(Message::CommitText);
+
+    assert_history_matches_document(&app, "after stale-session commit");
+}
+
+/// Property check: no interleaving of placement, typing, commit, delete,
+/// selection and undo/redo may leave the document disagreeing with the
+/// command history that is supposed to describe it.
+#[test]
+fn document_always_matches_undo_history_under_arbitrary_interleavings() {
+    // Deterministic xorshift so failures are reproducible.
+    fn next(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    for seed in 1..2000u64 {
+        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut app = test_app_with_document();
+        let mut log: Vec<String> = Vec::new();
+
+        for step in 0..30u64 {
+            let len = app.document.as_ref().unwrap().overlays.len();
+            let msg = match next(&mut rng) % 9 {
+                0 => Message::PlaceOverlay {
+                    page: 1,
+                    position: PdfPosition {
+                        x: (step * 7) as f32,
+                        y: 700.0,
+                    },
+                    width: None,
+                },
+                1 => Message::UpdateOverlayText(format!("t{step}")),
+                2 => Message::UpdateOverlayText(String::new()),
+                3 => Message::CommitText,
+                4 => Message::DeleteOverlay,
+                5 if len > 0 => Message::SelectOverlay((next(&mut rng) % len as u64) as usize),
+                6 if len > 0 => Message::EditOverlay((next(&mut rng) % len as u64) as usize),
+                7 => Message::Undo,
+                _ => Message::Redo,
+            };
+            log.push(format!("{msg:?}"));
+            app.update(msg);
+
+            // Positions identify overlays. Text is compared too, except while
+            // an edit session is open, which legitimately holds text the
+            // history has not recorded yet.
+            let include_text = !app.canvas.editing;
+            let describe = |o: &TextOverlay| {
+                if include_text {
+                    format!("{}@{}", o.text, o.position.x)
+                } else {
+                    format!("@{}", o.position.x)
+                }
+            };
+            let live: Vec<String> = app
+                .document
+                .as_ref()
+                .unwrap()
+                .overlays
+                .iter()
+                .map(describe)
+                .collect();
+            let replayed: Vec<String> = replay_undo_stack(&app).iter().map(describe).collect();
+            assert_eq!(
+                live,
+                replayed,
+                "seed {seed} step {step}: document diverged from history\n{}",
+                log.join("\n")
+            );
+        }
+    }
+}
+
+#[test]
+fn undo_while_editing_without_changes_falls_through_to_the_history() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "first");
+    place_committed_overlay(&mut app, 200.0, "second");
+
+    // Open an edit session but change nothing, so cancelling it is invisible.
+    app.update(Message::EditOverlay(1));
+    app.update(Message::Undo);
+
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(
+        overlays[1].text, "",
+        "a no-op edit session must not swallow the undo keystroke"
+    );
+    assert!(!app.canvas.editing);
+}
+
+#[test]
+fn selecting_an_overlay_while_editing_commits_the_pending_text() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "original");
+
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText("typed".to_string()));
+    // The canvas commits before selecting, but IPC `select` does not.
+    app.update(Message::SelectOverlay(0));
+
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "typed");
+    assert_history_matches_document(&app, "after selecting mid-edit");
+}
+
+#[test]
+fn selecting_a_later_overlay_while_a_blank_one_is_discarded_selects_the_same_overlay() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "first");
+    place_committed_overlay(&mut app, 200.0, "second");
+    place_committed_overlay(&mut app, 300.0, "third");
+
+    // Blanking the middle overlay discards it on commit, shifting "third" down.
+    app.update(Message::EditOverlay(1));
+    app.update(Message::UpdateOverlayText(String::new()));
+    app.update(Message::SelectOverlay(2));
+
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 2);
+    assert_eq!(
+        app.canvas.active_overlay,
+        Some(1),
+        "the requested overlay shifted down when the blank one was discarded"
+    );
+    assert_eq!(overlays[1].text, "third");
+}
+
+#[test]
+fn re_entering_edit_on_the_same_overlay_commits_the_pending_text() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "original");
+
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText("typed".to_string()));
+    app.update(Message::EditOverlay(0));
+
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "typed");
+    assert_history_matches_document(&app, "after re-entering edit mid-edit");
+}
+
+#[test]
+fn redo_while_typing_into_a_fresh_placement_keeps_the_placement() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("draft".to_string()));
+    app.update(Message::Redo);
+
+    let overlays = &app.document.as_ref().unwrap().overlays;
+    assert_eq!(overlays.len(), 1, "redo must never undo a placement");
+    assert_eq!(overlays[0].text, "draft");
+}
+
+#[test]
+fn redo_while_editing_an_existing_overlay_keeps_the_typed_text() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "original");
+
+    app.update(Message::EditOverlay(0));
+    app.update(Message::UpdateOverlayText("typed".to_string()));
+    app.update(Message::Redo);
+
+    assert_eq!(
+        app.document.as_ref().unwrap().overlays[0].text,
+        "typed",
+        "redo must not revert in-progress typing"
+    );
+    assert_history_matches_document(&app, "after redo mid-edit");
+}
+
+#[test]
+fn typing_into_a_selected_overlay_starts_a_recorded_edit_session() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "original");
+    app.update(Message::SelectOverlay(0));
+
+    // IPC drives `select` then `type` with no edit in between.
+    app.update(Message::UpdateOverlayText("typed".to_string()));
+    assert!(
+        app.canvas.editing,
+        "typing into a selection must open a session so the change is recorded"
+    );
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "typed");
+
+    app.update(Message::CommitText);
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "typed");
+    assert_history_matches_document(&app, "after typing into a selection");
+}
+
+#[test]
+fn typing_with_nothing_selected_is_ignored() {
+    let mut app = test_app_with_document();
+    place_committed_overlay(&mut app, 100.0, "original");
+    app.update(Message::DeselectOverlay);
+
+    app.update(Message::UpdateOverlayText("stray".to_string()));
+
+    assert_eq!(
+        app.document.as_ref().unwrap().overlays[0].text,
+        "original",
+        "with no overlay selected there is nothing to record a change against"
+    );
+    assert_history_matches_document(&app, "after stray text message");
+}
+
+#[test]
+fn undoing_a_delete_made_while_typing_restores_only_recorded_text() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("typed".to_string()));
+    app.update(Message::DeleteOverlay);
+    app.update(Message::Undo);
+
+    assert_history_matches_document(&app, "after undoing a delete made mid-edit");
+}
+
+#[test]
+fn placing_an_overlay_while_editing_commits_the_pending_text() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: None,
+    });
+    app.update(Message::UpdateOverlayText("first".to_string()));
+    // The canvas commits before placing, but IPC `click` does not.
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 200.0, y: 600.0 },
+        width: None,
+    });
+
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "first");
+    assert_history_matches_document(&app, "after placing mid-edit");
+}
+
+#[test]
+fn selecting_a_different_overlay_ends_the_multiline_edit_session() {
+    let mut app = test_app_with_document();
+    app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 100.0, y: 700.0 },
+        width: Some(200.0),
+    });
+    app.update(Message::UpdateOverlayText("multi".to_string()));
+    place_committed_overlay(&mut app, 300.0, "single");
+
+    // Re-open the multiline session so the select is what ends it.
+    app.update(Message::EditOverlay(0));
+    assert!(app.editor_content.is_some());
+
+    app.update(Message::SelectOverlay(0));
+
+    assert!(
+        app.editor_content.is_none(),
+        "the multiline editor must not outlive the session that owns it"
+    );
+    assert_history_matches_document(&app, "after selecting away from a multiline edit");
 }

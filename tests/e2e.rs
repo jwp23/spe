@@ -89,17 +89,22 @@ fn undo_redo_with_view_rebuild() {
         position: PdfPosition { x: 100.0, y: 700.0 },
         width: None,
     });
+    let _ = app.update(Message::UpdateOverlayText("Hello".to_string()));
+    let _ = app.update(Message::CommitText);
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
     verify_view_renders(&app);
 
-    // Undo
+    // Undo the text edit, then the placement
+    let _ = app.update(Message::Undo);
     let _ = app.update(Message::Undo);
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 0);
     verify_view_renders(&app);
 
     // Redo
     let _ = app.update(Message::Redo);
+    let _ = app.update(Message::Redo);
     assert_eq!(app.document.as_ref().unwrap().overlays.len(), 1);
+    assert_eq!(app.document.as_ref().unwrap().overlays[0].text, "Hello");
     verify_view_renders(&app);
 }
 

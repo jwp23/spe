@@ -41,6 +41,14 @@ pub enum Command {
 }
 
 impl Command {
+    /// Whether applying or reversing this command changes how many overlays
+    /// exist, invalidating indices held outside the command history (such as
+    /// the canvas selection). In-place changes leave every index addressing
+    /// the same overlay.
+    pub fn changes_overlay_count(&self) -> bool {
+        matches!(self, Self::PlaceOverlay { .. } | Self::DeleteOverlay { .. })
+    }
+
     /// Applies this command to the overlay list.
     pub fn apply(&self, overlays: &mut Vec<TextOverlay>) {
         match self {
@@ -272,6 +280,42 @@ mod tests {
         cmd.reverse(&mut overlays);
         assert_eq!(overlays.len(), 3);
         assert_eq!(overlays[1].text, "Second");
+    }
+
+    #[test]
+    fn only_place_and_delete_change_the_overlay_count() {
+        let overlay = sample_overlay();
+        assert!(
+            Command::PlaceOverlay {
+                overlay: overlay.clone()
+            }
+            .changes_overlay_count()
+        );
+        assert!(Command::DeleteOverlay { overlay, index: 0 }.changes_overlay_count());
+        assert!(
+            !Command::EditText {
+                index: 0,
+                old_text: String::new(),
+                new_text: String::new(),
+            }
+            .changes_overlay_count()
+        );
+        assert!(
+            !Command::MoveOverlay {
+                index: 0,
+                from: PdfPosition { x: 0.0, y: 0.0 },
+                to: PdfPosition { x: 1.0, y: 1.0 },
+            }
+            .changes_overlay_count()
+        );
+        assert!(
+            !Command::ResizeOverlay {
+                index: 0,
+                old_width: 1.0,
+                new_width: 2.0,
+            }
+            .changes_overlay_count()
+        );
     }
 
     #[test]
