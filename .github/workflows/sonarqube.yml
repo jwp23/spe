@@ -10,6 +10,9 @@ permissions: {}
 
 jobs:
   sonarqube:
+    # Dependabot runs don't receive Actions secrets, so SONAR_TOKEN is empty and
+    # the scan can't authenticate; skip — dependency bumps carry no analyzable code.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
