@@ -200,8 +200,7 @@ impl App {
                 index: idx,
             };
             self.execute_command(cmd);
-            self.canvas.active_overlay = None;
-            self.canvas.editing = false;
+            self.clear_edit_session();
         }
     }
 
@@ -212,6 +211,7 @@ impl App {
             self.canvas.active_overlay = Some(index);
             self.canvas.editing = false;
             self.canvas.fresh_placement = None;
+            self.canvas.edit_start_text = None;
             self.toolbar.font = doc.overlays[index].font;
             self.toolbar.font_size = doc.overlays[index].font_size;
             self.toolbar.font_size_input = format!("{}", doc.overlays[index].font_size);
@@ -274,8 +274,56 @@ impl App {
         }
         self.canvas.editing = false;
         self.canvas.edit_start_text = None;
+        self.canvas.fresh_placement = None;
         self.editor_content = None;
         iced::Task::none()
+    }
+
+    /// Discard every trace of an edit session without touching the overlay
+    /// list. Session state addresses overlays by index, so it must never
+    /// outlive an operation that reorders or shortens the list.
+    fn clear_edit_session(&mut self) {
+        self.canvas.editing = false;
+        self.canvas.active_overlay = None;
+        self.canvas.edit_start_text = None;
+        self.canvas.fresh_placement = None;
+        self.editor_content = None;
+    }
+
+    /// Abandon an in-progress edit, returning the overlay list to the state it
+    /// had when the session began: a freshly placed overlay is removed along
+    /// with its placement command, and an established overlay's text reverts.
+    /// Returns whether the document or the undo history changed.
+    fn cancel_edit_session(&mut self) -> bool {
+        if !self.canvas.editing {
+            return false;
+        }
+        let index = self.canvas.active_overlay;
+        let start_text = self.canvas.edit_start_text.clone();
+        let fresh_placement = self.canvas.fresh_placement;
+        self.clear_edit_session();
+
+        let Some(doc) = &mut self.document else {
+            return false;
+        };
+        let Some(index) = index.filter(|i| *i < doc.overlays.len()) else {
+            return false;
+        };
+        if let Some(base_len) = fresh_placement {
+            doc.overlays.remove(index);
+            self.undo_stack.truncate(base_len);
+            // Redo entries address overlays by index, so none of them can
+            // survive the list shrinking outside the command history.
+            self.redo_stack.clear();
+            return true;
+        }
+        match start_text {
+            Some(text) if doc.overlays[index].text != text => {
+                doc.overlays[index].text = text;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Remove an overlay whose text is blank, since it would only render as an
@@ -789,21 +837,33 @@ impl App {
 
     // --- Undo/Redo handlers ---
 
+    /// Undo the in-progress edit if there is one, otherwise reverse the most
+    /// recent command. Cancelling the edit first keeps the session from
+    /// outliving the overlay it addresses, and gives one visible change per
+    /// keystroke: an edit that changed nothing falls through to the history.
     pub(super) fn handle_undo(&mut self) {
+        if self.cancel_edit_session() {
+            return;
+        }
         if let Some(cmd) = self.undo_stack.pop()
             && let Some(doc) = &mut self.document
         {
             cmd.reverse(&mut doc.overlays);
             self.redo_stack.push(cmd);
+            self.clear_edit_session();
         }
     }
 
     pub(super) fn handle_redo(&mut self) {
+        if self.cancel_edit_session() {
+            return;
+        }
         if let Some(cmd) = self.redo_stack.pop()
             && let Some(doc) = &mut self.document
         {
             cmd.apply(&mut doc.overlays);
             self.undo_stack.push(cmd);
+            self.clear_edit_session();
         }
     }
 

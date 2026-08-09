@@ -46,8 +46,9 @@ pub struct CanvasState {
     /// overlay's `PlaceOverlay` command was pushed, while that overlay is
     /// still being edited for the first time. Abandoning it truncates the
     /// undo stack back to this length, discarding the placement and any
-    /// style commands recorded during the edit. `None` once the overlay is
-    /// committed with text or a different overlay becomes active.
+    /// style commands recorded during the edit. `None` once the edit session
+    /// ends for any reason: committed with text, cancelled, or superseded by
+    /// another overlay becoming active.
     pub fresh_placement: Option<usize>,
     /// Counter incremented on each zoom change; used to debounce re-renders.
     pub zoom_generation: u64,
