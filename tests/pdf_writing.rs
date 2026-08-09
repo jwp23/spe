@@ -91,6 +91,7 @@ fn write_and_read_back_overlay() {
         font: registry.find_by_name("Courier Bold").unwrap(),
         font_size: 16.0,
         width: None,
+        min_height: None,
     };
 
     write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write_overlays failed");
@@ -199,6 +200,7 @@ fn write_multiple_overlays_across_pages() {
             font: registry.default_font(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         },
         TextOverlay {
             page: 2,
@@ -207,6 +209,7 @@ fn write_multiple_overlays_across_pages() {
             font: registry.find_by_name("Times Roman").unwrap(),
             font_size: 14.0,
             width: None,
+            min_height: None,
         },
     ];
 
@@ -262,6 +265,7 @@ fn write_and_read_back_multiline_overlay() {
         font: registry.default_font(),
         font_size: 12.0,
         width: Some(300.0),
+        min_height: None,
     };
 
     write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write_overlays failed");
@@ -349,6 +353,7 @@ fn write_multiline_word_wrap_breaks_at_width_boundary() {
         font: registry.find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: Some(40.0),
+        min_height: None,
     };
 
     write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
@@ -477,6 +482,7 @@ fn write_truetype_overlay_embeds_font_program() {
         font: tt_font_id,
         font_size: 14.0,
         width: None,
+        min_height: None,
     };
 
     write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write_overlays failed");
@@ -602,6 +608,7 @@ fn truetype_overlay_text_is_extractable_by_pdftotext() {
         font,
         font_size: 24.0,
         width: None,
+        min_height: None,
     };
 
     write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write_overlays failed");
@@ -642,6 +649,7 @@ fn write_builtin_overlay_still_creates_type1_font() {
         font: courier_id,
         font_size: 12.0,
         width: None,
+        min_height: None,
     };
 
     write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write_overlays failed");

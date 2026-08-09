@@ -118,6 +118,7 @@ mod tests {
             font: registry.default_font(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         }
     }
 
@@ -258,6 +259,7 @@ mod tests {
                 font: courier,
                 font_size: 14.0,
                 width: None,
+                min_height: None,
             },
             TextOverlay {
                 page: 1,
@@ -266,6 +268,7 @@ mod tests {
                 font: times,
                 font_size: 16.0,
                 width: None,
+                min_height: None,
             },
         ];
         let deleted = overlays[1].clone();

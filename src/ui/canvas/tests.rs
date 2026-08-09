@@ -224,6 +224,7 @@ fn overlay_at(x: f32, y: f32, text: &str) -> TextOverlay {
         font: FontRegistry::new().find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: None,
+        min_height: None,
     }
 }
 
@@ -809,6 +810,7 @@ fn hit_test_ignores_overlays_on_other_pages() {
         font: registry.find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: None,
+        min_height: None,
     }];
     let result = hit_test(80.0, 65.0, &overlays, 1, &params, &registry);
     assert!(result.is_none());
@@ -828,6 +830,7 @@ fn hit_test_finds_explicit_width_overlay_beyond_its_glyphs() {
         font: registry.find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: Some(200.0),
+        min_height: None,
     }];
     // Click well past the glyphs but still inside the explicit-width box.
     let result = hit_test(150.0, 65.0, &overlays, 1, &params, &registry);
@@ -1563,6 +1566,7 @@ fn multiline_overlay_at(x: f32, y: f32, width: f32, text: &str) -> TextOverlay {
         font: FontRegistry::new().find_by_name("Courier").unwrap(),
         font_size: 12.0,
         width: Some(width),
+        min_height: None,
     }
 }
 
@@ -2039,6 +2043,47 @@ fn the_resize_handle_reaches_the_last_wrapped_line() {
     assert!(
         state.resize_drag.is_some(),
         "pressing beside the last wrapped line should start a resize"
+    );
+}
+
+#[test]
+fn a_box_dragged_taller_than_its_text_keeps_the_room_it_was_given() {
+    // spe-x9e: the box the user dragged out is the box they get, whitespace
+    // below the text included.
+    let mut overlay = multiline_overlay_at(72.0, 720.0, 150.0, "one");
+    overlay.min_height = Some(100.0);
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        (rect.height - 100.0).abs() < 0.1,
+        "a 100pt box holding one line should stay 100pt tall, got {}",
+        rect.height
+    );
+}
+
+#[test]
+fn a_box_grows_past_its_minimum_once_the_text_needs_the_room() {
+    // spe-b2h: typing past the bottom of the box grows it rather than
+    // scrolling inside it.
+    let mut overlay = multiline_overlay_at(72.0, 720.0, 150.0, "one\ntwo\nthree\nfour\nfive");
+    overlay.min_height = Some(20.0);
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 1.0, &FontRegistry::new());
+    assert!(
+        (rect.height - 5.0 * LINE_12PT).abs() < 0.1,
+        "five lines need {} but the box is {}",
+        5.0 * LINE_12PT,
+        rect.height
+    );
+}
+
+#[test]
+fn a_minimum_height_scales_with_the_render_scale() {
+    let mut overlay = multiline_overlay_at(72.0, 720.0, 150.0, "one");
+    overlay.min_height = Some(100.0);
+    let rect = super::overlay_text_box(&overlay, 0.0, 100.0, 2.0, &FontRegistry::new());
+    assert!(
+        (rect.height - 200.0).abs() < 0.1,
+        "at double scale a 100pt box is 200px tall, got {}",
+        rect.height
     );
 }
 
@@ -2708,6 +2753,7 @@ fn overlay_with_font(font_name: &str, font_size: f32, text: &str) -> TextOverlay
         font: FontRegistry::new().find_by_name(font_name).unwrap(),
         font_size,
         width: None,
+        min_height: None,
     }
 }
 

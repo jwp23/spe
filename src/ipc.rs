@@ -629,6 +629,7 @@ mod tests {
                 font: registry.default_font(),
                 font_size: 12.0,
                 width: Some(200.0),
+                min_height: None,
             }],
         }
     }

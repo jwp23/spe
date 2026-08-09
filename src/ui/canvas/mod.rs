@@ -270,7 +270,10 @@ pub(crate) fn tint_alpha(hovered: bool) -> f32 {
 /// A multi-line overlay's text wraps inside that width, so its lines are
 /// counted by the text engine rather than by counting `\n`s: text the user
 /// never broke still lays out on several lines, and a box that missed them
-/// framed only the first (spe-0hl).
+/// framed only the first (spe-0hl). The box never shrinks below the overlay's
+/// own [`TextOverlay::min_height`], so a box dragged taller than its text keeps
+/// the whitespace the user asked for (spe-x9e), and never below its text
+/// either, so typing past the bottom grows it (spe-b2h).
 pub(crate) fn overlay_text_box(
     overlay: &TextOverlay,
     screen_x: f32,
@@ -294,11 +297,12 @@ pub(crate) fn overlay_text_box(
             overlay.text.lines().count().max(1),
         ),
     };
+    let text_height = line_count as f32 * scaled_font_size * TEXT_LINE_HEIGHT_RATIO;
     iced::Rectangle {
         x: screen_x,
         y: text_top(screen_y, scaled_font_size),
         width,
-        height: line_count as f32 * scaled_font_size * TEXT_LINE_HEIGHT_RATIO,
+        height: text_height.max(overlay.min_height.unwrap_or(0.0) * scale),
     }
 }
 

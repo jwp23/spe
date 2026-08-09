@@ -348,6 +348,7 @@ fn canvas_renders_with_overlays_on_page() {
         font: app.font_registry.default_font(),
         font_size: 12.0,
         width: None,
+        min_height: None,
     });
     app.document = Some(doc);
     verify_view_renders(&app);
@@ -367,6 +368,7 @@ fn canvas_renders_with_selected_overlay() {
         font: app.font_registry.find_by_name("Courier").unwrap(),
         font_size: 14.0,
         width: None,
+        min_height: None,
     });
     app.document = Some(doc);
     app.canvas.active_overlay = Some(0);

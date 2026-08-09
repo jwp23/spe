@@ -78,6 +78,7 @@ impl App {
                 font: self.toolbar.font,
                 font_size: self.toolbar.font_size,
                 width,
+                min_height: None,
             };
             let fresh_placement_base = self.undo_stack.len();
             let cmd = UndoCommand::PlaceOverlay {

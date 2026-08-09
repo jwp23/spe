@@ -19,6 +19,15 @@ pub struct TextOverlay {
     pub font_size: f32,
     /// Wrap width in PDF points. `None` = single-line, `Some(w)` = multi-line with wrapping.
     pub width: Option<f32>,
+    /// Minimum box height in PDF points: the height of the box the user
+    /// dragged out or resized to, which is only meaningful alongside `width`.
+    ///
+    /// It is a *minimum*, not a height: the box always grows to hold its text,
+    /// so this only ever adds whitespace below the last line. That makes it an
+    /// editing affordance and nothing more — the saved PDF lays wrapped lines
+    /// out downward from the first baseline and emits no operators for empty
+    /// space, so a box dragged taller writes byte-for-byte the same document.
+    pub min_height: Option<f32>,
 }
 
 #[cfg(test)]
@@ -51,6 +60,7 @@ mod tests {
             font: helvetica,
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
         assert_eq!(overlay.page, 1);
         assert_eq!(overlay.position.x, 72.0);
@@ -72,6 +82,7 @@ mod tests {
             font: courier,
             font_size: 14.0,
             width: None,
+            min_height: None,
         };
         let cloned = overlay.clone();
         assert_eq!(overlay, cloned);
@@ -87,8 +98,42 @@ mod tests {
             font: registry.default_font(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
         assert!(overlay.width.is_none());
+    }
+
+    #[test]
+    fn text_overlay_min_height_defaults_to_none() {
+        let registry = FontRegistry::new();
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: None,
+            min_height: None,
+        };
+        assert!(
+            overlay.min_height.is_none(),
+            "an overlay only has a minimum height once one is dragged out for it"
+        );
+    }
+
+    #[test]
+    fn text_overlay_remembers_a_dragged_minimum_height() {
+        let registry = FontRegistry::new();
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: Some(200.0),
+            min_height: Some(90.0),
+        };
+        assert!((overlay.min_height.unwrap() - 90.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -101,6 +146,7 @@ mod tests {
             font: registry.default_font(),
             font_size: 12.0,
             width: Some(200.0),
+            min_height: None,
         };
         assert!((overlay.width.unwrap() - 200.0).abs() < f32::EPSILON);
     }

@@ -620,6 +620,7 @@ mod tests {
             font: registry.default_font(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
@@ -753,6 +754,7 @@ mod tests {
             font: registry.default_font(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
         write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
 
@@ -851,6 +853,7 @@ mod tests {
             font: registry.default_font(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay], &registry)
@@ -885,6 +888,7 @@ mod tests {
             font: registry.default_font(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay], &registry)
@@ -957,6 +961,7 @@ mod tests {
             font: registry.default_font(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay], &registry)
@@ -1008,6 +1013,7 @@ mod tests {
                 font: registry.default_font(),
                 font_size: 12.0,
                 width: None,
+                min_height: None,
             },
             TextOverlay {
                 page: 1,
@@ -1016,6 +1022,7 @@ mod tests {
                 font: registry.find_by_name("Courier").unwrap(),
                 font_size: 12.0,
                 width: None,
+                min_height: None,
             },
         ];
 
@@ -1135,6 +1142,7 @@ mod tests {
                 font: registry.default_font(),
                 font_size: 12.0,
                 width: None,
+                min_height: None,
             },
             TextOverlay {
                 page: 1,
@@ -1143,6 +1151,7 @@ mod tests {
                 font: registry.default_font(),
                 font_size: 12.0,
                 width: None,
+                min_height: None,
             },
         ];
 
@@ -1231,6 +1240,7 @@ mod tests {
             font: registry.default_font(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
 
         let result = write_overlays(src.path(), dst.path(), &[overlay], &registry);
@@ -1266,6 +1276,7 @@ mod tests {
             font: registry.default_font(),
             font_size: 12.0,
             width: Some(200.0),
+            min_height: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
@@ -1328,6 +1339,7 @@ mod tests {
             font: registry.default_font(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
@@ -1381,6 +1393,7 @@ mod tests {
             font: tt_id,
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
@@ -1555,6 +1568,7 @@ mod tests {
             font: tt_id,
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
@@ -1612,6 +1626,7 @@ mod tests {
             font: registry.find_by_name("Helvetica").unwrap(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
@@ -1648,6 +1663,7 @@ mod tests {
             font: registry.find_by_name("Courier").unwrap(),
             font_size: 12.0,
             width: None,
+            min_height: None,
         };
 
         write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");

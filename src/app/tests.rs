@@ -1445,6 +1445,7 @@ fn update_overlay_text_does_not_clobber_editor_content_for_unrelated_singleline_
             font,
             font_size,
             width: Some(200.0), // multiline
+            min_height: None,
         });
         doc.overlays.push(TextOverlay {
             page: 1,
@@ -1453,6 +1454,7 @@ fn update_overlay_text_does_not_clobber_editor_content_for_unrelated_singleline_
             font,
             font_size,
             width: None, // single-line
+            min_height: None,
         });
     }
     // Simulate overlay 0 (multiline) having just been dragged into edit mode.
@@ -4027,4 +4029,97 @@ fn check_ipc_frame_wait_keeps_pending_when_not_yet_presented() {
     app.pending_frame_wait = Some(app.state_generation + 1);
     let _ = app.check_ipc_frame_wait();
     assert!(app.pending_frame_wait.is_some());
+}
+
+// =====================================================================
+// spe-x9e / spe-b2h: the floating editor fills the same box the canvas
+// draws for the overlay, so the box the user dragged out is the box
+// they type into
+// =====================================================================
+
+/// Put `overlay` into edit mode, render the floating edit widget the app
+/// builds for it, and return the size of the blue outline it drew alongside
+/// the canvas text box that outline is supposed to match.
+fn edit_widget_and_text_box(overlay: crate::overlay::TextOverlay) -> (iced::Size, iced::Rectangle) {
+    let mut app = test_app_with_document();
+    let doc = app.document.as_mut().unwrap();
+    doc.page_dimensions.insert(1, (612.0, 792.0));
+    doc.overlays.push(overlay.clone());
+    app.canvas.active_overlay = Some(0);
+    app.canvas.editing = true;
+    if overlay.width.is_some() {
+        app.editor_content = Some(iced::widget::text_editor::Content::with_text(&overlay.text));
+    }
+
+    let doc = app.document.as_ref().unwrap();
+    let dpi = canvas::effective_dpi(app.canvas.zoom);
+    let layout = canvas::page_layout(&doc.page_dimensions, doc.page_count, app.canvas.zoom, dpi);
+    let element = app.stack_overlay_element(doc, &layout);
+    let (left, top, right, bottom) = crate::test_render::render_element(element, None)
+        .selection_blue_bounds()
+        .expect("the floating editor outlines itself in the selection color");
+
+    let text_box = canvas::overlay_text_box(
+        &overlay,
+        0.0,
+        0.0,
+        crate::coordinate::render_scale(app.canvas.zoom, dpi),
+        &app.font_registry,
+    );
+    let drawn = iced::Size::new((right - left + 1) as f32, (bottom - top + 1) as f32);
+    (drawn, text_box)
+}
+
+/// A multi-line overlay 150pt wide holding `text`, with an optional dragged
+/// minimum height.
+fn box_overlay(text: &str, min_height: Option<f32>) -> crate::overlay::TextOverlay {
+    let registry = crate::fonts::FontRegistry::new();
+    crate::overlay::TextOverlay {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 700.0 },
+        text: text.to_string(),
+        font: registry.find_by_name("Courier").unwrap(),
+        font_size: 12.0,
+        width: Some(150.0),
+        min_height,
+    }
+}
+
+fn assert_editor_matches_box(overlay: crate::overlay::TextOverlay) {
+    let (drawn, text_box) = edit_widget_and_text_box(overlay);
+    assert!(
+        (drawn.width - text_box.width).abs() <= 2.0,
+        "the editor is {} wide but the canvas box is {}",
+        drawn.width,
+        text_box.width
+    );
+    assert!(
+        (drawn.height - text_box.height).abs() <= 2.0,
+        "the editor is {} tall but the canvas box is {}",
+        drawn.height,
+        text_box.height
+    );
+}
+
+#[test]
+fn the_editor_fills_the_box_that_was_dragged_out_for_it() {
+    // spe-x9e: the editor sized itself to its content, so a box dragged 100pt
+    // tall opened as a single-line strip.
+    assert_editor_matches_box(box_overlay("", Some(100.0)));
+}
+
+#[test]
+fn the_editor_grows_with_text_beyond_the_dragged_height() {
+    // spe-b2h: past the bottom of the box, typing grows the box.
+    assert_editor_matches_box(box_overlay("one\ntwo\nthree\nfour\nfive", Some(30.0)));
+}
+
+#[test]
+fn the_editor_spans_the_lines_its_text_wraps_onto() {
+    // The editor wraps at the box width just as the canvas does, so both must
+    // count the same lines even where the user typed no line breaks.
+    assert_editor_matches_box(box_overlay(
+        "mmmm mmmm mmmm mmmm mmmm mmmm mmmm mmmm mmmm",
+        None,
+    ));
 }
