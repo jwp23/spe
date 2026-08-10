@@ -1379,16 +1379,6 @@ impl App {
     }
 }
 
-/// Whether two paths denote the same file on disk.
-///
-/// Compares device and inode numbers rather than the paths themselves. Paths
-/// are an unreliable identity: a relative path, a `..` segment, or a symlink
-/// spell the same file differently, and hard links give one file two names
-/// that stay distinct however thoroughly they are normalized. Any of those
-/// would let a save slip past the guard and truncate the document being
-/// edited. A destination whose metadata cannot be read does not exist yet, so
-/// it cannot be the (existing) source — the literal comparison is only a
-/// fallback for that case.
 /// Save `doc` to a fresh temp file that rendering and saving read from while
 /// a restored document is open.
 fn write_stripped_copy(
@@ -1403,6 +1393,16 @@ fn write_stripped_copy(
     Ok(temp)
 }
 
+/// Whether two paths denote the same file on disk.
+///
+/// Compares device and inode numbers rather than the paths themselves. Paths
+/// are an unreliable identity: a relative path, a `..` segment, or a symlink
+/// spell the same file differently, and hard links give one file two names
+/// that stay distinct however thoroughly they are normalized. Any of those
+/// would let a save slip past the guard and truncate the document being
+/// edited. A destination whose metadata cannot be read does not exist yet, so
+/// it cannot be the (existing) source — the literal comparison is only a
+/// fallback for that case.
 fn denotes_same_file(destination: &std::path::Path, source: &std::path::Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     match (std::fs::metadata(destination), std::fs::metadata(source)) {
