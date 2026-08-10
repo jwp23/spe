@@ -76,6 +76,16 @@ fn validate_streams(doc: &Document, meta: &OverlayMetadata) -> Result<(), String
 
     let mut seen_pages = std::collections::HashSet::new();
     for record in &meta.streams {
+        if !meta
+            .overlays
+            .iter()
+            .any(|overlay| overlay.page == record.page)
+        {
+            return Err(format!(
+                "page {} has a recorded stream but no overlay to restore",
+                record.page
+            ));
+        }
         if !seen_pages.insert(record.page) {
             return Err(format!(
                 "metadata names page {} more than once",
@@ -489,6 +499,26 @@ mod tests {
         assert!(
             reason.contains("9999"),
             "reason should name the out-of-range page, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn stream_record_naming_a_page_with_no_overlay_opens_flat() {
+        let (file, _, registry) = saved_reeditable();
+        let mut doc = Document::load(file.path()).expect("load");
+        tamper_metadata(&mut doc, |meta| {
+            // Drop the overlay but keep its still-valid-fingerprint stream
+            // record: strip_app_streams must not be trusted to remove page
+            // content that no overlay will restore.
+            meta.overlays.clear();
+        });
+
+        let ReopenOutcome::Stale { reason, .. } = reopen(doc, &registry) else {
+            panic!("expected Stale");
+        };
+        assert!(
+            reason.contains("page 1"),
+            "reason should name the orphaned stream's page, got: {reason}"
         );
     }
 

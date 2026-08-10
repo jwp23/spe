@@ -543,6 +543,13 @@ fn atomic_save(doc: &mut Document, destination: &Path) -> Result<(), WriterError
         .persist(destination)
         .map_err(|e| to_save_failed(lopdf::Error::IO(e.error)))?;
 
+    // persist's rename is only durable once the directory entry itself is
+    // flushed — without this, a power loss can revert or drop the rename
+    // even though the temp file's own data already reached disk.
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|e| to_save_failed(lopdf::Error::IO(e)))?;
+
     Ok(())
 }
 
