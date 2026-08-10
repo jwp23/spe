@@ -702,17 +702,56 @@ impl App {
         match lopdf::Document::load(&path) {
             Ok(doc) => {
                 self.last_command_error = None;
+                let mut overlays = Vec::new();
+                let mut stripped_source = None;
+                let mut source_path = path.clone();
+                let mut open_notice: Option<String> = None;
+                let doc = match crate::pdf::reedit::reopen(doc, &self.font_registry) {
+                    crate::pdf::reedit::ReopenOutcome::NotReEditable(doc) => doc,
+                    crate::pdf::reedit::ReopenOutcome::Stale { document, reason } => {
+                        open_notice = Some(format!("Overlays not editable: {reason}"));
+                        document
+                    }
+                    crate::pdf::reedit::ReopenOutcome::Restored(restored) => {
+                        let mut document = restored.document;
+                        match write_stripped_copy(&mut document) {
+                            Ok(temp) => {
+                                overlays = restored.overlays;
+                                source_path = temp.path().to_path_buf();
+                                stripped_source = Some(temp);
+                                if !restored.missing_fonts.is_empty() {
+                                    open_notice = Some(format!(
+                                        "Fonts no longer installed, using default: {}",
+                                        restored.missing_fonts.join(", ")
+                                    ));
+                                }
+                            }
+                            Err(e) => {
+                                // Can't stage the stripped copy: open flat rather than
+                                // fail the open outright.
+                                open_notice = Some(format!("Overlays not editable: {e}"));
+                            }
+                        }
+                        document
+                    }
+                };
                 let page_dims = crate::pdf::page_dimensions(&doc);
                 let page_count = doc.get_pages().len() as u32;
                 self.document = Some(DocumentState {
-                    source_path: path.clone(),
+                    source_path,
+                    opened_path: path.clone(),
+                    stripped_source,
                     save_path: None,
                     page_count,
                     current_page: 1,
                     page_images: HashMap::new(),
                     page_dimensions: page_dims,
-                    overlays: Vec::new(),
+                    overlays,
                 });
+                if let Some(notice) = open_notice {
+                    self.status_message = Some((notice.clone(), std::time::Instant::now()));
+                    self.last_command_warning = Some(notice); // IPC open surfaces it too
+                }
                 self.undo_stack.clear();
                 self.redo_stack.clear();
                 self.canvas = CanvasState::default();
@@ -1350,6 +1389,20 @@ impl App {
 /// edited. A destination whose metadata cannot be read does not exist yet, so
 /// it cannot be the (existing) source — the literal comparison is only a
 /// fallback for that case.
+/// Save `doc` to a fresh temp file that rendering and saving read from while
+/// a restored document is open.
+fn write_stripped_copy(
+    doc: &mut lopdf::Document,
+) -> Result<tempfile::NamedTempFile, std::io::Error> {
+    let temp = tempfile::Builder::new()
+        .prefix("spe-stripped-")
+        .suffix(".pdf")
+        .tempfile()?;
+    doc.save(temp.path())
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(temp)
+}
+
 fn denotes_same_file(destination: &std::path::Path, source: &std::path::Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     match (std::fs::metadata(destination), std::fs::metadata(source)) {

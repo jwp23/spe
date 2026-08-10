@@ -74,6 +74,8 @@ fn undo_redo_with_view_rebuild() {
     let (mut app, _) = App::new(false);
     app.document = Some(spe::app::DocumentState {
         source_path: PathBuf::from("/tmp/test.pdf"),
+        opened_path: PathBuf::from("/tmp/test.pdf"),
+        stripped_source: None,
         save_path: None,
         page_count: 1,
         current_page: 1,
@@ -120,6 +122,8 @@ fn page_navigation_with_document() {
     dims.insert(3, (612.0, 792.0));
     app.document = Some(spe::app::DocumentState {
         source_path: PathBuf::from("/tmp/test.pdf"),
+        opened_path: PathBuf::from("/tmp/test.pdf"),
+        stripped_source: None,
         save_path: None,
         page_count: 3,
         current_page: 1,
@@ -159,6 +163,8 @@ fn delete_overlay_with_selection() {
     let (mut app, _) = App::new(false);
     app.document = Some(spe::app::DocumentState {
         source_path: PathBuf::from("/tmp/test.pdf"),
+        opened_path: PathBuf::from("/tmp/test.pdf"),
+        stripped_source: None,
         save_path: None,
         page_count: 1,
         current_page: 1,
@@ -197,6 +203,8 @@ fn test_document_multipage(page_count: u32) -> spe::app::DocumentState {
 
     spe::app::DocumentState {
         source_path: PathBuf::from("/tmp/test.pdf"),
+        opened_path: PathBuf::from("/tmp/test.pdf"),
+        stripped_source: None,
         save_path: None,
         page_count,
         current_page: 1,
@@ -315,6 +323,8 @@ fn test_document_with_image() -> spe::app::DocumentState {
 
     spe::app::DocumentState {
         source_path: PathBuf::from("/tmp/test.pdf"),
+        opened_path: PathBuf::from("/tmp/test.pdf"),
+        stripped_source: None,
         save_path: None,
         page_count: 1,
         current_page: 1,

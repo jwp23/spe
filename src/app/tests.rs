@@ -20,6 +20,8 @@ fn test_app_with_document() -> App {
     let (mut app, _) = App::new(false);
     app.document = Some(DocumentState {
         source_path: PathBuf::from("/tmp/test.pdf"),
+        opened_path: PathBuf::from("/tmp/test.pdf"),
+        stripped_source: None,
         save_path: None,
         page_count: 3,
         current_page: 1,
@@ -439,7 +441,7 @@ fn title_without_document() {
 #[test]
 fn title_with_document() {
     let mut app = test_app_with_document();
-    app.document.as_mut().unwrap().source_path = PathBuf::from("/tmp/report.pdf");
+    app.document.as_mut().unwrap().opened_path = PathBuf::from("/tmp/report.pdf");
     assert_eq!(app.title(), "report.pdf - SPE");
 }
 
@@ -4911,4 +4913,176 @@ fn a_resize_made_mid_session_is_undone_before_the_session_closes() {
         Some(400.0)
     );
     assert!(app.canvas.editing, "redo keeps the box open too");
+}
+
+/// Builds a plain single-page PDF with a Helvetica F1 font and one BT..ET
+/// content stream — the minimal starting point `write_overlays` bakes onto.
+fn create_minimal_pdf(path: &std::path::Path) {
+    use lopdf::content::{Content, Operation};
+    use lopdf::{Document, Object, Stream, dictionary};
+
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+        "Encoding" => Object::Name(b"WinAnsiEncoding".to_vec()),
+    });
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! { "F1" => font_id },
+    });
+    let content = Content {
+        operations: vec![
+            Operation::new("BT", vec![]),
+            Operation::new("Tf", vec!["F1".into(), 12.into()]),
+            Operation::new("Td", vec![72.into(), 720.into()]),
+            Operation::new(
+                "Tj",
+                vec![Object::String(
+                    b"Original".to_vec(),
+                    lopdf::StringFormat::Literal,
+                )],
+            ),
+            Operation::new("ET", vec![]),
+        ],
+    };
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        content.encode().expect("encode"),
+    ));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+    });
+    let pages = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![Object::Reference(page_id)],
+        "Count" => 1_i64,
+        "Resources" => resources_id,
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages));
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    doc.save(path).expect("save test PDF");
+}
+
+#[test]
+fn opening_an_app_saved_pdf_restores_its_overlays() {
+    let registry = crate::fonts::FontRegistry::new();
+    let src = tempfile::NamedTempFile::new().expect("temp file");
+    create_minimal_pdf(src.path());
+    let saved = tempfile::NamedTempFile::new().expect("temp file");
+    let overlays = vec![crate::overlay::TextOverlay {
+        page: 1,
+        position: crate::overlay::PdfPosition { x: 72.0, y: 650.0 },
+        text: "Restore me".to_string(),
+        font: registry.default_font(),
+        font_size: 12.0,
+        width: None,
+        min_height: None,
+    }];
+    crate::pdf::writer::write_overlays(src.path(), saved.path(), &overlays, &registry)
+        .expect("write failed");
+
+    let (mut app, _) = App::new(false);
+    let _ = app.update(Message::FileOpened(saved.path().to_path_buf()));
+
+    let doc = app.document.as_ref().expect("document open");
+    assert_eq!(doc.overlays, overlays, "overlays restored into the editor");
+    assert_eq!(doc.opened_path, saved.path(), "opened path remembered");
+    assert_ne!(
+        doc.source_path,
+        saved.path().to_path_buf(),
+        "rendering must come from the stripped copy, not the baked file"
+    );
+    assert!(
+        doc.stripped_source.is_some(),
+        "stripped temp file kept alive"
+    );
+    assert!(
+        doc.source_path.exists(),
+        "the stripped temp file exists on disk for pdftoppm"
+    );
+}
+
+#[test]
+fn opening_a_tampered_app_save_falls_back_flat_with_a_toast() {
+    let registry = crate::fonts::FontRegistry::new();
+    let src = tempfile::NamedTempFile::new().expect("temp file");
+    create_minimal_pdf(src.path());
+    let saved = tempfile::NamedTempFile::new().expect("temp file");
+    let overlays = vec![crate::overlay::TextOverlay {
+        page: 1,
+        position: crate::overlay::PdfPosition { x: 72.0, y: 650.0 },
+        text: "Will be tampered".to_string(),
+        font: registry.default_font(),
+        font_size: 12.0,
+        width: None,
+        min_height: None,
+    }];
+    crate::pdf::writer::write_overlays(src.path(), saved.path(), &overlays, &registry)
+        .expect("write failed");
+
+    // Tamper with the overlay stream the way another tool's edit would.
+    let mut doc = lopdf::Document::load(saved.path()).expect("load");
+    let page_id = *doc.get_pages().get(&1).expect("page 1");
+    let overlay_id = *doc.get_page_contents(page_id).last().expect("streams");
+    let stream = doc
+        .get_object_mut(overlay_id)
+        .expect("obj")
+        .as_stream_mut()
+        .expect("stream");
+    let mut bytes = stream.content.clone();
+    bytes.extend_from_slice(b"\n% tampered\n");
+    stream.set_content(bytes);
+    doc.save(saved.path()).expect("save tampered");
+
+    let (mut app, _) = App::new(false);
+    let _ = app.update(Message::FileOpened(saved.path().to_path_buf()));
+
+    let doc_state = app.document.as_ref().expect("document open");
+    assert!(doc_state.overlays.is_empty(), "no overlays restored");
+    assert_eq!(
+        doc_state.source_path,
+        saved.path(),
+        "renders the file as-is"
+    );
+    assert!(doc_state.stripped_source.is_none());
+    let (toast, _) = app
+        .status_message
+        .as_ref()
+        .expect("stale open must explain itself");
+    assert!(
+        toast.contains("changed by another tool") || toast.contains("not editable"),
+        "toast must say why overlays are not editable, got: {toast}"
+    );
+}
+
+#[test]
+fn title_shows_the_opened_files_name_for_restored_documents() {
+    // Covered by assertions on opened_path above plus this direct check:
+    // title() must read opened_path, not the temp source_path.
+    let registry = crate::fonts::FontRegistry::new();
+    let src = tempfile::NamedTempFile::new().expect("temp file");
+    create_minimal_pdf(src.path());
+    let saved_dir = tempfile::tempdir().expect("temp dir");
+    let saved_path = saved_dir.path().join("report.pdf");
+    let overlays = vec![crate::overlay::TextOverlay {
+        page: 1,
+        position: crate::overlay::PdfPosition { x: 72.0, y: 650.0 },
+        text: "x".to_string(),
+        font: registry.default_font(),
+        font_size: 12.0,
+        width: None,
+        min_height: None,
+    }];
+    crate::pdf::writer::write_overlays(src.path(), &saved_path, &overlays, &registry)
+        .expect("write failed");
+
+    let (mut app, _) = App::new(false);
+    let _ = app.update(Message::FileOpened(saved_path.clone()));
+    assert_eq!(app.title(), "report.pdf - SPE");
 }

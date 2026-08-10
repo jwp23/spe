@@ -39,7 +39,13 @@ const SIDEBAR_PAGE_BUFFER: u32 = 5;
 
 /// State for the currently loaded PDF document.
 pub struct DocumentState {
+    /// File rendering and saving read from. For a restored app save this is
+    /// the stripped temp copy; otherwise the file the user opened.
     pub source_path: PathBuf,
+    /// File the user actually opened; what the title bar shows.
+    pub opened_path: PathBuf,
+    /// Keeps the stripped temp copy alive while the document is open.
+    pub stripped_source: Option<tempfile::NamedTempFile>,
     pub save_path: Option<PathBuf>,
     pub page_count: u32,
     pub current_page: u32,
@@ -391,7 +397,7 @@ impl App {
         match &self.document {
             Some(doc) => {
                 let name = doc
-                    .source_path
+                    .opened_path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("untitled");

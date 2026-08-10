@@ -704,6 +704,8 @@ mod tests {
         let registry = test_registry();
         DocumentState {
             source_path: PathBuf::from("/tmp/test.pdf"),
+            opened_path: PathBuf::from("/tmp/test.pdf"),
+            stripped_source: None,
             save_path: None,
             page_count: 1,
             current_page: 1,
