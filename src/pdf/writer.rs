@@ -516,6 +516,22 @@ fn atomic_save(doc: &mut Document, destination: &Path) -> Result<(), WriterError
     doc.save_to(&mut temp_file)
         .map_err(|e| to_save_failed(lopdf::Error::IO(e)))?;
 
+    // NamedTempFile creates its file at 0o600 regardless of umask (it is
+    // meant to be private by default), but the old doc.save(destination) —
+    // File::create truncating in place — never touched an existing
+    // destination's mode, and gave a brand-new file the umask-derived
+    // default (0o644 under the common 0o022 umask). Renaming the temp file
+    // straight over destination would silently downgrade an existing file's
+    // permissions on every re-save, so carry the destination's mode forward
+    // when it already exists, or use 0o644 to match the common new-file case
+    // when it does not.
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(destination)
+        .map(|m| m.permissions().mode())
+        .unwrap_or(0o644);
+    std::fs::set_permissions(temp_file.path(), std::fs::Permissions::from_mode(mode))
+        .map_err(|e| to_save_failed(lopdf::Error::IO(e)))?;
+
     temp_file
         .persist(destination)
         .map_err(|e| to_save_failed(lopdf::Error::IO(e.error)))?;
@@ -1402,6 +1418,50 @@ mod tests {
             entries,
             vec![dst_path],
             "the temp file used for the atomic save must not linger in the destination directory"
+        );
+    }
+
+    #[test]
+    fn write_overlays_resave_preserves_the_destinations_existing_permissions() {
+        // The old doc.save(destination) truncated the destination in place,
+        // which never touches its mode. The atomic temp-file-then-rename
+        // save must reproduce that: renaming a tempfile (created at 0o600)
+        // over an existing file must not silently downgrade that file's
+        // permissions to 0o600 on every re-save.
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        use std::os::unix::fs::PermissionsExt;
+        let registry = FontRegistry::new();
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dst_path = dir.path().join("out.pdf");
+        create_test_pdf(&dst_path);
+        std::fs::set_permissions(&dst_path, std::fs::Permissions::from_mode(0o644))
+            .expect("set destination mode");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Re-save".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: None,
+            min_height: None,
+        };
+
+        write_overlays(src.path(), &dst_path, &[overlay], &registry).expect("write failed");
+
+        let mode = std::fs::metadata(&dst_path)
+            .expect("dest metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o644,
+            "re-saving over an existing file must preserve its permissions, got {mode:o}"
         );
     }
 
