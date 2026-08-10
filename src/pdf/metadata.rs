@@ -2,9 +2,10 @@
 // stream fingerprints (ADR-015, docs/designs/overlay-re-editing.md).
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::fonts::FontRegistry;
-use crate::overlay::TextOverlay;
+use crate::overlay::{PdfPosition, TextOverlay};
 
 /// Version of the /SPEOverlays JSON this build writes and understands.
 pub const METADATA_VERSION: u32 = 1;
@@ -93,6 +94,67 @@ pub fn to_json(
     serde_json::to_string(&metadata).expect("metadata serialization cannot fail")
 }
 
+#[derive(Debug, Error)]
+pub enum MetadataError {
+    #[error("overlay metadata is not valid JSON: {0}")]
+    InvalidJson(#[from] serde_json::Error),
+
+    #[error(
+        "overlay metadata version {found} is newer than this build understands ({METADATA_VERSION})"
+    )]
+    UnsupportedVersion { found: u32 },
+}
+
+/// Parse /SPEOverlays JSON, rejecting versions newer than this build writes.
+pub fn from_json(json: &str) -> Result<OverlayMetadata, MetadataError> {
+    let metadata: OverlayMetadata = serde_json::from_str(json)?;
+    if metadata.version > METADATA_VERSION {
+        return Err(MetadataError::UnsupportedVersion {
+            found: metadata.version,
+        });
+    }
+    Ok(metadata)
+}
+
+/// Overlays reconstructed from metadata, plus the font families that are no
+/// longer installed and fell back to the default font (deduplicated, in
+/// first-seen order).
+pub struct RestoredOverlays {
+    pub overlays: Vec<TextOverlay>,
+    pub missing_fonts: Vec<String>,
+}
+
+/// Resolve overlay records back into the in-memory model, substituting the
+/// default font for families the registry no longer knows.
+pub fn resolve_overlays(metadata: &OverlayMetadata, registry: &FontRegistry) -> RestoredOverlays {
+    let mut missing_fonts: Vec<String> = Vec::new();
+    let overlays = metadata
+        .overlays
+        .iter()
+        .map(|r| {
+            let font = registry.find_by_name(&r.font_family).unwrap_or_else(|| {
+                if !missing_fonts.contains(&r.font_family) {
+                    missing_fonts.push(r.font_family.clone());
+                }
+                registry.default_font()
+            });
+            TextOverlay {
+                page: r.page,
+                position: PdfPosition { x: r.x, y: r.y },
+                text: r.text.clone(),
+                font,
+                font_size: r.font_size,
+                width: r.width,
+                min_height: r.min_height,
+            }
+        })
+        .collect();
+    RestoredOverlays {
+        overlays,
+        missing_fonts,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +224,94 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert!(parsed["overlays"][0]["width"].is_null());
         assert!(parsed["overlays"][0]["min_height"].is_null());
+    }
+
+    #[test]
+    fn json_round_trips_to_an_identical_overlay_model() {
+        let registry = FontRegistry::new();
+        let overlays = vec![
+            sample_overlay(&registry),
+            TextOverlay {
+                page: 2,
+                position: PdfPosition { x: 10.5, y: 400.25 },
+                text: "Second".to_string(),
+                font: registry.find_by_name("Courier").expect("Courier exists"),
+                font_size: 9.5,
+                width: None,
+                min_height: None,
+            },
+        ];
+        let streams = vec![PageStreams {
+            page: 1,
+            overlay: StreamFingerprint::of(b"ops"),
+            prefix: None,
+        }];
+
+        let json = to_json(&overlays, &streams, &registry);
+        let metadata = from_json(&json).expect("round-trip parse");
+        assert_eq!(metadata.version, METADATA_VERSION);
+        assert_eq!(metadata.streams, streams);
+
+        let restored = resolve_overlays(&metadata, &registry);
+        assert_eq!(restored.overlays, overlays);
+        assert!(restored.missing_fonts.is_empty());
+    }
+
+    #[test]
+    fn malformed_json_is_rejected() {
+        assert!(matches!(
+            from_json("not json at all"),
+            Err(MetadataError::InvalidJson(_))
+        ));
+    }
+
+    #[test]
+    fn future_version_is_rejected() {
+        let json = format!(
+            r#"{{"version": {}, "overlays": [], "streams": []}}"#,
+            METADATA_VERSION + 1
+        );
+        assert!(matches!(
+            from_json(&json),
+            Err(MetadataError::UnsupportedVersion { found }) if found == METADATA_VERSION + 1
+        ));
+    }
+
+    #[test]
+    fn unknown_font_falls_back_to_default_and_is_reported() {
+        let registry = FontRegistry::new();
+        let metadata = OverlayMetadata {
+            version: METADATA_VERSION,
+            overlays: vec![
+                OverlayRecord {
+                    page: 1,
+                    x: 72.0,
+                    y: 720.0,
+                    text: "Ghost font".to_string(),
+                    font_family: "Uninstalled Family".to_string(),
+                    font_size: 12.0,
+                    width: None,
+                    min_height: None,
+                },
+                OverlayRecord {
+                    page: 1,
+                    x: 72.0,
+                    y: 700.0,
+                    text: "Same ghost".to_string(),
+                    font_family: "Uninstalled Family".to_string(),
+                    font_size: 12.0,
+                    width: None,
+                    min_height: None,
+                },
+            ],
+            streams: vec![],
+        };
+        let restored = resolve_overlays(&metadata, &registry);
+        assert_eq!(restored.overlays[0].font, registry.default_font());
+        assert_eq!(
+            restored.missing_fonts,
+            vec!["Uninstalled Family".to_string()],
+            "each missing family is reported once"
+        );
     }
 }
