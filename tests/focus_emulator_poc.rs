@@ -96,6 +96,8 @@ fn editing_preset() -> Preset<App, Message> {
         app.sidebar.visible = false;
         app.document = Some(DocumentState {
             source_path: "/tmp/test.pdf".into(),
+            opened_path: "/tmp/test.pdf".into(),
+            stripped_source: None,
             save_path: None,
             page_count: 1,
             current_page: 1,

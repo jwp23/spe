@@ -7,6 +7,7 @@ use lopdf::content::{Content, Operation};
 use lopdf::{Document, Object, Stream, dictionary};
 use thiserror::Error;
 
+use super::metadata::{self, PageStreams, StreamFingerprint};
 use super::win_ansi;
 use crate::fonts::{FontDescriptorInfo, FontId, FontRegistry, PdfEmbedding};
 use crate::overlay::TextOverlay;
@@ -429,13 +430,19 @@ fn build_overlay_operations(
     }
 }
 
-/// Create a content stream from raw bytes and append it to the page's Contents.
+/// Create a content stream from raw bytes and append it to the page's Contents,
+/// returning fingerprints of the exact bytes stored so the save's metadata can
+/// identify these streams on reopen.
 ///
 /// Existing page content is wrapped in q/Q (a `q` stream before it, `Q` at the start
 /// of the overlay stream) so graphics-state changes it leaves active — e.g. the
 /// top-down CTM flip Skia/Google Docs emits — cannot affect the overlay. Assumes
 /// the original content has balanced q/Q pairs, as the spec requires.
-fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_bytes: Vec<u8>) {
+fn embed_content_stream(
+    doc: &mut Document,
+    page_id: lopdf::ObjectId,
+    content_bytes: Vec<u8>,
+) -> (Option<StreamFingerprint>, StreamFingerprint) {
     let existing = {
         let page_dict = doc
             .get_object(page_id)
@@ -454,10 +461,12 @@ fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_by
         }
     };
 
-    let contents = if existing.is_empty() {
+    let (contents, fingerprints) = if existing.is_empty() {
+        let overlay_fp = StreamFingerprint::of(&content_bytes);
         let stream_id = doc.add_object(Stream::new(dictionary! {}, content_bytes));
-        Object::Reference(stream_id)
+        (Object::Reference(stream_id), (None, overlay_fp))
     } else {
+        let prefix_fp = StreamFingerprint::of(b"q\n");
         let prefix_id = doc.add_object(Stream::new(dictionary! {}, b"q\n".to_vec()));
         // Leading whitespace ensures the `Q` cannot merge with the final token of the
         // preceding stream when readers concatenate array-referenced content streams
@@ -465,12 +474,13 @@ fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_by
         // otherwise combine with `Q` into the invalid token `fQ`).
         let mut overlay_bytes = b"\nQ\n".to_vec();
         overlay_bytes.extend(content_bytes);
+        let overlay_fp = StreamFingerprint::of(&overlay_bytes);
         let stream_id = doc.add_object(Stream::new(dictionary! {}, overlay_bytes));
 
         let mut arr = vec![Object::Reference(prefix_id)];
         arr.extend(existing);
         arr.push(Object::Reference(stream_id));
-        Object::Array(arr)
+        (Object::Array(arr), (Some(prefix_fp), overlay_fp))
     };
 
     let page_dict = doc
@@ -479,6 +489,68 @@ fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_by
         .as_dict_mut()
         .expect("page object must be a dictionary");
     page_dict.set("Contents", contents);
+
+    fingerprints
+}
+
+/// Save `doc` to `destination` atomically: write to a temp file in the
+/// destination's own directory, then rename it over `destination`. A write
+/// that fails partway (disk full, permission denied, process killed) leaves
+/// any pre-existing file at `destination` byte-identical — `doc.save`'s
+/// truncate-in-place would otherwise corrupt it. The temp file is created in
+/// the same directory as `destination` so the final rename is same-filesystem
+/// and therefore atomic.
+fn atomic_save(doc: &mut Document, destination: &Path) -> Result<(), WriterError> {
+    let to_save_failed = |source| WriterError::SaveFailed {
+        path: destination.to_path_buf(),
+        source,
+    };
+
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let mut temp_file = tempfile::Builder::new()
+        .prefix(".spe-save-")
+        .suffix(".pdf")
+        .tempfile_in(parent)
+        .map_err(|e| to_save_failed(lopdf::Error::IO(e)))?;
+
+    doc.save_to(&mut temp_file)
+        .map_err(|e| to_save_failed(lopdf::Error::IO(e)))?;
+
+    // NamedTempFile creates its file at 0o600 regardless of umask (it is
+    // meant to be private by default), but the old doc.save(destination) —
+    // File::create truncating in place — never touched an existing
+    // destination's mode, and gave a brand-new file the umask-derived
+    // default (0o644 under the common 0o022 umask). Renaming the temp file
+    // straight over destination would silently downgrade an existing file's
+    // permissions on every re-save, so carry the destination's mode forward
+    // when it already exists, or use 0o644 to match the common new-file case
+    // when it does not.
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(destination)
+        .map(|m| m.permissions().mode())
+        .unwrap_or(0o644);
+    std::fs::set_permissions(temp_file.path(), std::fs::Permissions::from_mode(mode))
+        .map_err(|e| to_save_failed(lopdf::Error::IO(e)))?;
+
+    // Rename can reach disk before the written data does. Flush first so a
+    // power loss cannot leave a truncated file at destination.
+    temp_file
+        .as_file()
+        .sync_all()
+        .map_err(|e| to_save_failed(lopdf::Error::IO(e)))?;
+
+    temp_file
+        .persist(destination)
+        .map_err(|e| to_save_failed(lopdf::Error::IO(e.error)))?;
+
+    // persist's rename is only durable once the directory entry itself is
+    // flushed — without this, a power loss can revert or drop the rename
+    // even though the temp file's own data already reached disk.
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|e| to_save_failed(lopdf::Error::IO(e)))?;
+
+    Ok(())
 }
 
 /// Write `overlays` onto the PDF at `source`, saving the result to `destination`.
@@ -494,13 +566,7 @@ pub fn write_overlays(
         // Save must always produce a file: write a plain copy of the source
         // through the same load/save path used for baking overlays, so an
         // empty-overlay save is never silently a no-op.
-        return doc
-            .save(destination)
-            .map(|_| SaveReport::default())
-            .map_err(|e| WriterError::SaveFailed {
-                path: destination.to_path_buf(),
-                source: lopdf::Error::IO(e),
-            });
+        return atomic_save(&mut doc, destination).map(|_| SaveReport::default());
     }
 
     let pages = doc.get_pages();
@@ -526,6 +592,7 @@ pub fn write_overlays(
     }
 
     let mut report = SaveReport::default();
+    let mut stream_records: Vec<PageStreams> = Vec::new();
     for (page_num, page_overlays) in &overlays_by_page {
         let &page_id = pages.get(page_num).expect("validated above");
 
@@ -542,13 +609,42 @@ pub fn write_overlays(
             path: destination.to_path_buf(),
             source: e,
         })?;
-        embed_content_stream(&mut doc, page_id, content_bytes);
+        let (prefix, overlay_fp) = embed_content_stream(&mut doc, page_id, content_bytes);
+        stream_records.push(PageStreams {
+            page: *page_num,
+            overlay: overlay_fp,
+            prefix,
+        });
     }
 
-    doc.save(destination).map_err(|e| WriterError::SaveFailed {
-        path: destination.to_path_buf(),
-        source: lopdf::Error::IO(e),
-    })?;
+    let json = metadata::to_json(overlays, &stream_records, registry);
+    let metadata_id = doc.add_object(Stream::new(dictionary! {}, json.into_bytes()));
+    // lopdf parses leniently, so a Root that is missing or not a reference is
+    // a malformed-but-loadable file, not an internal invariant: report it as
+    // a save failure rather than panicking and losing the user's overlays.
+    let root_id = match doc.trailer.get(b"Root") {
+        Ok(Object::Reference(id)) => *id,
+        _ => {
+            return Err(WriterError::SaveFailed {
+                path: destination.to_path_buf(),
+                source: lopdf::Error::DictKey("Root".to_string()),
+            });
+        }
+    };
+    let catalog = doc
+        .get_object_mut(root_id)
+        .map_err(|e| WriterError::SaveFailed {
+            path: destination.to_path_buf(),
+            source: e,
+        })?
+        .as_dict_mut()
+        .map_err(|e| WriterError::SaveFailed {
+            path: destination.to_path_buf(),
+            source: e,
+        })?;
+    catalog.set("SPEOverlays", Object::Reference(metadata_id));
+
+    atomic_save(&mut doc, destination)?;
 
     Ok(report)
 }
@@ -1316,6 +1412,139 @@ mod tests {
     }
 
     #[test]
+    fn write_overlays_atomic_save_leaves_no_stray_temp_files() {
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dst_path = dir.path().join("out.pdf");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Atomic".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: None,
+            min_height: None,
+        };
+
+        write_overlays(src.path(), &dst_path, &[overlay], &registry).expect("write failed");
+
+        assert!(
+            dst_path.exists(),
+            "destination must exist after a successful save"
+        );
+        let entries: Vec<PathBuf> = std::fs::read_dir(dir.path())
+            .expect("read dest dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(
+            entries,
+            vec![dst_path],
+            "the temp file used for the atomic save must not linger in the destination directory"
+        );
+    }
+
+    #[test]
+    fn write_overlays_resave_preserves_the_destinations_existing_permissions() {
+        // The old doc.save(destination) truncated the destination in place,
+        // which never touches its mode. The atomic temp-file-then-rename
+        // save must reproduce that: renaming a tempfile (created at 0o600)
+        // over an existing file must not silently downgrade that file's
+        // permissions to 0o600 on every re-save.
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        use std::os::unix::fs::PermissionsExt;
+        let registry = FontRegistry::new();
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dst_path = dir.path().join("out.pdf");
+        create_test_pdf(&dst_path);
+        std::fs::set_permissions(&dst_path, std::fs::Permissions::from_mode(0o644))
+            .expect("set destination mode");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Re-save".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: None,
+            min_height: None,
+        };
+
+        write_overlays(src.path(), &dst_path, &[overlay], &registry).expect("write failed");
+
+        let mode = std::fs::metadata(&dst_path)
+            .expect("dest metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o644,
+            "re-saving over an existing file must preserve its permissions, got {mode:o}"
+        );
+    }
+
+    #[test]
+    fn write_overlays_failed_save_leaves_existing_destination_untouched() {
+        use crate::fonts::FontRegistry;
+        use std::os::unix::fs::PermissionsExt;
+        let registry = FontRegistry::new();
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dst_path = dir.path().join("out.pdf");
+        // A valid PDF already sits at the destination, standing in for the
+        // file a restored document would save back onto.
+        create_test_pdf(&dst_path);
+        let original_bytes = std::fs::read(&dst_path).expect("read original destination");
+
+        // Strip write permission from the destination's directory so the
+        // atomic save's temp-file creation fails partway through.
+        let original_perms = std::fs::metadata(dir.path())
+            .expect("dir metadata")
+            .permissions();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555))
+            .expect("make dir read-only");
+
+        // root ignores directory write permission, so the failure this test
+        // needs cannot be provoked there.
+        let probe = dir.path().join(".probe");
+        let running_as_root = std::fs::write(&probe, b"x").is_ok();
+        if running_as_root {
+            let _ = std::fs::remove_file(&probe);
+            std::fs::set_permissions(dir.path(), original_perms).expect("restore dir permissions");
+            return;
+        }
+
+        let result = write_overlays(src.path(), &dst_path, &[], &registry);
+
+        // Restore write permission so the tempdir can clean itself up.
+        std::fs::set_permissions(dir.path(), original_perms).expect("restore dir permissions");
+
+        assert!(
+            result.is_err(),
+            "expected the save to fail against a read-only destination directory"
+        );
+        let after_bytes = std::fs::read(&dst_path).expect("read destination after failed save");
+        assert_eq!(
+            original_bytes, after_bytes,
+            "a failed save must leave a pre-existing destination byte-identical"
+        );
+    }
+
+    #[test]
     fn write_overlays_invalid_page_returns_page_not_found() {
         use crate::fonts::FontRegistry;
         use crate::overlay::{PdfPosition, TextOverlay};
@@ -2046,5 +2275,94 @@ mod tests {
             ops.extend(content.operations);
         }
         ops
+    }
+
+    /// The catalog /SPEOverlays JSON stored by a save, or None.
+    fn stored_metadata(doc: &Document) -> Option<crate::pdf::metadata::OverlayMetadata> {
+        let root_id = match doc.trailer.get(b"Root").ok()? {
+            Object::Reference(id) => *id,
+            _ => return None,
+        };
+        let catalog = doc.get_dictionary(root_id).ok()?;
+        let stream = match catalog.get(b"SPEOverlays").ok()? {
+            Object::Reference(id) => doc.get_object(*id).ok()?.as_stream().ok()?,
+            _ => return None,
+        };
+        let json = String::from_utf8(stream.content.clone()).ok()?;
+        crate::pdf::metadata::from_json(&json).ok()
+    }
+
+    #[test]
+    fn save_embeds_metadata_matching_the_written_streams() {
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst = NamedTempFile::new().expect("temp file");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Restorable".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: Some(200.0),
+            min_height: Some(90.0),
+        };
+        write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let metadata = stored_metadata(&doc).expect("saved file must carry /SPEOverlays");
+        assert_eq!(metadata.overlays.len(), 1);
+        assert_eq!(metadata.overlays[0].text, "Restorable");
+        assert_eq!(metadata.overlays[0].min_height, Some(90.0));
+        assert_eq!(metadata.streams.len(), 1);
+
+        // Fingerprints must match the bytes of the streams actually stored:
+        // the test PDF has original content, so page 1 has [prefix, original,
+        // overlay] and both prefix and overlay fingerprints are recorded.
+        let page_id = *doc.get_pages().get(&1).expect("page 1");
+        let content_ids = doc.get_page_contents(page_id);
+        assert_eq!(content_ids.len(), 3);
+        let stream_bytes = |id: lopdf::ObjectId| {
+            doc.get_object(id)
+                .expect("stream obj")
+                .as_stream()
+                .expect("stream")
+                .content
+                .clone()
+        };
+        let recorded = &metadata.streams[0];
+        assert_eq!(recorded.page, 1);
+        assert_eq!(
+            recorded.prefix,
+            Some(crate::pdf::metadata::StreamFingerprint::of(&stream_bytes(
+                content_ids[0]
+            )))
+        );
+        assert_eq!(
+            recorded.overlay,
+            crate::pdf::metadata::StreamFingerprint::of(&stream_bytes(content_ids[2]))
+        );
+    }
+
+    #[test]
+    fn empty_overlay_save_carries_no_metadata() {
+        use crate::fonts::FontRegistry;
+        let registry = FontRegistry::new();
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst_path = src.path().with_extension("copy.pdf");
+
+        write_overlays(src.path(), &dst_path, &[], &registry).expect("write failed");
+
+        let doc = Document::load(&dst_path).expect("load failed");
+        assert!(
+            stored_metadata(&doc).is_none(),
+            "a plain copy must not claim to be re-editable"
+        );
+        let _ = std::fs::remove_file(&dst_path);
     }
 }
