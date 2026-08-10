@@ -45,6 +45,9 @@ const ROW_PADDING_X: f32 = 6.0;
 const LIST_PADDING: f32 = 2.0;
 /// Point size of the drop-down caret.
 const CARET_SIZE: f32 = 10.0;
+/// Gap between the label and the caret, so the longest name does not run into
+/// it.
+const CARET_GAP: f32 = 6.0;
 /// Room the scrollbar takes from a row once the list is long enough to
 /// scroll — the width iced's `scrollable::Scrollbar` defaults to.
 const SCROLLBAR_WIDTH: f32 = 10.0;
@@ -94,7 +97,7 @@ fn anchor_width(options: &[FontOption]) -> f32 {
         .fold(0.0_f32, f32::max);
     let caret = shaped_text_width(&DROPDOWN_CARET.to_string(), ANCHOR_FONT, CARET_SIZE);
 
-    (widest + caret + 2.0 * ANCHOR_PADDING_X).ceil()
+    (widest + CARET_GAP + caret + 2.0 * ANCHOR_PADDING_X).ceil()
 }
 
 /// Width the list needs to show every row on one line, each name measured in
@@ -130,6 +133,10 @@ fn anchor<'a>(options: &[FontOption], selected: FontId) -> iced::Element<'a, Mes
                 .width(iced::Length::Fill),
             text(DROPDOWN_CARET).font(ANCHOR_FONT).size(CARET_SIZE),
         ]
+        .spacing(CARET_GAP)
+        // Fills the button so there is a height to center the label within;
+        // a shrunk row would sit against the top edge.
+        .height(iced::Length::Fill)
         .align_y(iced::Alignment::Center),
     )
     .width(anchor_width(options))
@@ -304,6 +311,38 @@ mod tests {
         assert!(
             (right_edge - needed).abs() <= 2.0,
             "the anchor needs {needed} to show every name but was drawn {right_edge} wide"
+        );
+    }
+
+    #[test]
+    fn the_anchor_centers_its_label_vertically() {
+        load_bundled_fonts();
+        let registry = FontRegistry::new();
+        let options = crate::ui::toolbar::font_options(&registry);
+        let shot = Harness::new(
+            font_picker(&options, options[0].id, false),
+            iced::Size::new(600.0, 200.0),
+        )
+        .screenshot();
+
+        // The label is light glyphs on the filled button. Sampling stops short
+        // of the button's ends so its rounded corners, which show the page
+        // behind them, cannot pass for label ink.
+        let ends = ANCHOR_PADDING_X as u32 + 2;
+        let columns = ends..anchor_width(&options) as u32 - ends;
+        let is_label_ink = |x: u32, y: u32| {
+            let (r, g, b) = shot.pixel(x, y);
+            r > 200 && g > 200 && b > 200
+        };
+        let rows: Vec<u32> = (0..ANCHOR_HEIGHT as u32)
+            .filter(|y| columns.clone().any(|x| is_label_ink(x, *y)))
+            .collect();
+
+        let above = *rows.first().expect("the anchor painted no label") as f32;
+        let below = ANCHOR_HEIGHT - 1.0 - *rows.last().expect("the anchor painted no label") as f32;
+        assert!(
+            (above - below).abs() <= 2.0,
+            "the label sits {above}px below the button's top and {below}px above its bottom"
         );
     }
 
