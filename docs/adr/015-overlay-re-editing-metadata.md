@@ -13,13 +13,15 @@ valuable if they can be reopened and corrected.
 
 Keep saving the same flat, viewer-friendly PDF, and additionally embed a private
 metadata stream (an `/SPEOverlays` catalog entry holding versioned JSON) that
-records each overlay's page, position, text, font family, size, and box width —
-enough to reconstruct the in-memory `TextOverlay` model. On open, valid metadata
-lifts overlays back into editable state; on re-save, the app removes its previous
-per-page overlay streams and regenerates streams and metadata. The metadata
-fingerprints (hashes) each overlay stream the app wrote; a missing or altered
-stream means the file was edited elsewhere, so the app distrusts the metadata,
-opens the file as plain flat, and says why.
+records each overlay's page, position, text, font family, size, box width, and
+minimum box height — enough to reconstruct the in-memory `TextOverlay` model.
+On open, valid metadata strips the app's own overlay and q-prefix content
+streams back out of the in-memory document and lifts the overlays back into
+editable state; re-save just bakes the current overlays onto that stripped
+source and embeds fresh metadata, with no stream removal at save time. The
+metadata fingerprints (hashes) each overlay stream the app wrote; a missing or
+altered stream means the file was edited elsewhere, so the app distrusts the
+metadata, opens the file as plain flat, and says why.
 
 This is cheap here because the writer already emits overlays as a separate
 content stream appended to each page's `Contents` array, never merged into the

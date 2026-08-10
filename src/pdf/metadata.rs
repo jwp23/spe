@@ -103,9 +103,46 @@ pub enum MetadataError {
         "overlay metadata version {found} is newer than this build understands ({METADATA_VERSION})"
     )]
     UnsupportedVersion { found: u32 },
+
+    #[error("overlay metadata has an invalid value: {0}")]
+    InvalidValue(String),
 }
 
-/// Parse /SPEOverlays JSON, rejecting versions newer than this build writes.
+/// Reject non-finite positions/sizes and non-positive font sizes: a value a
+/// legitimate save from this app could never produce, so JSON carrying one
+/// is either corrupt or crafted, not trustworthy metadata.
+fn validate_values(metadata: &OverlayMetadata) -> Result<(), MetadataError> {
+    for record in &metadata.overlays {
+        if !record.x.is_finite() || !record.y.is_finite() {
+            return Err(MetadataError::InvalidValue(format!(
+                "overlay on page {} has a non-finite position",
+                record.page
+            )));
+        }
+        if !record.font_size.is_finite() || record.font_size <= 0.0 {
+            return Err(MetadataError::InvalidValue(format!(
+                "overlay on page {} has an invalid font size",
+                record.page
+            )));
+        }
+        if record.width.is_some_and(|w| !w.is_finite()) {
+            return Err(MetadataError::InvalidValue(format!(
+                "overlay on page {} has a non-finite width",
+                record.page
+            )));
+        }
+        if record.min_height.is_some_and(|h| !h.is_finite()) {
+            return Err(MetadataError::InvalidValue(format!(
+                "overlay on page {} has a non-finite min height",
+                record.page
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Parse /SPEOverlays JSON, rejecting versions newer than this build writes
+/// and values a legitimate save could never contain.
 pub fn from_json(json: &str) -> Result<OverlayMetadata, MetadataError> {
     let metadata: OverlayMetadata = serde_json::from_str(json)?;
     if metadata.version > METADATA_VERSION {
@@ -113,6 +150,7 @@ pub fn from_json(json: &str) -> Result<OverlayMetadata, MetadataError> {
             found: metadata.version,
         });
     }
+    validate_values(&metadata)?;
     Ok(metadata)
 }
 
@@ -262,6 +300,28 @@ mod tests {
         assert!(matches!(
             from_json("not json at all"),
             Err(MetadataError::InvalidJson(_))
+        ));
+    }
+
+    #[test]
+    fn non_finite_position_is_rejected() {
+        let json = r#"{"version":1,"overlays":[{"page":1,"x":1e40,"y":0.0,
+            "text":"x","font_family":"Helvetica","font_size":12.0,
+            "width":null,"min_height":null}],"streams":[]}"#;
+        assert!(matches!(
+            from_json(json),
+            Err(MetadataError::InvalidValue(_))
+        ));
+    }
+
+    #[test]
+    fn non_positive_font_size_is_rejected() {
+        let json = r#"{"version":1,"overlays":[{"page":1,"x":0.0,"y":0.0,
+            "text":"x","font_family":"Helvetica","font_size":0.0,
+            "width":null,"min_height":null}],"streams":[]}"#;
+        assert!(matches!(
+            from_json(json),
+            Err(MetadataError::InvalidValue(_))
         ));
     }
 
