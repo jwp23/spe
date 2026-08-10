@@ -1532,6 +1532,7 @@ mod tests {
             embedding: PdfEmbedding::TrueType { bytes: TEST_TTF },
             widths: WidthTable::Monospaced(600.0),
             descriptor: None,
+            x_height_ratio: None,
         });
 
         let src = NamedTempFile::new().expect("temp file");
@@ -1590,6 +1591,7 @@ mod tests {
             embedding: PdfEmbedding::TrueType { bytes: TEST_TTF },
             widths: WidthTable::Monospaced(600.0),
             descriptor: None,
+            x_height_ratio: None,
         });
 
         let src = NamedTempFile::new().expect("temp file");
@@ -1819,6 +1821,7 @@ mod tests {
             embedding: PdfEmbedding::TrueType { bytes },
             widths: WidthTable::Monospaced(600.0),
             descriptor: None,
+            x_height_ratio: None,
         };
 
         // Write once with FONT_A to produce a document whose page already
