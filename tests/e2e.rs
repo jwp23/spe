@@ -445,3 +445,69 @@ fn page_navigation_with_rendered_pages() {
     assert_eq!(app.document.as_ref().unwrap().current_page, 2);
     verify_view_renders(&app);
 }
+
+/// The re-edit round trip from docs/designs/overlay-re-editing.md:
+/// open -> place -> save -> reopen -> edit -> re-save.
+#[test]
+fn overlay_re_edit_round_trip() {
+    use spe::app::{App, Message};
+    use spe::overlay::PdfPosition;
+    use std::path::PathBuf;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let original = PathBuf::from("tests/fixtures/single-page.pdf");
+    let first_save = dir.path().join("first-save.pdf");
+    let second_save = dir.path().join("second-save.pdf");
+
+    // Open the original and place a text overlay.
+    let (mut app, _) = App::new(false);
+    let _ = app.update(Message::FileOpened(original.clone()));
+    assert!(app.document.is_some(), "original must open");
+    let _ = app.update(Message::PlaceOverlay {
+        page: 1,
+        position: PdfPosition { x: 72.0, y: 650.0 },
+    });
+    let _ = app.update(Message::UpdateOverlayText("First draft".to_string()));
+    let _ = app.update(Message::CommitText);
+    let _ = app.update(Message::SaveDestinationChosen(first_save.clone()));
+    assert!(first_save.exists(), "first save written");
+
+    // Reopen the saved file in a fresh app: the overlay must come back.
+    let (mut app2, _) = App::new(false);
+    let _ = app2.update(Message::FileOpened(first_save.clone()));
+    let doc = app2.document.as_ref().expect("saved file must open");
+    assert_eq!(doc.overlays.len(), 1, "overlay restored");
+    assert_eq!(doc.overlays[0].text, "First draft");
+
+    // Edit the restored overlay and save again.
+    let _ = app2.update(Message::EditOverlay(0));
+    let _ = app2.update(Message::UpdateOverlayText("Final wording".to_string()));
+    let _ = app2.update(Message::CommitText);
+    let _ = app2.update(Message::SaveDestinationChosen(second_save.clone()));
+    assert!(second_save.exists(), "second save written");
+
+    // The re-saved file restores the edited text...
+    let (mut app3, _) = App::new(false);
+    let _ = app3.update(Message::FileOpened(second_save.clone()));
+    let doc = app3.document.as_ref().expect("re-saved file must open");
+    assert_eq!(
+        doc.overlays.len(),
+        1,
+        "exactly one overlay — not stacked copies"
+    );
+    assert_eq!(doc.overlays[0].text, "Final wording");
+
+    // ...and is still a plain flat PDF to any other tool: it loads, has one
+    // page, and its baked content contains the final text exactly once.
+    let flat = lopdf::Document::load(&second_save).expect("plain PDF load");
+    assert_eq!(flat.get_pages().len(), 1);
+    let text = flat.extract_text(&[1]).expect("text extraction");
+    assert!(
+        text.contains("Final wording"),
+        "final text baked into page content, got: {text}"
+    );
+    assert!(
+        !text.contains("First draft"),
+        "superseded text must not linger in the page, got: {text}"
+    );
+}
