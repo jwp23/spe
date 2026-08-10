@@ -5,4 +5,5 @@ pub mod popover;
 pub mod sidebar;
 #[cfg(test)]
 pub mod test_harness;
+pub mod text_width;
 pub mod toolbar;
