@@ -229,6 +229,19 @@ mod tests {
     }
 
     #[test]
+    fn a_nonsensical_x_height_previews_at_the_base_size() {
+        // A ratio this far outside (0, 1) means the face's metrics are not to
+        // be trusted, and a NaN would otherwise poison the layout it feeds.
+        for ratio in [0.0, -0.5, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let size = preview_size(Some(ratio));
+            assert!(
+                (size - PREVIEW_SIZE).abs() < f32::EPSILON,
+                "an x-height of {ratio} previewed at {size}, not the base {PREVIEW_SIZE}"
+            );
+        }
+    }
+
+    #[test]
     fn a_face_with_a_small_x_height_previews_larger() {
         let cursive = preview_size(Some(SMALL_X_HEIGHT));
         assert!(

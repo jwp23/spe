@@ -45,6 +45,28 @@ pub fn shaped_text_width(text: &str, font: iced::Font, size: f32) -> f32 {
     per_point * size
 }
 
+/// Forget every measurement taken so far.
+///
+/// Faces load asynchronously, so a width measured before its face arrived
+/// describes whatever the engine substituted. A cached entry cannot say which
+/// face it came from, so the whole cache goes and refills on the next draw.
+pub fn clear_measurements() {
+    WIDTHS.write().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// The cached width per point for `text` in `font`, if one is held.
+///
+/// Tests ask about one string of their own rather than the cache's size, which
+/// the whole suite shares and any concurrent test can change.
+#[cfg(test)]
+pub fn cached_measurement(text: &str, font: iced::Font) -> Option<f32> {
+    WIDTHS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(font, text.to_string()))
+        .copied()
+}
+
 /// Shape `text` at `size` with no width to wrap against.
 fn shape(text: &str, font: iced::Font, size: f32) -> Paragraph {
     Paragraph::with_text(Text {
@@ -91,6 +113,26 @@ mod tests {
         assert!(
             (sans - monospace).abs() > 1.0,
             "sans measured {sans} and monospace {monospace} — the face was ignored"
+        );
+    }
+
+    #[test]
+    fn clearing_forgets_earlier_measurements() {
+        // A width measured before its face finished loading describes the
+        // fallback the engine substituted, not the face that will be drawn.
+        // Nothing else can tell the two apart, so the entry has to go.
+        let probe = "clearing forgets earlier measurements";
+        let _ = shaped_text_width(probe, iced::Font::DEFAULT, 16.0);
+        assert!(
+            cached_measurement(probe, iced::Font::DEFAULT).is_some(),
+            "nothing was cached to clear"
+        );
+
+        clear_measurements();
+
+        assert!(
+            cached_measurement(probe, iced::Font::DEFAULT).is_none(),
+            "the measurement survived the cache being cleared"
         );
     }
 
