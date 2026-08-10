@@ -1,4 +1,5 @@
 pub mod metadata;
+pub mod reedit;
 pub mod renderer;
 pub mod win_ansi;
 pub mod writer;
