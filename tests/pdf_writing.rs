@@ -463,6 +463,7 @@ fn registry_with_truetype_font() -> (FontRegistry, spe::fonts::FontId) {
         },
         widths: WidthTable::Monospaced(600.0),
         descriptor: None,
+        x_height_ratio: None,
     });
     (registry, id)
 }

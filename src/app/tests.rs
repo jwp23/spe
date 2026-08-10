@@ -4183,6 +4183,30 @@ fn font_picker_starts_closed() {
 }
 
 #[test]
+fn a_font_finishing_its_load_forgets_widths_measured_without_it() {
+    // The bundled faces load asynchronously, so anything measured before a
+    // load lands describes the fallback the engine used instead. Those
+    // measurements are cached for the session, and only the load knows they
+    // have gone stale.
+    use crate::ui::text_width::{cached_measurement, shaped_text_width};
+
+    let (mut app, _) = App::new(false);
+    let probe = "a font finishing its load forgets earlier widths";
+    let _ = shaped_text_width(probe, iced::Font::DEFAULT, 16.0);
+    assert!(
+        cached_measurement(probe, iced::Font::DEFAULT).is_some(),
+        "nothing was cached to forget"
+    );
+
+    let _ = app.update(Message::FontLoaded(Ok(())));
+
+    assert!(
+        cached_measurement(probe, iced::Font::DEFAULT).is_none(),
+        "widths measured before the face loaded are still in use"
+    );
+}
+
+#[test]
 fn toggling_the_font_picker_opens_then_closes_it() {
     let mut app = test_app_with_document();
 

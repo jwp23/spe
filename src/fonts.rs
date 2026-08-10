@@ -91,6 +91,11 @@ pub struct FontEntry {
     /// Font descriptor extracted from TTF, used by the PDF writer.
     /// None for Standard 14 fonts (built-in, no embedding).
     pub descriptor: Option<FontDescriptorInfo>,
+    /// Height of the lowercase letters as a fraction of the em, read from the
+    /// face itself. None for the Standard 14, which render through whatever
+    /// face the system resolves — the face we could measure is not the face
+    /// that reaches the screen.
+    pub x_height_ratio: Option<f32>,
 }
 
 /// Holds all known fonts. The Standard 14 are always present.
@@ -131,6 +136,7 @@ impl FontRegistry {
                 embedding: PdfEmbedding::TrueType { bytes },
                 widths: build_ttf_width_table(bytes),
                 descriptor: Some(extract_font_descriptor(bytes)),
+                x_height_ratio: extract_x_height_ratio(bytes),
             });
         }
 
@@ -331,6 +337,16 @@ fn extract_font_descriptor(font_bytes: &[u8]) -> FontDescriptorInfo {
     }
 }
 
+/// The face's x-height as a fraction of its em, or None when the face does
+/// not declare one. Two faces set at the same point size look the same size
+/// when their x-heights match, so this is what a preview normalizes on.
+fn extract_x_height_ratio(font_bytes: &[u8]) -> Option<f32> {
+    let font = FontRef::new(font_bytes).expect("valid TTF");
+    let metrics = font.metrics(Size::unscaled(), &[][..]);
+    let x_height = metrics.x_height?;
+    Some(x_height / metrics.units_per_em as f32)
+}
+
 fn standard_14_fonts() -> Vec<FontEntry> {
     use iced::font::{Family, Style, Weight};
 
@@ -348,6 +364,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: helvetica_widths(),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(1),
@@ -362,6 +379,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: helvetica_bold_widths(),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(2),
@@ -376,6 +394,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: helvetica_widths(),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(3),
@@ -390,6 +409,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: helvetica_bold_widths(),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(4),
@@ -404,6 +424,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: times_roman_widths(),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(5),
@@ -418,6 +439,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: times_bold_widths(),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(6),
@@ -432,6 +454,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: times_roman_widths(),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(7),
@@ -446,6 +469,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: times_bold_widths(),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(8),
@@ -460,6 +484,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(600.0),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(9),
@@ -474,6 +499,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(600.0),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(10),
@@ -488,6 +514,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(600.0),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(11),
@@ -502,6 +529,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(600.0),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(12),
@@ -516,6 +544,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(600.0),
             descriptor: None,
+            x_height_ratio: None,
         },
         FontEntry {
             id: FontId(13),
@@ -530,6 +559,7 @@ fn standard_14_fonts() -> Vec<FontEntry> {
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(600.0),
             descriptor: None,
+            x_height_ratio: None,
         },
     ]
 }
@@ -1026,6 +1056,55 @@ mod tests {
     }
 
     #[test]
+    fn bundled_fonts_report_the_x_height_their_face_declares() {
+        let registry = FontRegistry::new();
+        for name in ["Great Vibes", "Dancing Script", "Pinyon Script", "Pacifico"] {
+            let id = registry.find_by_name(name).unwrap();
+            let ratio = registry
+                .get(id)
+                .x_height_ratio
+                .unwrap_or_else(|| panic!("{name} embeds its face, so its x-height is knowable"));
+            assert!(
+                (0.0..1.0).contains(&ratio),
+                "{name}'s x-height is {ratio} of the em, which no face has"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cursive_face_has_a_smaller_x_height_than_a_rounder_one() {
+        // Reads a real per-face metric rather than a constant: Great Vibes is
+        // the most extreme of the bundled scripts, Pacifico the least.
+        let registry = FontRegistry::new();
+        let ratio = |name: &str| {
+            registry
+                .get(registry.find_by_name(name).unwrap())
+                .x_height_ratio
+                .unwrap()
+        };
+        assert!(
+            ratio("Great Vibes") < ratio("Pacifico"),
+            "Great Vibes ({}) should sit lower than Pacifico ({})",
+            ratio("Great Vibes"),
+            ratio("Pacifico")
+        );
+    }
+
+    #[test]
+    fn standard_14_fonts_report_no_x_height() {
+        // They render through whatever face the system resolves, so the face
+        // we could measure is not the face that reaches the screen.
+        let registry = FontRegistry::new();
+        for name in ["Helvetica", "Times Roman", "Courier", "Symbol"] {
+            let id = registry.find_by_name(name).unwrap();
+            assert!(
+                registry.get(id).x_height_ratio.is_none(),
+                "{name} is not embedded, so its rendered x-height is unknown"
+            );
+        }
+    }
+
+    #[test]
     fn registry_helvetica_pdf_name() {
         let registry = FontRegistry::new();
         let entry = &registry.all()[0];
@@ -1079,6 +1158,7 @@ mod tests {
             embedding: PdfEmbedding::BuiltIn,
             widths: WidthTable::Monospaced(500.0),
             descriptor: None,
+            x_height_ratio: None,
         };
         let id = registry.add_entry(entry);
         assert_eq!(registry.all().len(), 19);

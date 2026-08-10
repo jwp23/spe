@@ -9,11 +9,14 @@ use crate::ui::icons;
 /// One selectable family in the font picker: what to call it, and the Iced
 /// font its name is previewed in so the list shows each family in its own
 /// typeface.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FontOption {
     pub id: FontId,
     pub name: String,
     pub font: iced::Font,
+    /// The face's x-height as a fraction of its em, when the face that reaches
+    /// the screen is one we ship and can measure. Sizes the family's preview.
+    pub x_height_ratio: Option<f32>,
 }
 
 impl std::fmt::Display for FontOption {
@@ -31,6 +34,7 @@ pub fn font_options(registry: &FontRegistry) -> Vec<FontOption> {
             id: e.id,
             name: e.display_name.to_string(),
             font: e.iced_font,
+            x_height_ratio: e.x_height_ratio,
         })
         .collect()
 }

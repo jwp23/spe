@@ -14,6 +14,7 @@ use iced::advanced::graphics::text::Paragraph;
 use iced::advanced::text::{Paragraph as _, Text};
 
 use crate::fonts::{FontId, FontRegistry};
+use crate::ui::text_width::shaped_text_width;
 
 /// Size the cache measures at. Shaped advances scale linearly with the text
 /// size, so one measurement per (font, string) serves every size and zoom.
@@ -23,10 +24,6 @@ const REFERENCE_SIZE: f32 = 100.0;
 /// caches another prefix, so an unbounded map would grow with the session
 /// rather than with the document.
 const MAX_CACHED_STRINGS: usize = 4096;
-
-/// Shaped width per point of font size, keyed by the font and the string.
-static WIDTHS: LazyLock<RwLock<HashMap<(FontId, String), f32>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Number of lines a string breaks into, keyed by the font, the string, and
 /// the wrap ratio. The ratio rather than the width because a box twice as wide
@@ -53,23 +50,7 @@ pub(crate) fn canvas_text_width(
     font_size: f32,
     registry: &FontRegistry,
 ) -> f32 {
-    if text.is_empty() {
-        return 0.0;
-    }
-
-    let key = (font, text.to_string());
-    if let Some(per_point) = WIDTHS.read().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return per_point * font_size;
-    }
-
-    let per_point =
-        shaped_width(text, registry.get(font).iced_font, REFERENCE_SIZE) / REFERENCE_SIZE;
-    insert_bounded(
-        &mut WIDTHS.write().unwrap_or_else(|e| e.into_inner()),
-        key,
-        per_point,
-    );
-    per_point * font_size
+    shaped_text_width(text, registry.get(font).iced_font, font_size)
 }
 
 /// Number of lines `text` breaks into when drawn in a box `wrap_ratio` times
@@ -168,11 +149,6 @@ fn shaped(text: &str, font: iced::Font, size: f32, max_width: f32) -> Paragraph 
     })
 }
 
-/// Shape `text` at `size` unconstrained and return its width.
-fn shaped_width(text: &str, font: iced::Font, size: f32) -> f32 {
-    shaped(text, font, size, f32::INFINITY).min_bounds().width
-}
-
 /// Shape `text` at `size` in a box `max_width` wide and return how many lines
 /// it laid out on, counting both wraps and explicit line breaks.
 ///
@@ -211,7 +187,9 @@ mod tests {
         let font = registry.default_font();
         let text = "Hello world";
         for size in [8.0_f32, 12.0, 36.0, 72.0] {
-            let shaped = shaped_width(text, registry.get(font).iced_font, size);
+            let shaped = shaped(text, registry.get(font).iced_font, size, f32::INFINITY)
+                .min_bounds()
+                .width;
             let cached = canvas_text_width(text, font, size, &registry);
             assert!(shaped > 0.0, "the engine measured nothing at {size}pt");
             assert!(

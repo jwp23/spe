@@ -2080,6 +2080,7 @@ fn register_afm_wider_than_canvas_font(registry: &mut FontRegistry) -> crate::fo
         // canvas-shaped face — so word_wrap breaks after almost every word.
         widths: WidthTable::Monospaced(1500.0),
         descriptor: None,
+        x_height_ratio: None,
     })
 }
 

@@ -545,7 +545,9 @@ impl App {
             Message::ScaleFactorChanged(factor) => self.scale_factor = factor,
 
             // --- Font loaded ---
-            Message::FontLoaded(_) => {}
+            // Anything measured before this face arrived was measured against
+            // the fallback the engine used in its place.
+            Message::FontLoaded(_) => crate::ui::text_width::clear_measurements(),
 
             // --- IPC ---
             Message::Ipc(event) => return self.handle_ipc_event(event),
