@@ -7,6 +7,7 @@ use lopdf::content::{Content, Operation};
 use lopdf::{Document, Object, Stream, dictionary};
 use thiserror::Error;
 
+use super::metadata::{self, PageStreams, StreamFingerprint};
 use super::win_ansi;
 use crate::fonts::{FontDescriptorInfo, FontId, FontRegistry, PdfEmbedding};
 use crate::overlay::TextOverlay;
@@ -429,13 +430,19 @@ fn build_overlay_operations(
     }
 }
 
-/// Create a content stream from raw bytes and append it to the page's Contents.
+/// Create a content stream from raw bytes and append it to the page's Contents,
+/// returning fingerprints of the exact bytes stored so the save's metadata can
+/// identify these streams on reopen.
 ///
 /// Existing page content is wrapped in q/Q (a `q` stream before it, `Q` at the start
 /// of the overlay stream) so graphics-state changes it leaves active — e.g. the
 /// top-down CTM flip Skia/Google Docs emits — cannot affect the overlay. Assumes
 /// the original content has balanced q/Q pairs, as the spec requires.
-fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_bytes: Vec<u8>) {
+fn embed_content_stream(
+    doc: &mut Document,
+    page_id: lopdf::ObjectId,
+    content_bytes: Vec<u8>,
+) -> (Option<StreamFingerprint>, StreamFingerprint) {
     let existing = {
         let page_dict = doc
             .get_object(page_id)
@@ -454,10 +461,12 @@ fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_by
         }
     };
 
-    let contents = if existing.is_empty() {
+    let (contents, fingerprints) = if existing.is_empty() {
+        let overlay_fp = StreamFingerprint::of(&content_bytes);
         let stream_id = doc.add_object(Stream::new(dictionary! {}, content_bytes));
-        Object::Reference(stream_id)
+        (Object::Reference(stream_id), (None, overlay_fp))
     } else {
+        let prefix_fp = StreamFingerprint::of(b"q\n");
         let prefix_id = doc.add_object(Stream::new(dictionary! {}, b"q\n".to_vec()));
         // Leading whitespace ensures the `Q` cannot merge with the final token of the
         // preceding stream when readers concatenate array-referenced content streams
@@ -465,12 +474,13 @@ fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_by
         // otherwise combine with `Q` into the invalid token `fQ`).
         let mut overlay_bytes = b"\nQ\n".to_vec();
         overlay_bytes.extend(content_bytes);
+        let overlay_fp = StreamFingerprint::of(&overlay_bytes);
         let stream_id = doc.add_object(Stream::new(dictionary! {}, overlay_bytes));
 
         let mut arr = vec![Object::Reference(prefix_id)];
         arr.extend(existing);
         arr.push(Object::Reference(stream_id));
-        Object::Array(arr)
+        (Object::Array(arr), (Some(prefix_fp), overlay_fp))
     };
 
     let page_dict = doc
@@ -479,6 +489,8 @@ fn embed_content_stream(doc: &mut Document, page_id: lopdf::ObjectId, content_by
         .as_dict_mut()
         .expect("page object must be a dictionary");
     page_dict.set("Contents", contents);
+
+    fingerprints
 }
 
 /// Write `overlays` onto the PDF at `source`, saving the result to `destination`.
@@ -526,6 +538,7 @@ pub fn write_overlays(
     }
 
     let mut report = SaveReport::default();
+    let mut stream_records: Vec<PageStreams> = Vec::new();
     for (page_num, page_overlays) in &overlays_by_page {
         let &page_id = pages.get(page_num).expect("validated above");
 
@@ -542,8 +555,25 @@ pub fn write_overlays(
             path: destination.to_path_buf(),
             source: e,
         })?;
-        embed_content_stream(&mut doc, page_id, content_bytes);
+        let (prefix, overlay_fp) = embed_content_stream(&mut doc, page_id, content_bytes);
+        stream_records.push(PageStreams {
+            page: *page_num,
+            overlay: overlay_fp,
+            prefix,
+        });
     }
+
+    let json = metadata::to_json(overlays, &stream_records, registry);
+    let metadata_id = doc.add_object(Stream::new(dictionary! {}, json.into_bytes()));
+    let root_id = match doc.trailer.get(b"Root") {
+        Ok(Object::Reference(id)) => *id,
+        _ => unreachable!("a loadable PDF has a Root reference"),
+    };
+    doc.get_object_mut(root_id)
+        .expect("catalog object must exist")
+        .as_dict_mut()
+        .expect("catalog must be a dictionary")
+        .set("SPEOverlays", Object::Reference(metadata_id));
 
     doc.save(destination).map_err(|e| WriterError::SaveFailed {
         path: destination.to_path_buf(),
@@ -2046,5 +2076,94 @@ mod tests {
             ops.extend(content.operations);
         }
         ops
+    }
+
+    /// The catalog /SPEOverlays JSON stored by a save, or None.
+    fn stored_metadata(doc: &Document) -> Option<crate::pdf::metadata::OverlayMetadata> {
+        let root_id = match doc.trailer.get(b"Root").ok()? {
+            Object::Reference(id) => *id,
+            _ => return None,
+        };
+        let catalog = doc.get_dictionary(root_id).ok()?;
+        let stream = match catalog.get(b"SPEOverlays").ok()? {
+            Object::Reference(id) => doc.get_object(*id).ok()?.as_stream().ok()?,
+            _ => return None,
+        };
+        let json = String::from_utf8(stream.content.clone()).ok()?;
+        crate::pdf::metadata::from_json(&json).ok()
+    }
+
+    #[test]
+    fn save_embeds_metadata_matching_the_written_streams() {
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst = NamedTempFile::new().expect("temp file");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Restorable".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: Some(200.0),
+            min_height: Some(90.0),
+        };
+        write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let metadata = stored_metadata(&doc).expect("saved file must carry /SPEOverlays");
+        assert_eq!(metadata.overlays.len(), 1);
+        assert_eq!(metadata.overlays[0].text, "Restorable");
+        assert_eq!(metadata.overlays[0].min_height, Some(90.0));
+        assert_eq!(metadata.streams.len(), 1);
+
+        // Fingerprints must match the bytes of the streams actually stored:
+        // the test PDF has original content, so page 1 has [prefix, original,
+        // overlay] and both prefix and overlay fingerprints are recorded.
+        let page_id = *doc.get_pages().get(&1).expect("page 1");
+        let content_ids = doc.get_page_contents(page_id);
+        assert_eq!(content_ids.len(), 3);
+        let stream_bytes = |id: lopdf::ObjectId| {
+            doc.get_object(id)
+                .expect("stream obj")
+                .as_stream()
+                .expect("stream")
+                .content
+                .clone()
+        };
+        let recorded = &metadata.streams[0];
+        assert_eq!(recorded.page, 1);
+        assert_eq!(
+            recorded.prefix,
+            Some(crate::pdf::metadata::StreamFingerprint::of(&stream_bytes(
+                content_ids[0]
+            )))
+        );
+        assert_eq!(
+            recorded.overlay,
+            crate::pdf::metadata::StreamFingerprint::of(&stream_bytes(content_ids[2]))
+        );
+    }
+
+    #[test]
+    fn empty_overlay_save_carries_no_metadata() {
+        use crate::fonts::FontRegistry;
+        let registry = FontRegistry::new();
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst_path = src.path().with_extension("copy.pdf");
+
+        write_overlays(src.path(), &dst_path, &[], &registry).expect("write failed");
+
+        let doc = Document::load(&dst_path).expect("load failed");
+        assert!(
+            stored_metadata(&doc).is_none(),
+            "a plain copy must not claim to be re-editable"
+        );
+        let _ = std::fs::remove_file(&dst_path);
     }
 }
