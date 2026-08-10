@@ -493,6 +493,36 @@ fn embed_content_stream(
     fingerprints
 }
 
+/// Save `doc` to `destination` atomically: write to a temp file in the
+/// destination's own directory, then rename it over `destination`. A write
+/// that fails partway (disk full, permission denied, process killed) leaves
+/// any pre-existing file at `destination` byte-identical — `doc.save`'s
+/// truncate-in-place would otherwise corrupt it. The temp file is created in
+/// the same directory as `destination` so the final rename is same-filesystem
+/// and therefore atomic.
+fn atomic_save(doc: &mut Document, destination: &Path) -> Result<(), WriterError> {
+    let to_save_failed = |source| WriterError::SaveFailed {
+        path: destination.to_path_buf(),
+        source,
+    };
+
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let mut temp_file = tempfile::Builder::new()
+        .prefix(".spe-save-")
+        .suffix(".pdf")
+        .tempfile_in(parent)
+        .map_err(|e| to_save_failed(lopdf::Error::IO(e)))?;
+
+    doc.save_to(&mut temp_file)
+        .map_err(|e| to_save_failed(lopdf::Error::IO(e)))?;
+
+    temp_file
+        .persist(destination)
+        .map_err(|e| to_save_failed(lopdf::Error::IO(e.error)))?;
+
+    Ok(())
+}
+
 /// Write `overlays` onto the PDF at `source`, saving the result to `destination`.
 pub fn write_overlays(
     source: &Path,
@@ -506,13 +536,7 @@ pub fn write_overlays(
         // Save must always produce a file: write a plain copy of the source
         // through the same load/save path used for baking overlays, so an
         // empty-overlay save is never silently a no-op.
-        return doc
-            .save(destination)
-            .map(|_| SaveReport::default())
-            .map_err(|e| WriterError::SaveFailed {
-                path: destination.to_path_buf(),
-                source: lopdf::Error::IO(e),
-            });
+        return atomic_save(&mut doc, destination).map(|_| SaveReport::default());
     }
 
     let pages = doc.get_pages();
@@ -575,10 +599,7 @@ pub fn write_overlays(
         .expect("catalog must be a dictionary")
         .set("SPEOverlays", Object::Reference(metadata_id));
 
-    doc.save(destination).map_err(|e| WriterError::SaveFailed {
-        path: destination.to_path_buf(),
-        source: lopdf::Error::IO(e),
-    })?;
+    atomic_save(&mut doc, destination)?;
 
     Ok(report)
 }
@@ -1343,6 +1364,85 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&dst_path);
+    }
+
+    #[test]
+    fn write_overlays_atomic_save_leaves_no_stray_temp_files() {
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dst_path = dir.path().join("out.pdf");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Atomic".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: None,
+            min_height: None,
+        };
+
+        write_overlays(src.path(), &dst_path, &[overlay], &registry).expect("write failed");
+
+        assert!(
+            dst_path.exists(),
+            "destination must exist after a successful save"
+        );
+        let entries: Vec<PathBuf> = std::fs::read_dir(dir.path())
+            .expect("read dest dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(
+            entries,
+            vec![dst_path],
+            "the temp file used for the atomic save must not linger in the destination directory"
+        );
+    }
+
+    #[test]
+    fn write_overlays_failed_save_leaves_existing_destination_untouched() {
+        use crate::fonts::FontRegistry;
+        use std::os::unix::fs::PermissionsExt;
+        let registry = FontRegistry::new();
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dst_path = dir.path().join("out.pdf");
+        // A valid PDF already sits at the destination, standing in for the
+        // file a restored document would save back onto.
+        create_test_pdf(&dst_path);
+        let original_bytes = std::fs::read(&dst_path).expect("read original destination");
+
+        // Strip write permission from the destination's directory so the
+        // atomic save's temp-file creation fails partway through.
+        let original_perms = std::fs::metadata(dir.path())
+            .expect("dir metadata")
+            .permissions();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555))
+            .expect("make dir read-only");
+
+        let result = write_overlays(src.path(), &dst_path, &[], &registry);
+
+        // Restore write permission so the tempdir can clean itself up.
+        std::fs::set_permissions(dir.path(), original_perms).expect("restore dir permissions");
+
+        assert!(
+            result.is_err(),
+            "expected the save to fail against a read-only destination directory"
+        );
+        let after_bytes = std::fs::read(&dst_path).expect("read destination after failed save");
+        assert_eq!(
+            original_bytes, after_bytes,
+            "a failed save must leave a pre-existing destination byte-identical"
+        );
     }
 
     #[test]

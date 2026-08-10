@@ -56,6 +56,24 @@ This is accepted: the alternative (keeping text editable in any viewer) requires
 live AcroForm fields and appearance-stream generation, which is deliberately out
 of scope here.
 
+## Saving In Place
+
+A restored document's `source_path` is the stripped temp copy, not the file the
+user opened (`opened_path`), so the app's same-file save guard — which compares
+the save destination against `source_path` — does not block saving back onto
+`opened_path`. This is deliberate: it is the intended re-edit workflow (open →
+edit → save back onto the same file).
+
+It is safe because `write_overlays` saves atomically: it writes the new PDF to a
+temp file in the destination's own directory, then renames the temp file over
+the destination. A failed write (disk full, permission denied, process killed)
+never touches the existing destination file, so it cannot be left truncated or
+corrupted.
+
+Flat documents (no restored overlays) still refuse to save onto their own path:
+for them `source_path` and `opened_path` are the same file, and it is also the
+render source — overwriting it would invalidate the page images already shown.
+
 ## Testing
 
 - **Unit**: metadata round-trips (serialize → parse → identical overlay model)

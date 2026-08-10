@@ -5086,3 +5086,64 @@ fn title_shows_the_opened_files_name_for_restored_documents() {
     let _ = app.update(Message::FileOpened(saved_path.clone()));
     assert_eq!(app.title(), "report.pdf - SPE");
 }
+
+#[test]
+fn a_restored_document_saves_in_place_onto_its_opened_path() {
+    // Deliberate (spe-hoc finding 3, ruled by Joe): a restored document's
+    // source_path is the stripped temp copy, not opened_path, so the
+    // same-file guard in handle_save_destination does not block saving back
+    // onto the file the user opened — that is the intended re-edit workflow,
+    // made safe by write_overlays' atomic save (spe-ezf).
+    let registry = crate::fonts::FontRegistry::new();
+    let src = tempfile::NamedTempFile::new().expect("temp file");
+    create_minimal_pdf(src.path());
+    let saved_dir = tempfile::tempdir().expect("temp dir");
+    let opened_path = saved_dir.path().join("report.pdf");
+    let overlays = vec![crate::overlay::TextOverlay {
+        page: 1,
+        position: crate::overlay::PdfPosition { x: 72.0, y: 650.0 },
+        text: "Restore me".to_string(),
+        font: registry.default_font(),
+        font_size: 12.0,
+        width: None,
+        min_height: None,
+    }];
+    crate::pdf::writer::write_overlays(src.path(), &opened_path, &overlays, &registry)
+        .expect("write failed");
+
+    let (mut app, _) = App::new(false);
+    let _ = app.update(Message::FileOpened(opened_path.clone()));
+    let doc = app.document.as_ref().expect("document open");
+    assert_eq!(
+        doc.overlays, overlays,
+        "overlays restored before the re-edit"
+    );
+
+    // Re-edit the restored overlay, then save back onto the opened path.
+    app.document.as_mut().unwrap().overlays[0].text = "Restored and edited".to_string();
+    let _ = app.update(Message::SaveDestinationChosen(opened_path.clone()));
+
+    let (status, _) = app
+        .status_message
+        .as_ref()
+        .expect("save must set a status message");
+    assert!(
+        status.starts_with("Saved to"),
+        "expected a successful save, got: {status}"
+    );
+
+    let saved_doc = lopdf::Document::load(&opened_path).expect("reload saved file");
+    let text = saved_doc.extract_text(&[1]).expect("extract text");
+    assert!(
+        text.contains("Restored and edited"),
+        "saved file must contain the edited overlay text, got: {text:?}"
+    );
+
+    // Reopening the file again restores the edited overlay, proving the
+    // in-place save round-trips through the app's own metadata.
+    let (mut reopened, _) = App::new(false);
+    let _ = reopened.update(Message::FileOpened(opened_path.clone()));
+    let reopened_doc = reopened.document.as_ref().expect("document open");
+    assert_eq!(reopened_doc.overlays.len(), 1);
+    assert_eq!(reopened_doc.overlays[0].text, "Restored and edited");
+}
