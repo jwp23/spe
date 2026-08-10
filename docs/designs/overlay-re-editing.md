@@ -47,10 +47,14 @@ the default family with a visible warning, the same as any missing-font path.
 
 ## Interoperability Trade-off
 
-Re-editing works only in this app. If another tool edits the PDF in between, the
-staleness guard demotes the file to plain flat. This is accepted: the alternative
-(keeping text editable in any viewer) requires live AcroForm fields and
-appearance-stream generation, which is deliberately out of scope here.
+Re-editing works only in this app. If another tool touches the app's own streams,
+the staleness guard demotes the file to plain flat. An external edit that leaves
+those streams intact (e.g. altering only the original page content) still
+restores the overlays — over the edited base — which is safe because stripping
+only ever removes byte-verified app streams, never the document's own content.
+This is accepted: the alternative (keeping text editable in any viewer) requires
+live AcroForm fields and appearance-stream generation, which is deliberately out
+of scope here.
 
 ## Testing
 
