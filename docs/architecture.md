@@ -10,7 +10,8 @@ Key modules in `src/`:
 | `ui/canvas/` | PDF canvas rendering, hit testing, zoom, overlay drawing |
 | `ui/sidebar.rs` | Thumbnail sidebar with drag-resize |
 | `ui/toolbar.rs` | Toolbar layout, font/page state, zoom controls, page navigation |
-| `ui/font_picker.rs` | Font family drop-down, each family previewed in its own typeface |
+| `ui/font_picker.rs` | Font family control: a UI-font label, and a drop-down previewing each family in its own typeface |
+| `ui/text_width.rs` | Shaped width of a string in any face, cached — sizes both the picker and the canvas |
 | `ui/popover.rs` | Generic anchor + floating panel widget the font picker is built on |
 | `pdf/` | PDF rendering (`pdftoppm` wrapper) and writing (`lopdf` overlay embedding) |
 | `overlay.rs` | Text overlay data model (position, font, text, width) |
