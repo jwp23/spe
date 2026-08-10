@@ -15,18 +15,21 @@ the document catalog holding versioned JSON. For each overlay it records:
 - text
 - font family name
 - font size
-- box width (absent for unwrapped overlays)
+- box width and minimum box height (absent for unwrapped overlays)
 
 This is exactly the data needed to reconstruct the in-memory `TextOverlay` model.
 
-On open, if the entry exists and validates, the app lifts the overlays back into
-the editor instead of treating them as page pixels. On re-save, it removes the
-previous per-page overlay streams, then regenerates both the streams and the
-metadata.
+On open, if the entry exists and validates, the app strips its own overlay and
+q-prefix content streams (and the metadata entry) from the in-memory document,
+saves that stripped copy to a temp file, and uses the temp file as the render
+and save source. The rendered page then shows only the original content while
+the restored overlays sit editable on top — never both at once. Re-save just
+bakes the current overlays onto the stripped source and embeds fresh metadata;
+no stream removal happens at save time.
 
 This is cheap for this codebase specifically because the writer emits overlays as
 a separate content stream appended to each page's `Contents` array, never merged
-into the original content — so "remove and regenerate our stream" is tractable.
+into the original content — so stripping our streams back out on open is tractable.
 
 ## Staleness Guard
 
