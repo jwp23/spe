@@ -14,7 +14,7 @@ tempfile = "3"
 tokio = { version = "1", features = ["time", "net", "io-util", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-skrifa = "0.37"
+skrifa = "0.45"
 unicode-normalization = "0.1"
 
 [dev-dependencies]
