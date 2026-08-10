@@ -125,15 +125,15 @@ fn validate_values(metadata: &OverlayMetadata) -> Result<(), MetadataError> {
                 record.page
             )));
         }
-        if record.width.is_some_and(|w| !w.is_finite()) {
+        if record.width.is_some_and(|w| !w.is_finite() || w <= 0.0) {
             return Err(MetadataError::InvalidValue(format!(
-                "overlay on page {} has a non-finite width",
+                "overlay on page {} has an invalid width",
                 record.page
             )));
         }
-        if record.min_height.is_some_and(|h| !h.is_finite()) {
+        if record.min_height.is_some_and(|h| !h.is_finite() || h < 0.0) {
             return Err(MetadataError::InvalidValue(format!(
-                "overlay on page {} has a non-finite min height",
+                "overlay on page {} has an invalid min height",
                 record.page
             )));
         }

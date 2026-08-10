@@ -66,6 +66,12 @@ fn validate_streams(doc: &Document, meta: &OverlayMetadata) -> Result<(), String
                 record.page
             ));
         }
+        if !meta.streams.iter().any(|s| s.page == record.page) {
+            return Err(format!(
+                "page {} carries an overlay but no recorded stream to strip",
+                record.page
+            ));
+        }
     }
 
     let mut seen_pages = std::collections::HashSet::new();
@@ -408,10 +414,8 @@ mod tests {
         );
     }
 
-    /// Load the metadata stream, hand its parsed form to `edit`, and write
-    /// the edited JSON back onto the stream. Shared by tests that tamper
-    /// with metadata contents rather than page content bytes.
-    fn tamper_metadata(doc: &mut Document, edit: impl FnOnce(&mut OverlayMetadata)) {
+    /// The document's /SPEOverlays stream, for tests that rewrite its bytes.
+    fn metadata_stream_mut(doc: &mut Document) -> &mut lopdf::Stream {
         let root_id = match doc.trailer.get(b"Root").expect("Root") {
             Object::Reference(id) => *id,
             other => panic!("Root must be a reference, got {other:?}"),
@@ -425,11 +429,17 @@ mod tests {
             Object::Reference(id) => *id,
             other => panic!("expected reference, got {other:?}"),
         };
-        let stream = doc
-            .get_object_mut(metadata_id)
+        doc.get_object_mut(metadata_id)
             .expect("metadata obj")
             .as_stream_mut()
-            .expect("stream");
+            .expect("stream")
+    }
+
+    /// Load the metadata stream, hand its parsed form to `edit`, and write
+    /// the edited JSON back onto the stream. Shared by tests that tamper
+    /// with metadata contents rather than page content bytes.
+    fn tamper_metadata(doc: &mut Document, edit: impl FnOnce(&mut OverlayMetadata)) {
+        let stream = metadata_stream_mut(doc);
         let json = String::from_utf8(stream.content.clone()).expect("utf8");
         let mut meta: OverlayMetadata = serde_json::from_str(&json).expect("parse metadata");
         edit(&mut meta);
@@ -486,25 +496,7 @@ mod tests {
     fn oversized_metadata_payload_is_not_re_editable() {
         let (file, _, registry) = saved_reeditable();
         let mut doc = Document::load(file.path()).expect("load");
-        let root_id = match doc.trailer.get(b"Root").expect("Root") {
-            Object::Reference(id) => *id,
-            other => panic!("Root must be a reference, got {other:?}"),
-        };
-        let metadata_id = match doc
-            .get_dictionary(root_id)
-            .expect("catalog")
-            .get(b"SPEOverlays")
-            .expect("entry")
-        {
-            Object::Reference(id) => *id,
-            other => panic!("expected reference, got {other:?}"),
-        };
-        let stream = doc
-            .get_object_mut(metadata_id)
-            .expect("metadata obj")
-            .as_stream_mut()
-            .expect("stream");
-        stream.set_content(vec![b'0'; MAX_METADATA_BYTES + 1]);
+        metadata_stream_mut(&mut doc).set_content(vec![b'0'; MAX_METADATA_BYTES + 1]);
 
         assert!(matches!(
             reopen(doc, &registry),
@@ -517,24 +509,7 @@ mod tests {
         let (file, _, registry) = saved_reeditable();
         let mut doc = Document::load(file.path()).expect("load");
         // Rewrite the metadata to reference page 7, which does not exist.
-        let root_id = match doc.trailer.get(b"Root").expect("Root") {
-            Object::Reference(id) => *id,
-            other => panic!("Root must be a reference, got {other:?}"),
-        };
-        let metadata_id = match doc
-            .get_dictionary(root_id)
-            .expect("catalog")
-            .get(b"SPEOverlays")
-            .expect("entry")
-        {
-            Object::Reference(id) => *id,
-            other => panic!("expected reference, got {other:?}"),
-        };
-        let stream = doc
-            .get_object_mut(metadata_id)
-            .expect("metadata obj")
-            .as_stream_mut()
-            .expect("stream");
+        let stream = metadata_stream_mut(&mut doc);
         let json = String::from_utf8(stream.content.clone()).expect("utf8");
         stream.set_content(json.replace(r#""page":1"#, r#""page":7"#).into_bytes());
 

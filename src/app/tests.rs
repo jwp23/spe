@@ -5056,8 +5056,8 @@ fn opening_a_tampered_app_save_falls_back_flat_with_a_toast() {
         .as_ref()
         .expect("stale open must explain itself");
     assert!(
-        toast.contains("changed by another tool") || toast.contains("not editable"),
-        "toast must say why overlays are not editable, got: {toast}"
+        toast.contains("page 1's overlay stream was changed by another tool"),
+        "toast must name the tampered page and the reason, got: {toast}"
     );
 }
 

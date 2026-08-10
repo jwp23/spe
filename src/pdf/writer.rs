@@ -532,6 +532,13 @@ fn atomic_save(doc: &mut Document, destination: &Path) -> Result<(), WriterError
     std::fs::set_permissions(temp_file.path(), std::fs::Permissions::from_mode(mode))
         .map_err(|e| to_save_failed(lopdf::Error::IO(e)))?;
 
+    // Rename can reach disk before the written data does. Flush first so a
+    // power loss cannot leave a truncated file at destination.
+    temp_file
+        .as_file()
+        .sync_all()
+        .map_err(|e| to_save_failed(lopdf::Error::IO(e)))?;
+
     temp_file
         .persist(destination)
         .map_err(|e| to_save_failed(lopdf::Error::IO(e.error)))?;
@@ -605,15 +612,30 @@ pub fn write_overlays(
 
     let json = metadata::to_json(overlays, &stream_records, registry);
     let metadata_id = doc.add_object(Stream::new(dictionary! {}, json.into_bytes()));
+    // lopdf parses leniently, so a Root that is missing or not a reference is
+    // a malformed-but-loadable file, not an internal invariant: report it as
+    // a save failure rather than panicking and losing the user's overlays.
     let root_id = match doc.trailer.get(b"Root") {
         Ok(Object::Reference(id)) => *id,
-        _ => unreachable!("a loadable PDF has a Root reference"),
+        _ => {
+            return Err(WriterError::SaveFailed {
+                path: destination.to_path_buf(),
+                source: lopdf::Error::DictKey("Root".to_string()),
+            });
+        }
     };
-    doc.get_object_mut(root_id)
-        .expect("catalog object must exist")
+    let catalog = doc
+        .get_object_mut(root_id)
+        .map_err(|e| WriterError::SaveFailed {
+            path: destination.to_path_buf(),
+            source: e,
+        })?
         .as_dict_mut()
-        .expect("catalog must be a dictionary")
-        .set("SPEOverlays", Object::Reference(metadata_id));
+        .map_err(|e| WriterError::SaveFailed {
+            path: destination.to_path_buf(),
+            source: e,
+        })?;
+    catalog.set("SPEOverlays", Object::Reference(metadata_id));
 
     atomic_save(&mut doc, destination)?;
 
@@ -1488,6 +1510,16 @@ mod tests {
             .permissions();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555))
             .expect("make dir read-only");
+
+        // root ignores directory write permission, so the failure this test
+        // needs cannot be provoked there.
+        let probe = dir.path().join(".probe");
+        let running_as_root = std::fs::write(&probe, b"x").is_ok();
+        if running_as_root {
+            let _ = std::fs::remove_file(&probe);
+            std::fs::set_permissions(dir.path(), original_perms).expect("restore dir permissions");
+            return;
+        }
 
         let result = write_overlays(src.path(), &dst_path, &[], &registry);
 
