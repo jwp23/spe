@@ -188,4 +188,35 @@ mod tests {
         assert!((w2 - 595.0).abs() < 0.01);
         assert!((h2 - 842.0).abs() < 0.01);
     }
+
+    #[test]
+    fn parse_media_box_subtracts_nonzero_origin() {
+        let obj = Object::Array(vec![
+            Object::Integer(10),
+            Object::Integer(20),
+            Object::Integer(110),
+            Object::Integer(220),
+        ]);
+        assert_eq!(parse_media_box(&obj), Some((100.0, 200.0)));
+    }
+
+    #[test]
+    fn read_media_box_gives_up_on_circular_parent_chain() {
+        let mut doc = Document::with_version("1.5");
+        // Reserve two ids, then create dicts referring to each other.
+        let a_id = doc.new_object_id();
+        let b_id = doc.new_object_id();
+        doc.objects.insert(
+            a_id,
+            Object::Dictionary(dictionary! { "Parent" => Object::Reference(b_id) }),
+        );
+        doc.objects.insert(
+            b_id,
+            Object::Dictionary(dictionary! { "Parent" => Object::Reference(a_id) }),
+        );
+        assert_eq!(
+            read_media_box_bounded(&doc, a_id, MAX_PAGE_TREE_DEPTH),
+            None
+        );
+    }
 }
