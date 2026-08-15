@@ -967,6 +967,119 @@ mod tests {
                 "Contents entry {id:?} must be a stream, got {obj:?}"
             );
         }
+
+        // Inspect the page's raw Contents value directly (not via
+        // get_page_contents, which transparently resolves nested arrays and
+        // would mask a splice failure). It must be a flat array of
+        // references, each resolving to a stream, never to a nested array.
+        let page_dict = doc
+            .get_object(page_id)
+            .expect("page object must exist")
+            .as_dict()
+            .expect("page object must be a dictionary");
+        let contents = page_dict.get(b"Contents").expect("Contents");
+        let Object::Array(items) = contents else {
+            panic!("expected flat Contents array, got {contents:?}")
+        };
+        for item in items {
+            let Object::Reference(id) = item else {
+                panic!("expected reference, got {item:?}")
+            };
+            assert!(
+                matches!(doc.get_object(*id), Ok(Object::Stream(_))),
+                "Contents element {id:?} must resolve to a stream, not a nested array"
+            );
+        }
+    }
+
+    /// Contents may also be a direct array of stream references (no
+    /// intervening indirect reference), which is a different code path from
+    /// `write_overlays_handles_contents_reference_to_array` above. It must be
+    /// spliced flat rather than dropped.
+    #[test]
+    fn write_overlays_handles_contents_direct_array() {
+        use crate::fonts::FontRegistry;
+        use crate::overlay::{PdfPosition, TextOverlay};
+        let registry = FontRegistry::new();
+
+        let src = NamedTempFile::new().expect("temp file");
+        {
+            let mut doc = Document::with_version("1.5");
+            let pages_id = doc.new_object_id();
+
+            let content = Content {
+                operations: vec![
+                    Operation::new("re", vec![10.into(), 10.into(), 100.into(), 50.into()]),
+                    Operation::new("f", vec![]),
+                ],
+            };
+            let stream_id = doc.add_object(Stream::new(
+                dictionary! {},
+                content.encode().expect("encode"),
+            ));
+
+            let page_id = doc.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "Contents" => Object::Array(vec![Object::Reference(stream_id)]),
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            });
+            let pages = dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![Object::Reference(page_id)],
+                "Count" => 1_i64,
+            };
+            doc.objects.insert(pages_id, Object::Dictionary(pages));
+            let catalog_id = doc.add_object(dictionary! {
+                "Type" => "Catalog",
+                "Pages" => pages_id,
+            });
+            doc.trailer.set("Root", catalog_id);
+            doc.save(src.path()).expect("save");
+        }
+
+        let dst = NamedTempFile::new().expect("temp file");
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: registry.default_font(),
+            font_size: 12.0,
+            width: None,
+            min_height: None,
+        };
+        write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1");
+
+        // The original array's stream reference must still be present:
+        // dropping the arm that handles a direct Contents array loses it,
+        // leaving only the new q-prefix and overlay streams.
+        let page_dict = doc
+            .get_object(page_id)
+            .expect("page object must exist")
+            .as_dict()
+            .expect("page object must be a dictionary");
+        let contents = page_dict.get(b"Contents").expect("Contents");
+        let Object::Array(items) = contents else {
+            panic!("expected flat Contents array, got {contents:?}")
+        };
+        assert_eq!(
+            items.len(),
+            3,
+            "expected q-prefix, original, and overlay streams, got {items:?}"
+        );
+        for item in items {
+            let Object::Reference(id) = item else {
+                panic!("expected reference, got {item:?}")
+            };
+            assert!(
+                matches!(doc.get_object(*id), Ok(Object::Stream(_))),
+                "Contents element {id:?} must resolve to a stream"
+            );
+        }
     }
 
     #[test]
@@ -1247,6 +1360,15 @@ mod tests {
             "Courier missing from font resources: {resource_to_basefont:?}"
         );
 
+        // Exactly 2 distinct resource names, each mapping to the font it was
+        // named for. A resource-name collision would leave one entry missing
+        // or overwritten.
+        assert_eq!(
+            resource_to_basefont.len(),
+            2,
+            "expected exactly 2 distinct font resource names, got {resource_to_basefont:?}"
+        );
+
         // Parse the overlay-only content stream: the NEW stream added by write_overlays.
         // We expect a single new stream containing both overlays.
         let content_ids = doc.get_page_contents(page_id);
@@ -1309,6 +1431,111 @@ mod tests {
         assert_ne!(
             first_resource, second_resource,
             "Helvetica and Courier overlays must use different resource names"
+        );
+    }
+
+    /// Both overlay fonts here are TrueType embeddings absent from the source
+    /// PDF's resources, so neither can reuse an existing page font: both must
+    /// go through the fresh-name generator in the same `build_font_mapping`
+    /// call. This is the only path that exercises the generator's collision
+    /// check against `new_font_objects` for a *second* fresh name.
+    #[test]
+    fn write_overlays_two_fresh_truetype_fonts_get_unique_names() {
+        use crate::fonts::{FontEntry, FontRegistry, PdfEmbedding, WidthTable};
+        use crate::overlay::{PdfPosition, TextOverlay};
+
+        static TEST_TTF: &[u8] = include_bytes!("../../assets/icons/phosphor-subset.ttf");
+
+        let mut registry = FontRegistry::new();
+        let tt_id_a = registry.add_entry(FontEntry {
+            id: crate::fonts::FontId::default(),
+            display_name: "UnitTestTTA",
+            pdf_name: "UnitTestTTA",
+            iced_font: iced::Font::DEFAULT,
+            embedding: PdfEmbedding::TrueType { bytes: TEST_TTF },
+            widths: WidthTable::Monospaced(600.0),
+            descriptor: None,
+            x_height_ratio: None,
+        });
+        let tt_id_b = registry.add_entry(FontEntry {
+            id: crate::fonts::FontId::default(),
+            display_name: "UnitTestTTB",
+            pdf_name: "UnitTestTTB",
+            iced_font: iced::Font::DEFAULT,
+            embedding: PdfEmbedding::TrueType {
+                bytes: &TEST_TTF[..TEST_TTF.len() - 1],
+            },
+            widths: WidthTable::Monospaced(600.0),
+            descriptor: None,
+            x_height_ratio: None,
+        });
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst = NamedTempFile::new().expect("temp file");
+
+        let overlays = vec![
+            TextOverlay {
+                page: 1,
+                position: PdfPosition { x: 72.0, y: 720.0 },
+                text: "A text".to_string(),
+                font: tt_id_a,
+                font_size: 12.0,
+                width: None,
+                min_height: None,
+            },
+            TextOverlay {
+                page: 1,
+                position: PdfPosition { x: 72.0, y: 700.0 },
+                text: "B text".to_string(),
+                font: tt_id_b,
+                font_size: 12.0,
+                width: None,
+                min_height: None,
+            },
+        ];
+
+        write_overlays(src.path(), dst.path(), &overlays, &registry).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1");
+        let fonts = doc.get_page_fonts(page_id).expect("get_page_fonts");
+
+        let resource_to_basefont: std::collections::HashMap<Vec<u8>, Vec<u8>> = fonts
+            .iter()
+            .filter_map(|(key, fd)| {
+                if let Ok(Object::Name(base)) = fd.get(b"BaseFont") {
+                    Some((key.clone(), base.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert!(
+            resource_to_basefont.values().any(|b| b == b"UnitTestTTA"),
+            "UnitTestTTA missing from font resources: {resource_to_basefont:?}"
+        );
+        assert!(
+            resource_to_basefont.values().any(|b| b == b"UnitTestTTB"),
+            "UnitTestTTB missing from font resources: {resource_to_basefont:?}"
+        );
+
+        // The two fresh fonts must have landed under distinct resource names;
+        // a name collision would leave only one of the two BaseFonts present
+        // under a shared key (the second overwriting the first in the dict).
+        let fresh_names: Vec<&Vec<u8>> = resource_to_basefont
+            .iter()
+            .filter(|(_, base)| {
+                base.as_slice() == b"UnitTestTTA" || base.as_slice() == b"UnitTestTTB"
+            })
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(
+            fresh_names.len(),
+            2,
+            "expected UnitTestTTA and UnitTestTTB under 2 distinct resource names, got {resource_to_basefont:?}"
         );
     }
 
@@ -1801,6 +2028,59 @@ mod tests {
         assert!(
             matches!(tt_dict.get(b"FontDescriptor"), Ok(Object::Reference(_))),
             "TrueType font must have a FontDescriptor reference"
+        );
+    }
+
+    #[test]
+    fn truetype_default_descriptor_has_negative_descent() {
+        use crate::fonts::{FontEntry, FontRegistry, PdfEmbedding, WidthTable};
+        use crate::overlay::{PdfPosition, TextOverlay};
+
+        static TEST_TTF: &[u8] = include_bytes!("../../assets/icons/phosphor-subset.ttf");
+
+        let mut registry = FontRegistry::new();
+        let tt_id = registry.add_entry(FontEntry {
+            id: crate::fonts::FontId::default(),
+            display_name: "UnitTestTT",
+            pdf_name: "UnitTestTT",
+            iced_font: iced::Font::DEFAULT,
+            embedding: PdfEmbedding::TrueType { bytes: TEST_TTF },
+            widths: WidthTable::Monospaced(600.0),
+            descriptor: None,
+            x_height_ratio: None,
+        });
+
+        let src = NamedTempFile::new().expect("temp file");
+        create_test_pdf(src.path());
+        let dst = NamedTempFile::new().expect("temp file");
+
+        let overlay = TextOverlay {
+            page: 1,
+            position: PdfPosition { x: 72.0, y: 720.0 },
+            text: "Hello".to_string(),
+            font: tt_id,
+            font_size: 12.0,
+            width: None,
+            min_height: None,
+        };
+
+        write_overlays(src.path(), dst.path(), &[overlay], &registry).expect("write failed");
+
+        let doc = Document::load(dst.path()).expect("load failed");
+        let pages = doc.get_pages();
+        let &page_id = pages.get(&1).expect("page 1");
+        let fonts = doc.get_page_fonts(page_id).expect("get_page_fonts");
+        let tt_dict = fonts
+            .values()
+            .find(|fd| matches!(fd.get(b"BaseFont"), Ok(Object::Name(n)) if n == b"UnitTestTT"))
+            .expect("UnitTestTT not found");
+        let Ok(Object::Reference(desc_id)) = tt_dict.get(b"FontDescriptor") else {
+            panic!("expected FontDescriptor reference");
+        };
+        let desc = doc.get_dictionary(*desc_id).expect("descriptor dict");
+        assert_eq!(
+            desc.get(b"Descent").expect("Descent"),
+            &Object::Integer(-200)
         );
     }
 
@@ -2364,5 +2644,85 @@ mod tests {
             "a plain copy must not claim to be re-editable"
         );
         let _ = std::fs::remove_file(&dst_path);
+    }
+
+    #[test]
+    fn fingerprint_of_matches_known_fnv1a_vector() {
+        // FNV-1a of "a" is a published test vector: 0xaf63dc4c8601ec8c.
+        let fp = FontProgramFingerprint::of(b"a");
+        assert_eq!(fp.length, 1);
+        assert_eq!(fp.hash, 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[test]
+    fn fingerprint_of_distinguishes_same_length_content() {
+        let a = FontProgramFingerprint::of(b"abcd");
+        let b = FontProgramFingerprint::of(b"abce");
+        assert_eq!(a.length, b.length);
+        assert_ne!(a.hash, b.hash);
+    }
+
+    /// Build a doc whose font dict embeds `ttf` via FontDescriptor/FontFile2,
+    /// with each of descriptor and font file either inline or by reference.
+    fn font_dict_with_embedded_program(
+        doc: &mut Document,
+        ttf: &[u8],
+        descriptor_by_ref: bool,
+        file_by_ref: bool,
+    ) -> lopdf::Dictionary {
+        let stream = Stream::new(dictionary! {}, ttf.to_vec());
+        let font_file: Object = if file_by_ref {
+            Object::Reference(doc.add_object(stream))
+        } else {
+            Object::Stream(stream)
+        };
+        let descriptor = dictionary! { "FontFile2" => font_file };
+        let descriptor_obj: Object = if descriptor_by_ref {
+            Object::Reference(doc.add_object(descriptor))
+        } else {
+            Object::Dictionary(descriptor)
+        };
+        dictionary! { "FontDescriptor" => descriptor_obj }
+    }
+
+    #[test]
+    fn embedded_fingerprint_reads_program_through_all_object_shapes() {
+        let ttf = b"fake font program bytes";
+        let expected = FontProgramFingerprint::of(ttf);
+        for descriptor_by_ref in [false, true] {
+            for file_by_ref in [false, true] {
+                let mut doc = Document::with_version("1.5");
+                let dict =
+                    font_dict_with_embedded_program(&mut doc, ttf, descriptor_by_ref, file_by_ref);
+                assert_eq!(
+                    embedded_font_program_fingerprint(&doc, &dict),
+                    Some(expected),
+                    "descriptor_by_ref={descriptor_by_ref} file_by_ref={file_by_ref}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_fingerprint_is_none_without_font_file() {
+        let doc = Document::with_version("1.5");
+        let no_descriptor = dictionary! {};
+        assert_eq!(
+            embedded_font_program_fingerprint(&doc, &no_descriptor),
+            None
+        );
+        let empty_descriptor = dictionary! { "FontDescriptor" => dictionary! {} };
+        assert_eq!(
+            embedded_font_program_fingerprint(&doc, &empty_descriptor),
+            None
+        );
+    }
+
+    #[test]
+    fn embedded_fingerprint_accepts_program_exactly_at_size_limit() {
+        let ttf = vec![0u8; 50 * 1024 * 1024];
+        let mut doc = Document::with_version("1.5");
+        let dict = font_dict_with_embedded_program(&mut doc, &ttf, false, false);
+        assert!(embedded_font_program_fingerprint(&doc, &dict).is_some());
     }
 }

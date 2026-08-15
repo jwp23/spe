@@ -337,6 +337,62 @@ mod tests {
         ));
     }
 
+    /// An overlay record with the given box fields, otherwise all valid
+    /// values, for tests that only care about one boundary.
+    fn overlay_record_with(width: Option<f32>, min_height: Option<f32>) -> OverlayRecord {
+        OverlayRecord {
+            page: 1,
+            x: 0.0,
+            y: 0.0,
+            text: "x".to_string(),
+            font_family: "Helvetica".to_string(),
+            font_size: 12.0,
+            width,
+            min_height,
+        }
+    }
+
+    fn metadata_with(record: OverlayRecord) -> OverlayMetadata {
+        OverlayMetadata {
+            version: METADATA_VERSION,
+            overlays: vec![record],
+            streams: vec![],
+        }
+    }
+
+    #[test]
+    fn nan_width_is_rejected() {
+        let metadata = metadata_with(overlay_record_with(Some(f32::NAN), None));
+        assert!(matches!(
+            validate_values(&metadata),
+            Err(MetadataError::InvalidValue(_))
+        ));
+    }
+
+    #[test]
+    fn nan_min_height_is_rejected() {
+        let metadata = metadata_with(overlay_record_with(None, Some(f32::NAN)));
+        assert!(matches!(
+            validate_values(&metadata),
+            Err(MetadataError::InvalidValue(_))
+        ));
+    }
+
+    #[test]
+    fn zero_min_height_is_accepted() {
+        let metadata = metadata_with(overlay_record_with(None, Some(0.0)));
+        assert!(validate_values(&metadata).is_ok());
+    }
+
+    #[test]
+    fn negative_min_height_is_rejected() {
+        let metadata = metadata_with(overlay_record_with(None, Some(-1.0)));
+        assert!(matches!(
+            validate_values(&metadata),
+            Err(MetadataError::InvalidValue(_))
+        ));
+    }
+
     #[test]
     fn unknown_font_falls_back_to_default_and_is_reported() {
         let registry = FontRegistry::new();

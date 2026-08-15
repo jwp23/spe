@@ -550,6 +550,174 @@ mod tests {
     }
 
     #[test]
+    fn metadata_cap_is_ten_megabytes() {
+        // States the size independently of MAX_METADATA_BYTES. The tests
+        // around the cap size their payloads from that constant, so on its own
+        // a change to it moves the guard and those payloads together and no
+        // assertion notices.
+        assert_eq!(MAX_METADATA_BYTES, 10_485_760);
+    }
+
+    #[test]
+    fn metadata_payload_exactly_at_max_size_is_still_accepted() {
+        let (file, overlays, registry) = saved_reeditable();
+        let mut doc = Document::load(file.path()).expect("load");
+        {
+            let stream = metadata_stream_mut(&mut doc);
+            let mut content = stream.content.clone();
+            assert!(
+                content.len() <= MAX_METADATA_BYTES,
+                "fixture metadata should start under the cap"
+            );
+            content.resize(MAX_METADATA_BYTES, b' ');
+            stream.set_content(content);
+        }
+        assert!(
+            metadata_json(&doc).is_some(),
+            "a payload exactly at the cap must still parse"
+        );
+        let ReopenOutcome::Restored(restored) = reopen(doc, &registry) else {
+            panic!("expected Restored at exactly MAX_METADATA_BYTES");
+        };
+        assert_eq!(restored.overlays, overlays);
+    }
+
+    #[test]
+    fn overlay_naming_a_page_the_document_lacks_is_rejected_by_validate_streams() {
+        let file = NamedTempFile::new().expect("temp file");
+        create_test_pdf(file.path());
+        let doc = Document::load(file.path()).expect("load");
+        let meta = OverlayMetadata {
+            version: metadata::METADATA_VERSION,
+            overlays: vec![metadata::OverlayRecord {
+                page: 5,
+                x: 0.0,
+                y: 0.0,
+                text: "x".to_string(),
+                font_family: "Helvetica".to_string(),
+                font_size: 12.0,
+                width: None,
+                min_height: None,
+            }],
+            streams: vec![],
+        };
+
+        let err = validate_streams(&doc, &meta).expect_err("page 5 does not exist");
+        assert!(
+            err.contains("does not have"),
+            "expected a page-existence rejection, got: {err}"
+        );
+        assert!(err.contains('5'), "reason should name the page, got: {err}");
+    }
+
+    /// A document with a single page whose Contents holds exactly
+    /// `stream_count` dummy content streams, for `strip_app_streams` boundary
+    /// tests that don't need real PDF operators.
+    fn document_with_page_streams(
+        stream_count: usize,
+    ) -> (Document, lopdf::ObjectId, Vec<lopdf::ObjectId>) {
+        let mut doc = Document::with_version("1.5");
+        let content_ids: Vec<lopdf::ObjectId> = (0..stream_count)
+            .map(|i| {
+                doc.add_object(Stream::new(
+                    dictionary! {},
+                    format!("stream {i}").into_bytes(),
+                ))
+            })
+            .collect();
+        let contents = if content_ids.len() == 1 {
+            Object::Reference(content_ids[0])
+        } else {
+            Object::Array(
+                content_ids
+                    .iter()
+                    .map(|id| Object::Reference(*id))
+                    .collect(),
+            )
+        };
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Contents" => contents,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        });
+        let pages_id = doc.add_object(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1_i64,
+        });
+        if let Some(Object::Dictionary(page_dict)) = doc.objects.get_mut(&page_id) {
+            page_dict.set("Parent", pages_id);
+        }
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        (doc, page_id, content_ids)
+    }
+
+    #[test]
+    fn strip_app_streams_with_exactly_prefix_and_overlay_leaves_empty_contents() {
+        let (mut doc, page_id, content_ids) = document_with_page_streams(2);
+        let meta = OverlayMetadata {
+            version: metadata::METADATA_VERSION,
+            overlays: vec![],
+            streams: vec![metadata::PageStreams {
+                page: 1,
+                overlay: StreamFingerprint::of(b"overlay"),
+                prefix: Some(StreamFingerprint::of(b"prefix")),
+            }],
+        };
+
+        strip_app_streams(&mut doc, &meta);
+
+        let page_dict = doc
+            .get_object(page_id)
+            .expect("page object")
+            .as_dict()
+            .expect("dict");
+        assert_eq!(
+            page_dict.get(b"Contents").expect("Contents"),
+            &Object::Array(vec![]),
+            "both app streams removed, no content left"
+        );
+        for id in &content_ids {
+            assert!(
+                !doc.objects.contains_key(id),
+                "removed stream {id:?} must not remain in the document"
+            );
+        }
+    }
+
+    #[test]
+    fn strip_app_streams_with_prefix_original_and_overlay_leaves_a_direct_reference() {
+        let (mut doc, page_id, content_ids) = document_with_page_streams(3);
+        let original_id = content_ids[1];
+        let meta = OverlayMetadata {
+            version: metadata::METADATA_VERSION,
+            overlays: vec![],
+            streams: vec![metadata::PageStreams {
+                page: 1,
+                overlay: StreamFingerprint::of(b"overlay"),
+                prefix: Some(StreamFingerprint::of(b"prefix")),
+            }],
+        };
+
+        strip_app_streams(&mut doc, &meta);
+
+        let page_dict = doc
+            .get_object(page_id)
+            .expect("page object")
+            .as_dict()
+            .expect("dict");
+        assert_eq!(
+            page_dict.get(b"Contents").expect("Contents"),
+            &Object::Reference(original_id),
+            "the surviving original stream must be a direct reference, not a 1-element array"
+        );
+        assert!(doc.objects.contains_key(&original_id));
+        assert!(!doc.objects.contains_key(&content_ids[0]));
+        assert!(!doc.objects.contains_key(&content_ids[2]));
+    }
+
+    #[test]
     fn multi_page_restore_strips_streams_on_both_overlaid_pages() {
         let registry = FontRegistry::new();
         let src = NamedTempFile::new().expect("temp file");

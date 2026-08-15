@@ -1321,6 +1321,35 @@ mod tests {
     }
 
     #[test]
+    fn word_wrap_keeps_word_that_fits_exactly() {
+        let registry = FontRegistry::new();
+        let courier = registry.find_by_name("Courier").unwrap();
+        // "AA BB" is exactly 30.0 wide at size 10: fits on one line.
+        let lines = registry.word_wrap("AA BB", courier, 10.0, 30.0);
+        assert_eq!(lines, vec!["AA BB".to_string()]);
+    }
+
+    #[test]
+    fn word_wrap_breaks_word_just_over_the_limit() {
+        let registry = FontRegistry::new();
+        let courier = registry.find_by_name("Courier").unwrap();
+        // 29.9 < 30.0: "BB" no longer fits after "AA ".
+        let lines = registry.word_wrap("AA BB", courier, 10.0, 29.9);
+        assert_eq!(lines, vec!["AA".to_string(), "BB".to_string()]);
+    }
+
+    #[test]
+    fn word_wrap_accumulates_line_width_across_words() {
+        let registry = FontRegistry::new();
+        let courier = registry.find_by_name("Courier").unwrap();
+        // "AA BB CC" = 48.0 exactly; "AA BB CC DD" adds " DD" (18.0) -> 66.0.
+        // At max 48.0 the break must fall after CC -- anywhere else means the
+        // accumulator (fonts.rs:220) drifted.
+        let lines = registry.word_wrap("AA BB CC DD", courier, 10.0, 48.0);
+        assert_eq!(lines, vec!["AA BB CC".to_string(), "DD".to_string()]);
+    }
+
+    #[test]
     fn find_by_name_display_name() {
         let registry = FontRegistry::new();
         let id = registry.find_by_name("Helvetica").unwrap();
