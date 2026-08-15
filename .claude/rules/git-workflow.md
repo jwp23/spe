@@ -12,7 +12,7 @@ For extensive changes, use git worktrees in `.worktrees/` (project-local, hidden
 
 ## Completing Work
 
-When implementation is complete and tests pass, YOU MUST invoke the `finishing-a-development-branch` skill via the Skill tool — it dispatches the pr-creator agent for push/PR/CI; the pr-merger agent handles approved merges.
+When implementation is complete and tests pass, YOU MUST invoke the `finishing-a-development-branch` skill via the Skill tool — it covers push, PR creation, CI, and review; the `pr-merger` agent handles approved merges, and `branch-shepherd` delivers several ready branches unattended.
 
 ## Merge Policy
 

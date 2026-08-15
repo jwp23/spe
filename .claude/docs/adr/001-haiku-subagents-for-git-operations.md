@@ -1,5 +1,11 @@
 # ADR-001: Haiku Subagents for Mechanical Git Operations
 
+## Status
+
+Superseded. These agents now live in the `joe-bag-of-tricks` plugin, where `pr-creator` has been
+retired in favour of inline PR creation (plugin ADR-005) and `branch-shepherd` covers unattended
+multi-branch delivery. `pr-merger` survives as described here.
+
 ## Context
 
 The main development workflow uses Opus for all git operations: creating commits, pushing branches, creating PRs, watching CI, merging PRs, and cleaning up. These operations are purely mechanical — shell commands with predictable inputs and outputs. Running them in the main Opus context wastes expensive tokens on work that requires no judgment, and blocks the main agent while waiting for CI checks.
