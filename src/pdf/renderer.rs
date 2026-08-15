@@ -38,20 +38,22 @@ pub trait PageRenderer {
 /// Cached result of probing for pdftoppm availability.
 static PDFTOPPM_PROBE: OnceLock<Result<(), RendererError>> = OnceLock::new();
 
+fn probe_command(cmd: &str) -> Result<(), RendererError> {
+    let probe = Command::new(cmd).arg("-v").output();
+    match probe {
+        Err(e) if e.kind() == ErrorKind::NotFound => Err(RendererError::NotInstalled),
+        Err(e) => Err(RendererError::RenderFailed {
+            page: 0,
+            path: PathBuf::new(),
+            detail: format!("failed to probe pdftoppm: {e}"),
+        }),
+        Ok(_) => Ok(()),
+    }
+}
+
 fn probe_pdftoppm() -> Result<(), RendererError> {
     PDFTOPPM_PROBE
-        .get_or_init(|| {
-            let probe = Command::new("pdftoppm").arg("-v").output();
-            match probe {
-                Err(e) if e.kind() == ErrorKind::NotFound => Err(RendererError::NotInstalled),
-                Err(e) => Err(RendererError::RenderFailed {
-                    page: 0,
-                    path: PathBuf::new(),
-                    detail: format!("failed to probe pdftoppm: {e}"),
-                }),
-                Ok(_) => Ok(()),
-            }
-        })
+        .get_or_init(|| probe_command("pdftoppm"))
         .clone()
 }
 
@@ -205,22 +207,15 @@ mod tests {
     }
 
     #[test]
-    fn pdftoppm_renderer_is_constructible() {
-        // Compile-time proof that PdftoppmRenderer exists and implements PageRenderer.
-        let _r: &dyn PageRenderer = &PdftoppmRenderer;
-    }
-
-    #[test]
-    fn render_page_batch_trait_exists() {
-        // Compile-time proof that the function exists on PdftoppmRenderer
-        type RenderPageBatch = fn(
-            &PdftoppmRenderer,
-            &Path,
-            u32,
-            u32,
-            u32,
-        ) -> Result<Vec<(u32, DynamicImage)>, RendererError>;
-        let _f: RenderPageBatch = PdftoppmRenderer::render_page_batch;
+    fn render_page_delegates_range_validation_to_batch() {
+        // Through the PageRenderer trait, so the impl's delegation to
+        // render_page_batch is what's under test -- not a compile-time shape.
+        let renderer: &dyn PageRenderer = &PdftoppmRenderer;
+        let result = renderer.render_page(Path::new("/any.pdf"), 0, 72);
+        assert!(
+            matches!(result, Err(RendererError::RenderFailed { ref detail, .. }) if detail.contains("invalid page range")),
+            "expected range rejection through the trait method, got {result:?}"
+        );
     }
 
     #[test]
@@ -228,8 +223,8 @@ mod tests {
         let renderer = PdftoppmRenderer;
         let result = renderer.render_page_batch(Path::new("/any.pdf"), 0, 1, 72);
         assert!(
-            matches!(result, Err(RendererError::RenderFailed { .. })),
-            "expected RenderFailed for first_page=0"
+            matches!(result, Err(RendererError::RenderFailed { ref detail, .. }) if detail.contains("invalid page range")),
+            "expected RenderFailed with 'invalid page range' for first_page=0, got {result:?}"
         );
     }
 
@@ -238,8 +233,8 @@ mod tests {
         let renderer = PdftoppmRenderer;
         let result = renderer.render_page_batch(Path::new("/any.pdf"), 1, 0, 72);
         assert!(
-            matches!(result, Err(RendererError::RenderFailed { .. })),
-            "expected RenderFailed for last_page=0"
+            matches!(result, Err(RendererError::RenderFailed { ref detail, .. }) if detail.contains("invalid page range")),
+            "expected RenderFailed with 'invalid page range' for last_page=0, got {result:?}"
         );
     }
 
@@ -248,8 +243,8 @@ mod tests {
         let renderer = PdftoppmRenderer;
         let result = renderer.render_page_batch(Path::new("/any.pdf"), 5, 3, 72);
         assert!(
-            matches!(result, Err(RendererError::RenderFailed { .. })),
-            "expected RenderFailed for first_page > last_page"
+            matches!(result, Err(RendererError::RenderFailed { ref detail, .. }) if detail.contains("invalid page range")),
+            "expected rejection of first_page > last_page, got {result:?}"
         );
     }
 
@@ -292,5 +287,24 @@ mod tests {
         let r1 = probe_pdftoppm();
         let r2 = probe_pdftoppm();
         assert_eq!(r1.is_ok(), r2.is_ok());
+    }
+
+    #[test]
+    fn probe_reports_missing_command_as_not_installed() {
+        let result = probe_command("spe-test-no-such-command-a8b3");
+        assert!(matches!(result, Err(RendererError::NotInstalled)));
+    }
+
+    #[test]
+    fn probe_reports_non_missing_failure_with_detail() {
+        // Executing a directory fails with an error kind other than NotFound
+        // (PermissionDenied on this Linux box), which must NOT be reported
+        // as NotInstalled.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = probe_command(dir.path().to_str().expect("utf-8 path"));
+        assert!(
+            matches!(result, Err(RendererError::RenderFailed { ref detail, .. }) if detail.contains("failed to probe")),
+            "expected RenderFailed for non-NotFound error, got {result:?}"
+        );
     }
 }
