@@ -30,17 +30,30 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Check out the base revision, not the pull request's own code: a branch
+      # must not be able to edit the validator that judges it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
       - name: Test the subject validator
-        run: ./tests/check_commit_subject_test.sh
+        run: |
+          if [ ! -x ./scripts/check-commit-subject.sh ]; then
+            echo "Validator absent from the base revision — skipping until this lands on main."
+            exit 0
+          fi
+          ./tests/check_commit_subject_test.sh
 
       - name: Check pull request title
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: ./scripts/check-commit-subject.sh "$PR_TITLE"
+        run: |
+          if [ ! -x ./scripts/check-commit-subject.sh ]; then
+            echo "Validator absent from the base revision — skipping until this lands on main."
+            exit 0
+          fi
+          ./scripts/check-commit-subject.sh "$PR_TITLE"
 
   fmt:
     runs-on: ubuntu-latest

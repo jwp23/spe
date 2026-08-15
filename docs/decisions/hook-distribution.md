@@ -2,9 +2,10 @@
 
 Decision: Commit the hooks to `.githooks/` and enable them with `scripts/setup-hooks.sh`, which
 sets `core.hooksPath` to a relative path. The checks themselves live in
-`scripts/pre-commit-checks.sh` and `scripts/check-commit-msg.sh`; every hook — including the
-beads-managed ones in `.beads/hooks/` — is a one-line call to those scripts. No pre-commit
-framework is adopted.
+`scripts/pre-commit-checks.sh` and `scripts/check-commit-msg.sh`. Each hook delegates to those
+scripts rather than implementing anything: the `.githooks/` hooks are a single `exec` line, and
+the beads-managed `.beads/hooks/pre-commit` keeps its beads integration block and delegates its
+project-checks section the same way. No pre-commit framework is adopted.
 
 Rationale: `core.hooksPath` is not shared by a clone, so before this the project's checks ran
 only on machines that had been configured by hand. A framework such as `pre-commit` or

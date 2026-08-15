@@ -2,12 +2,22 @@
 
 ## Status
 
-Partly superseded. The agent-driven review skill no longer lives in this repository — it was a
-harness-specific tool rather than a project asset, and the project's instructions no longer
-depend on any particular agent tooling. The checklist it encoded survives as guidance; the
-enforcement this ADR explicitly declined to build now exists in CI, which gates every pull
-request on secrets scanning, `cargo audit`, `cargo deny`, SBOM vulnerability scanning
-(ADR-007), and Semgrep — the SAST option rejected below was adopted later.
+Partly superseded. **The Decision and Trade-offs sections below are a historical record, not a
+description of how the project works today.**
+
+What changed since:
+
+- The agent-driven review skill no longer lives in this repository. It was harness-specific
+  tooling rather than a project asset, and the project's instructions no longer depend on any
+  particular agent harness. The 8-point checklist it encoded survives only as guidance.
+- Automated enforcement, which this ADR explicitly declined to build, now exists in CI:
+  betterleaks secrets scanning, `cargo audit`, `cargo deny`, and Semgrep.
+- SAST was rejected below and later adopted anyway, as `.github/workflows/semgrep.yml`.
+- SBOM generation, deferred below, was adopted in ADR-007 and runs in the `supply-chain` job.
+- `cargo-deny` was deferred below in favour of `cargo-audit`; both now run.
+
+Coverage caveat: the `sonarqube` job does not run for Dependabot pull requests, which have no
+`SONAR_TOKEN`. The other checks do run for them.
 
 ## Context
 

@@ -85,7 +85,7 @@ short description. Never commit to `main`.
 Commit messages are a **single** [Conventional Commits](https://www.conventionalcommits.org)
 line, with no body and no footer:
 
-```
+```text
 feat: add font size selector to overlay toolbar
 fix: prevent crash when opening password-protected PDF
 ```

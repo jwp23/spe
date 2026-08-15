@@ -140,8 +140,10 @@ Formats, numbering, and the full classification rules: `docs/decision-recording.
 
 `scripts/setup-hooks.sh` enables the committed hooks. `pre-commit` runs secrets scanning,
 `cargo fmt`, `cargo clippy`, `cargo audit`, `cargo deny`, and the test suites; `commit-msg`
-checks the commit convention. Tools missing locally produce a warning — CI enforces them
-regardless.
+checks the commit convention.
+
+A missing `betterleaks`, `cargo-audit`, or `cargo-deny` warns and skips that check; CI runs all
+three regardless. Formatting, lint, and test failures always block the commit.
 
 NEVER skip, evade, or disable a hook.
 
