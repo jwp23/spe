@@ -550,6 +550,15 @@ mod tests {
     }
 
     #[test]
+    fn metadata_cap_is_ten_megabytes() {
+        // Spelled as a literal rather than as `10 * 1024 * 1024`: the tests
+        // around the cap size their payloads from MAX_METADATA_BYTES, so an
+        // arithmetic slip in the constant would move the guard and those
+        // payloads together and go unnoticed.
+        assert_eq!(MAX_METADATA_BYTES, 10_485_760);
+    }
+
+    #[test]
     fn metadata_payload_exactly_at_max_size_is_still_accepted() {
         let (file, overlays, registry) = saved_reeditable();
         let mut doc = Document::load(file.path()).expect("load");
