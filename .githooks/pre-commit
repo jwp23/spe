@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Run the project's quality checks before each commit.
+# Enable with: scripts/setup-hooks.sh
+exec "$(git rev-parse --show-toplevel)/scripts/pre-commit-checks.sh"

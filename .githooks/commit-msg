@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Check the commit message against the project convention.
+# Enable with: scripts/setup-hooks.sh
+exec "$(git rev-parse --show-toplevel)/scripts/check-commit-msg.sh" "$1"

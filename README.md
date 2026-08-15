@@ -14,7 +14,7 @@ Built with Rust and Iced, optimized for Cosmic Desktop on Wayland.
 ## Quick Start
 
 ```bash
-git clone git@github.com:jwp23/spe.git
+git clone https://github.com/jwp23/spe.git
 cd spe
 cargo build
 cargo run
@@ -38,15 +38,32 @@ cargo run
 
 ## Development
 
+### Git Hooks
+
+```bash
+./scripts/setup-hooks.sh
+```
+
+This points `core.hooksPath` at the repository's committed hooks. Git runs no hook until you do
+this, so it is the first step after cloning if you plan to submit a change.
+
+`pre-commit` runs secrets scanning, formatting, lint, dependency audit, licence checks, and the
+test suites. `commit-msg` checks the commit message convention.
+
 ### Development Dependencies
 
 | Tool | Version | Install (Arch) | Purpose |
 |------|---------|----------------|---------|
+| betterleaks | any | [install guide](https://github.com/betterleaks/betterleaks) | Secrets scanning in the pre-commit hook |
+| cargo-audit | any | `cargo install cargo-audit` | Dependency vulnerability scanning |
+| cargo-deny | any | `cargo install cargo-deny` | Licence and supply-chain checks |
 | cage | any | `pacman -S cage` | Headless Wayland compositor for screenshot harness |
 | grim | any | `pacman -S grim` | Wayland-native screenshot capture |
 | socat | any | `pacman -S socat` | Unix socket client for IPC commands |
 
-These are only needed for visual debugging with the screenshot tool — not for building or testing.
+None of these are needed to build or run the app. The first three are used by the pre-commit
+hook, which warns and skips a check when its tool is missing — CI runs all of them on every pull
+request regardless. The last three are for visual debugging with the screenshot tool.
 
 ### Commands
 
@@ -57,11 +74,11 @@ cargo test                   # unit + integration tests
 cargo test -- --ignored      # E2E tests (requires GPU context)
 ```
 
-Pre-commit hooks run secrets scanning, fmt, clippy, and tests automatically.
+Once enabled, the pre-commit hook runs these automatically.
 
-### Visual Debugging (Claude Code)
+### Visual Debugging
 
-A screenshot tool lets Claude Code take screenshots of the running app to verify visual output. It uses `cage` (headless Wayland compositor), `grim` (screenshot capture), and `socat` (IPC), and requires starting the app with `--ipc`.
+A screenshot tool takes screenshots of the running app to verify visual output — useful by hand and for AI coding agents. It uses `cage` (headless Wayland compositor), `grim` (screenshot capture), and `socat` (IPC), and requires starting the app with `--ipc`.
 
 See [docs/screenshot-tool.md](docs/screenshot-tool.md) for system dependencies, harness script usage, and the full IPC command reference.
 
@@ -87,6 +104,13 @@ pyftsubset Phosphor.ttf \
   --output-file=assets/icons/phosphor-subset.ttf \
   --no-hinting --desubroutinize
 ```
+
+## Contributing
+
+Bug reports, feature proposals, and pull requests are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for setup, conventions, and what the project does and does
+not aim to do. If you work with an AI coding agent, [AGENTS.md](AGENTS.md) carries the same
+rules in instruction form.
 
 ## Architecture Decisions
 

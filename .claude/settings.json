@@ -19,8 +19,5 @@
       "Bash(git add *)",
       "Bash(mkdir *)"
     ]
-  },
-  "enabledPlugins": {
-    "example-skills@anthropic-agent-skills": true
   }
 }
