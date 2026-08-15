@@ -2365,4 +2365,84 @@ mod tests {
         );
         let _ = std::fs::remove_file(&dst_path);
     }
+
+    #[test]
+    fn fingerprint_of_matches_known_fnv1a_vector() {
+        // FNV-1a of "a" is a published test vector: 0xaf63dc4c8601ec8c.
+        let fp = FontProgramFingerprint::of(b"a");
+        assert_eq!(fp.length, 1);
+        assert_eq!(fp.hash, 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[test]
+    fn fingerprint_of_distinguishes_same_length_content() {
+        let a = FontProgramFingerprint::of(b"abcd");
+        let b = FontProgramFingerprint::of(b"abce");
+        assert_eq!(a.length, b.length);
+        assert_ne!(a.hash, b.hash);
+    }
+
+    /// Build a doc whose font dict embeds `ttf` via FontDescriptor/FontFile2,
+    /// with each of descriptor and font file either inline or by reference.
+    fn font_dict_with_embedded_program(
+        doc: &mut Document,
+        ttf: &[u8],
+        descriptor_by_ref: bool,
+        file_by_ref: bool,
+    ) -> lopdf::Dictionary {
+        let stream = Stream::new(dictionary! {}, ttf.to_vec());
+        let font_file: Object = if file_by_ref {
+            Object::Reference(doc.add_object(stream))
+        } else {
+            Object::Stream(stream)
+        };
+        let descriptor = dictionary! { "FontFile2" => font_file };
+        let descriptor_obj: Object = if descriptor_by_ref {
+            Object::Reference(doc.add_object(descriptor))
+        } else {
+            Object::Dictionary(descriptor)
+        };
+        dictionary! { "FontDescriptor" => descriptor_obj }
+    }
+
+    #[test]
+    fn embedded_fingerprint_reads_program_through_all_object_shapes() {
+        let ttf = b"fake font program bytes";
+        let expected = FontProgramFingerprint::of(ttf);
+        for descriptor_by_ref in [false, true] {
+            for file_by_ref in [false, true] {
+                let mut doc = Document::with_version("1.5");
+                let dict =
+                    font_dict_with_embedded_program(&mut doc, ttf, descriptor_by_ref, file_by_ref);
+                assert_eq!(
+                    embedded_font_program_fingerprint(&doc, &dict),
+                    Some(expected),
+                    "descriptor_by_ref={descriptor_by_ref} file_by_ref={file_by_ref}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_fingerprint_is_none_without_font_file() {
+        let doc = Document::with_version("1.5");
+        let no_descriptor = dictionary! {};
+        assert_eq!(
+            embedded_font_program_fingerprint(&doc, &no_descriptor),
+            None
+        );
+        let empty_descriptor = dictionary! { "FontDescriptor" => dictionary! {} };
+        assert_eq!(
+            embedded_font_program_fingerprint(&doc, &empty_descriptor),
+            None
+        );
+    }
+
+    #[test]
+    fn embedded_fingerprint_accepts_program_exactly_at_size_limit() {
+        let ttf = vec![0u8; 50 * 1024 * 1024];
+        let mut doc = Document::with_version("1.5");
+        let dict = font_dict_with_embedded_program(&mut doc, &ttf, false, false);
+        assert!(embedded_font_program_fingerprint(&doc, &dict).is_some());
+    }
 }
