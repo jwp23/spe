@@ -551,10 +551,10 @@ mod tests {
 
     #[test]
     fn metadata_cap_is_ten_megabytes() {
-        // Spelled as a literal rather than as `10 * 1024 * 1024`: the tests
-        // around the cap size their payloads from MAX_METADATA_BYTES, so an
-        // arithmetic slip in the constant would move the guard and those
-        // payloads together and go unnoticed.
+        // States the size independently of MAX_METADATA_BYTES. The tests
+        // around the cap size their payloads from that constant, so on its own
+        // a change to it moves the guard and those payloads together and no
+        // assertion notices.
         assert_eq!(MAX_METADATA_BYTES, 10_485_760);
     }
 
