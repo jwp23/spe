@@ -1,5 +1,14 @@
 # ADR-006: Security Review System
 
+## Status
+
+Partly superseded. The agent-driven review skill no longer lives in this repository — it was a
+harness-specific tool rather than a project asset, and the project's instructions no longer
+depend on any particular agent tooling. The checklist it encoded survives as guidance; the
+enforcement this ADR explicitly declined to build now exists in CI, which gates every pull
+request on secrets scanning, `cargo audit`, `cargo deny`, SBOM vulnerability scanning
+(ADR-007), and Semgrep — the SAST option rejected below was adopted later.
+
 ## Context
 
 The project invokes system utilities via subprocess (`pdftoppm`) and processes user-provided PDF files. While the current codebase follows good security practices (typed paths, safe `Command::new` usage, `tempfile` crate, enum-based font selection), there is no systematic process to verify security properties as the codebase evolves. Additionally, dependency supply-chain attacks are an industry-wide concern that warrants automated scanning.

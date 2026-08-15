@@ -22,6 +22,26 @@ jobs:
         run: |
           docker run --rm -v "${{ github.workspace }}:/scan" ghcr.io/betterleaks/betterleaks:latest dir --redact /scan
 
+  pr-title:
+    # Merges are squashed, so the pull request title becomes main's commit
+    # subject. It gets the same check a local commit message does.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Test the subject validator
+        run: ./tests/check_commit_subject_test.sh
+
+      - name: Check pull request title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: ./scripts/check-commit-subject.sh "$PR_TITLE"
+
   fmt:
     runs-on: ubuntu-latest
     permissions:

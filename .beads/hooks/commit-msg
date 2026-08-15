@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Check the commit message against the project convention.
+# Shares its implementation with .githooks/commit-msg.
+exec "$(git rev-parse --show-toplevel)/scripts/check-commit-msg.sh" "$1"
