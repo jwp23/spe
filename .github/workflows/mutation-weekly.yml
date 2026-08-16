@@ -285,7 +285,7 @@ jobs:
           fi
 
       - name: Close the survivor tracking issue if the run came back clean
-        if: steps.merge.outputs.missed-count == '0'
+        if: steps.merge.outputs.missed-count == '0' && steps.merge.outputs.crashed-count == '0'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

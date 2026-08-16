@@ -53,7 +53,7 @@ declare -a ok_shards=()
 # (confirmed empirically while fixing this) rather than erroring, which
 # would make every shard read as "artifact missing" instead of failing the
 # job outright on bad input.
-if ! [[ "$SHARD_COUNT" =~ ^[0-9]+$ ]]; then
+if ! [[ "$SHARD_COUNT" =~ ^[1-9][0-9]*$ ]]; then
     echo "::error::SHARD_COUNT is not a positive integer: '$SHARD_COUNT'" >&2
     exit 1
 fi

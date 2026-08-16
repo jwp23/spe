@@ -205,6 +205,17 @@ else
 fi
 assert_contains "bad-shard-count: error message names the bad value" "$case_dir/stderr" "SHARD_COUNT is not a positive integer: 'not-a-number'"
 
+# --- case: SHARD_COUNT is zero -> fails loudly rather than silently
+# processing zero shards ---
+case_dir="$work/zero-shard-count"
+mkdir -p "$case_dir/shards"
+if run_summary "$case_dir" 0 > "$case_dir/stdout" 2> "$case_dir/stderr"; then
+    fail "zero-shard-count: script should have exited non-zero"
+else
+    ok "zero-shard-count: script exits non-zero"
+fi
+assert_contains "zero-shard-count: error message names the bad value" "$case_dir/stderr" "SHARD_COUNT is not a positive integer: '0'"
+
 # --- case: no caught and no missed at all -> kill rate is n/a ---
 case_dir="$work/no-viable"
 mkdir -p "$case_dir"
