@@ -1144,6 +1144,7 @@ mod tests {
         let registry = FontRegistry::new();
         let entry = registry.get(registry.default_font());
         assert_eq!(entry.display_name, "Helvetica");
+        assert_eq!(registry.all()[0].id, FontId::default());
     }
 
     #[test]

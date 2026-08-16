@@ -27,8 +27,9 @@ exclude_re = [
 
     # src/fonts.rs default_font: default_font returns self.fonts[0].id. FontId
     # derives Default, so Default::default() is FontId(0). fonts is a private
-    # Vec whose only constructor is FontRegistry::new(), which seeds it from
-    # standard_14_fonts() (first entry id: FontId(0)); add_entry only appends
+    # Vec whose only construction site is FontRegistry::new() (Default
+    # delegates to it), which seeds it from standard_14_fonts() (first entry
+    # id: FontId(0)); add_entry only appends
     # with strictly increasing ids and never touches index 0. Every reachable
     # registry therefore has fonts[0].id == FontId(0), so the original and the
     # mutant return the same value on every input — equivalence by
