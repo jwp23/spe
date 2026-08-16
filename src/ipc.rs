@@ -1318,6 +1318,54 @@ mod tests {
         assert_eq!(socket_path_in(None), Err(MissingRuntimeDir));
     }
 
+    /// Names the runtime directory the parent test wants `socket_path` to
+    /// read, and marks the process as that test's child.
+    const CHILD_RUNTIME_DIR: &str = "SPE_TEST_CHILD_RUNTIME_DIR";
+
+    /// The assertion half of
+    /// [`socket_path_reads_the_runtime_dir_from_the_environment`]. It runs in a
+    /// child process because it needs `XDG_RUNTIME_DIR` set, and mutating the
+    /// environment of the test process would race every test sharing it. Inert
+    /// unless the parent asked for it.
+    #[test]
+    fn socket_path_child_reads_xdg_runtime_dir() {
+        let Ok(runtime_dir) = std::env::var(CHILD_RUNTIME_DIR) else {
+            return;
+        };
+        assert_eq!(
+            socket_path(),
+            Ok(PathBuf::from(runtime_dir).join("spe-ipc.sock"))
+        );
+    }
+
+    #[test]
+    fn socket_path_reads_the_runtime_dir_from_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime_dir = dir.path().to_str().expect("a temp dir path is UTF-8");
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("the test binary must have a path"),
+        )
+        .args([
+            "ipc::tests::socket_path_child_reads_xdg_runtime_dir",
+            "--exact",
+        ])
+        .env("XDG_RUNTIME_DIR", runtime_dir)
+        .env(CHILD_RUNTIME_DIR, runtime_dir)
+        .output()
+        .expect("the test binary must be runnable as a child process");
+
+        let report = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            report.contains("1 passed"),
+            "the child must have run exactly the socket_path assertion:\n{report}"
+        );
+        assert!(
+            output.status.success(),
+            "socket_path must build its path from XDG_RUNTIME_DIR:\n{report}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn missing_runtime_dir_error_says_how_to_fix_it() {
         let message = MissingRuntimeDir.to_string();
