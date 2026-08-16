@@ -1339,6 +1339,11 @@ mod tests {
     /// read, and marks the process as that test's child.
     const CHILD_RUNTIME_DIR: &str = "SPE_TEST_CHILD_RUNTIME_DIR";
 
+    /// Printed by the child only once it has actually asserted. A child that
+    /// took its early-out reports a passing test just the same, so this line is
+    /// what tells the parent the two apart.
+    const CHILD_ASSERTED: &str = "socket_path assertion ran";
+
     /// The assertion half of
     /// [`socket_path_reads_the_runtime_dir_from_the_environment`]. It runs in a
     /// child process because it needs `XDG_RUNTIME_DIR` set, and mutating the
@@ -1353,6 +1358,7 @@ mod tests {
             socket_path(),
             Ok(PathBuf::from(runtime_dir).join("spe-ipc.sock"))
         );
+        println!("{CHILD_ASSERTED}");
     }
 
     #[test]
@@ -1362,9 +1368,12 @@ mod tests {
         let output = std::process::Command::new(
             std::env::current_exe().expect("the test binary must have a path"),
         )
+        // `--nocapture` so the child's confirmation line reaches this process
+        // rather than the test harness's own buffer.
         .args([
             "ipc::tests::socket_path_child_reads_xdg_runtime_dir",
             "--exact",
+            "--nocapture",
         ])
         .env("XDG_RUNTIME_DIR", runtime_dir)
         .env(CHILD_RUNTIME_DIR, runtime_dir)
@@ -1373,13 +1382,14 @@ mod tests {
 
         let report = String::from_utf8_lossy(&output.stdout);
         assert!(
-            report.contains("1 passed"),
-            "the child must have run exactly the socket_path assertion:\n{report}"
-        );
-        assert!(
             output.status.success(),
             "socket_path must build its path from XDG_RUNTIME_DIR:\n{report}{}",
             String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            report.contains(CHILD_ASSERTED),
+            "the child never reached the assertion — a renamed test or a broken \
+             {CHILD_RUNTIME_DIR} handoff would leave this test passing on nothing:\n{report}"
         );
     }
 
