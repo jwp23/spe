@@ -1,18 +1,18 @@
-# SPIKE PROBE — spe-qvm.1. workflow_dispatch ONLY, never triggered by push or
-# pull_request, and referenced by no other workflow. Delete this file when the
-# spike is closed.
+# SPIKE PROBE — spe-qvm.1. workflow_dispatch ONLY: never triggered by push or
+# pull_request, gates nothing, and is referenced by no other workflow. It exists
+# so the spike's measurements stay reproducible; delete it once spe-qvm lands.
 #
 # Question: can tests/ipc_e2e.rs (cage + iced/wgpu) run green on a hosted
 # ubuntu-latest runner, and can we prove it did not silently skip?
+#
+# Findings: docs/spikes/2026-08-16-e2e-in-ci/results.md
+#
+# Note that workflow_dispatch only becomes dispatchable once this file is on the
+# default branch. The spike itself iterated behind a temporary push trigger
+# scoped to its own throwaway branch.
 name: E2E CI probe (spike)
 
 on:
-  # SPIKE-ONLY, REMOVE BEFORE FINISHING: workflow_dispatch is undispatchable
-  # until the file reaches the default branch, so iteration rides a push
-  # trigger scoped to this one throwaway branch. No pull_request trigger, so
-  # this cannot run against anyone else's changes.
-  push:
-    branches: [spike/e2e-in-ci]
   workflow_dispatch:
     inputs:
       repeats:
