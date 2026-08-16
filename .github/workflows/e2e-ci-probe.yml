@@ -13,6 +13,8 @@
 name: E2E CI probe (spike)
 
 on:
+  push:
+    branches: [docs/e2e-in-ci-spike]
   workflow_dispatch:
     inputs:
       repeats:
@@ -106,14 +108,24 @@ jobs:
               for adapter in &adapters {
                   println!("{:?}", adapter.get_info());
               }
+              if adapters.is_empty() {
+                  println!("no adapters enumerated");
+                  std::process::exit(1);
+              }
               let chosen = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                   power_preference: wgpu::PowerPreference::default(),
                   force_fallback_adapter: false,
                   compatible_surface: None,
               }));
+              // Exit non-zero on failure. Printing and returning 0 would let
+              // the workflow step pass with no usable adapter, which is the
+              // one answer this probe exists to detect.
               match chosen {
                   Ok(a) => println!("default request_adapter picked: {:?}", a.get_info()),
-                  Err(e) => println!("default request_adapter FAILED: {e}"),
+                  Err(e) => {
+                      println!("default request_adapter FAILED: {e}");
+                      std::process::exit(1);
+                  }
               }
           }
           EOF

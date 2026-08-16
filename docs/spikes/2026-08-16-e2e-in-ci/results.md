@@ -35,7 +35,6 @@ zero flakes.
 ```text
 Setting up cage (0.1.5+20240127-2build1) ...
 Cage version 0.1.5
-cage -v exit status: 0
 ```
 
 Worth noting: this is much older than a rolling distro's cage (0.3.1 locally). It is still new
@@ -85,7 +84,7 @@ picks the GL backend on Mesa's llvmpipe software rasteriser. It needs no coaxing
 One caveat on how far this evidence reaches: this is the adapter a standalone probe selects
 with `compatible_surface: None`, not one observed from inside iced. The app's own selection was
 **inferred, not captured** — inferred from the fact that it renders at all, which three tests
-prove by round-tripping real text through a saved PDF. Since llvmpipe is the only adapter on
+prove by finding real typed text in the PDF the app saved. Since llvmpipe is the only adapter on
 the runner, there is nothing else it could have picked; but if a future question turns on
 exactly what iced chose, capture it directly with `RUST_LOG=wgpu_core=info` under
 `--nocapture` rather than relying on this section.
@@ -126,11 +125,11 @@ then returns early and passes. Three independent checks, all enforced by the pro
 1. **A hard gate.** `cage -v` runs as its own step before the tests and fails the job on a
    non-zero exit.
 2. **A count and a skip check.** Five `#[test]` functions are declared; the job asserts five
-   `test ... ok` lines, and asserts zero `SKIP ` lines on stderr. Only the second half is a
+   `test ... ok` lines, and asserts zero `SKIP` lines on stderr. Only the second half is a
    skip detector — a fully skipping suite still prints five `test ... ok` lines, because a
    skipped test passes. The count catches a test that vanished or errored, not one that
-   skipped. Anchor the grep on `SKIP ` and nothing narrower: three tests print their own name,
-   but the two that go through `type_in_font_and_extract_text` print a scenario name
+   skipped. Anchor the grep on `SKIP` plus a space and nothing narrower: three tests print their
+   own name, but the two that go through `type_in_font_and_extract_text` print a scenario name
    (`cursive-extract`, `win-ansi-extract`), so `^SKIP ipc_` would silently cover only three of
    the five.
 
@@ -155,8 +154,9 @@ then returns early and passes. Three independent checks, all enforced by the pro
    Placement matters: inject before the guard and a skipping suite would go red too, proving
    nothing. Injecting after it means only a suite that genuinely executes can fail.
 
-Two of the five tests also assert on text extracted by `pdftotext` from a PDF the app just
-rendered and saved, which cannot pass unless the whole render-place-type-save path really ran.
+Three of the five tests also assert that text typed through the IPC layer is really present in
+the PDF the app saved — two by extracting it with `pdftotext`, one by finding the `Tj` operator
+with lopdf. None can pass unless the whole render-place-type-save path really ran.
 
 ### Q5 — timings and stability
 
