@@ -236,8 +236,25 @@ jobs:
             --description "Open weekly mutation-testing survivor report" \
             --force
 
-          mapfile -t numbers < <(gh issue list --state open --label mutation-survivors \
-            --json number --jq '.[].number')
+          # `mapfile -t numbers < <(gh issue list ...)` would not do: a
+          # process substitution runs in an unwaited background subshell, so
+          # mapfile never sees gh's exit status - a failing `gh` (rate
+          # limit, auth hiccup, network blip) would silently read as "zero
+          # issues found", and the step below would then create a *second*
+          # tracking issue instead of finding the existing one. Capturing to
+          # a variable first (`numbers_raw=$(...)`) makes the assignment's
+          # own exit status equal gh's, so `if !` can catch it.
+          if ! numbers_raw=$(gh issue list --state open --label mutation-survivors \
+            --json number --jq '.[].number'); then
+            echo "::error::gh issue list failed while checking for an existing mutation-survivors tracking issue." >&2
+            exit 1
+          fi
+
+          if [ -z "$numbers_raw" ]; then
+            numbers=()
+          else
+            mapfile -t numbers <<< "$numbers_raw"
+          fi
 
           if [ "${#numbers[@]}" -gt 1 ]; then
             echo "::error::Found ${#numbers[@]} open issues labeled mutation-survivors (expected at most 1): ${numbers[*]}. Reconcile manually before the next run." >&2
@@ -285,9 +302,15 @@ jobs:
       # always(): this signal must surface even if an earlier step in this
       # job (e.g. issue filing, on a transient GitHub API error) failed -
       # a crashed shard must not go unreported just because something else
-      # in the same job also went wrong.
+      # in the same job also went wrong. `steps.merge.outcome == 'success'`:
+      # without it, a `merge` step that itself failed or never ran leaves
+      # `crashed-count` empty, which also satisfies `!= '0'` - this step
+      # would then fire with a blank count ("::error:: of 20 shard(s)...").
+      # The job is already red from `merge`'s own failure in that case, so
+      # this step has nothing true to add and should stay quiet rather than
+      # print a misleading message.
       - name: Fail the job if any shard did not complete
-        if: always() && steps.merge.outputs.crashed-count != '0'
+        if: always() && steps.merge.outcome == 'success' && steps.merge.outputs.crashed-count != '0'
         run: |
           echo "::error::${{ steps.merge.outputs.crashed-count }} of $SHARD_COUNT shard(s) did not run to completion - see the job summary for which. The merged survivor list above is incomplete." >&2
           exit 1

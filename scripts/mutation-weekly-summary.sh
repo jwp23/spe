@@ -45,11 +45,26 @@ declare -a ok_shards=()
 
 : > "$MERGED_MISSED"
 
-for i in $(seq 0 $((SHARD_COUNT - 1))); do
+# Validated explicitly, and the shard loop below written as a `while` rather
+# than `for i in $(seq ...)`: a `for`/`in` word list built from a command
+# substitution is another place `set -e` does not propagate a failure - a
+# malformed SHARD_COUNT would make `seq` fail, `$(seq ...)` would expand to
+# nothing, and `for i in ; do ... done` would silently iterate zero times
+# (confirmed empirically while fixing this) rather than erroring, which
+# would make every shard read as "artifact missing" instead of failing the
+# job outright on bad input.
+if ! [[ "$SHARD_COUNT" =~ ^[0-9]+$ ]]; then
+    echo "::error::SHARD_COUNT is not a positive integer: '$SHARD_COUNT'" >&2
+    exit 1
+fi
+
+i=0
+while [ "$i" -lt "$SHARD_COUNT" ]; do
     dir="$SHARDS_DIR/mutants-out-$i"
 
     if [ ! -d "$dir" ]; then
         crashed_shards+=("shard $i: artifact missing (shard never uploaded results)")
+        i=$((i + 1))
         continue
     fi
 
@@ -82,6 +97,8 @@ for i in $(seq 0 $((SHARD_COUNT - 1))); do
     if [ -s "$dir/missed.txt" ]; then
         cat "$dir/missed.txt" >> "$MERGED_MISSED"
     fi
+
+    i=$((i + 1))
 done
 
 sort -u -o "$MERGED_MISSED" "$MERGED_MISSED"
@@ -93,7 +110,18 @@ crashed_count=${#crashed_shards[@]}
 # rejects) and timeouts are excluded from the denominator, since neither is
 # a real pass/fail signal on the test suite.
 if [ $((caught_total + missed_total_raw)) -gt 0 ]; then
-    kill_rate="$(awk -v c="$caught_total" -v m="$missed_total_raw" 'BEGIN { printf "%.1f", (c / (c + m)) * 100 }')%"
+    # Captured to a variable and checked explicitly rather than interpolated
+    # straight into the `kill_rate="$(...)%"` assignment: a command
+    # substitution embedded inside a larger string is one of the places
+    # `set -e` does not propagate a failure (the assignment itself always
+    # "succeeds"), which would otherwise leave kill_rate silently holding a
+    # bare "%" instead of failing loudly.
+    if ! kill_rate_value=$(awk -v c="$caught_total" -v m="$missed_total_raw" \
+        'BEGIN { printf "%.1f", (c / (c + m)) * 100 }'); then
+        echo "::error::awk failed while computing the kill rate." >&2
+        exit 1
+    fi
+    kill_rate="${kill_rate_value}%"
 else
     kill_rate="n/a"
 fi
