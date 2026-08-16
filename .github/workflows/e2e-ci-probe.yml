@@ -68,9 +68,9 @@ jobs:
       # Q1 hard gate. tests/ipc_e2e.rs:37 skips every test when this exits
       # non-zero, so a green suite without this gate proves nothing.
       - name: 'Q1: cage -v exits 0'
-        run: |
-          cage -v
-          echo "cage -v exit status: $?"
+        # The step's own success IS the gate: `bash -e` fails it on a non-zero
+        # exit, so there is nothing useful to echo afterwards.
+        run: cage -v
 
       # Q3 evidence, independent of the app: what does the runner's software
       # stack actually offer wgpu?
@@ -117,6 +117,7 @@ jobs:
               }
           }
           EOF
+          set -o pipefail
           cargo run --release 2>&1 | tail -40
 
       # Q2: does cage itself come up headless, with no compositor and no GPU?
@@ -128,8 +129,10 @@ jobs:
           env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$RUNTIME_DIR" \
             WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
             timeout 30 cage -- /bin/sh -c 'echo "client saw WAYLAND_DISPLAY=[$WAYLAND_DISPLAY]"; ls -l "$XDG_RUNTIME_DIR"'
-          echo "cage exit status: $?"
+          cage_status=$?
           set -e
+          echo "cage exit status: $cage_status"
+          exit "$cage_status"
 
       - name: Build the app and the e2e test binary
         run: cargo test --test ipc_e2e --no-run
@@ -176,7 +179,11 @@ jobs:
             cat "run-$i.out"; cat "run-$i.err"
             echo "run $i: exit $run_status, $((SECONDS - start)) s wall clock"
             passed=$(grep -c '^test ipc_.* \.\.\. ok$' "run-$i.out" || true)
-            skipped=$(grep -c '^SKIP ipc_' "run-$i.err" || true)
+            # Anchor on `SKIP ` alone: two tests skip via
+            # type_in_font_and_extract_text, which prints the scenario name
+            # ("cursive-extract") rather than the test's name, so `^SKIP ipc_`
+            # would silently cover only three of the five.
+            skipped=$(grep -c '^SKIP ' "run-$i.err" || true)
             echo "run $i: harness summary — $(grep '^test result:' "run-$i.out" || echo '<none>')"
             echo "run $i: $passed of $EXPECTED tests reported ok, $skipped self-reported skips"
             [ "$run_status" -eq 0 ] || status=1
@@ -194,6 +201,7 @@ jobs:
       - name: 'Combined `cargo test -- --ignored`, as ci.yml runs it'
         if: ${{ !inputs.sabotage }}
         run: |
+          EXPECTED=$(grep -c '#\[test\]' tests/ipc_e2e.rs)
           status=0
           for i in 1 2 3; do
             echo "::group::combined run $i"
@@ -204,16 +212,16 @@ jobs:
             set -e
             cat "combined-$i.out"; tail -40 "combined-$i.err"
             ipc_ok=$(grep -c '^test ipc_.* \.\.\. ok$' "combined-$i.out" || true)
-            echo "combined $i: exit $run_status, $((SECONDS - start)) s, $ipc_ok/5 ipc_e2e tests ok"
+            echo "combined $i: exit $run_status, $((SECONDS - start)) s, $ipc_ok/$EXPECTED ipc_e2e tests ok"
             grep '^test result:' "combined-$i.out" || true
-            [ "$run_status" -eq 0 ] && [ "$ipc_ok" -eq 5 ] || status=1
+            if [ "$run_status" -ne 0 ] || [ "$ipc_ok" -ne "$EXPECTED" ]; then status=1; fi
             echo '::endgroup::'
           done
           exit "$status"
 
       - name: Upload run logs
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-probe-logs
           path: |

@@ -38,9 +38,9 @@ Cage version 0.1.5
 cage -v exit status: 0
 ```
 
-Worth noting: this is much older than a rolling distro's cage (0.3.1 locally). It is still
-new enough for everything the tests do, but it is the version CI will pin to for the life of
-Ubuntu 24.04.
+Worth noting: this is much older than a rolling distro's cage (0.3.1 locally). It is still new
+enough for everything the tests do. `ubuntu-latest` is a moving label, so the version will
+change when the image rolls to 26.04 — expect a newer cage then, not an older one.
 
 ### Q2 — cage starts headless, no compositor and no GPU
 
@@ -82,6 +82,14 @@ There is no Vulkan ICD on the runner at all (`/usr/share/vulkan/icd.d/` does not
 picks the GL backend on Mesa's llvmpipe software rasteriser. It needs no coaxing: no
 `WGPU_BACKEND`, no `LIBGL_ALWAYS_SOFTWARE`, no `force_fallback_adapter`.
 
+One caveat on how far this evidence reaches: this is the adapter a standalone probe selects
+with `compatible_surface: None`, not one observed from inside iced. The app's own selection was
+**inferred, not captured** — inferred from the fact that it renders at all, which three tests
+prove by round-tripping real text through a saved PDF. Since llvmpipe is the only adapter on
+the runner, there is nothing else it could have picked; but if a future question turns on
+exactly what iced chose, capture it directly with `RUST_LOG=wgpu_core=info` under
+`--nocapture` rather than relying on this section.
+
 Adding `mesa-vulkan-drivers` was also tried, and it does work — it produces a second, Vulkan
 adapter which `request_adapter` then prefers:
 
@@ -101,8 +109,13 @@ respectively:
 
 ```text
 Failed to initialize glamor, falling back to sw
-MESA: error: ZINK: failed to choose pdev
+MESA: error: ZINK: vkCreateInstance failed (VK_ERROR_INCOMPATIBLE_DRIVER)
 ```
+
+The zink line differs by configuration, which is worth knowing before someone treats a changed
+string as a new problem: with no Vulkan ICD present — the recommended setup — it is the
+`vkCreateInstance` message above; install `mesa-vulkan-drivers` and it becomes
+`MESA: error: ZINK: failed to choose pdev` instead. Both are harmless.
 
 ### Q4 — the suite really ran
 
@@ -113,7 +126,13 @@ then returns early and passes. Three independent checks, all enforced by the pro
 1. **A hard gate.** `cage -v` runs as its own step before the tests and fails the job on a
    non-zero exit.
 2. **A count and a skip check.** Five `#[test]` functions are declared; the job asserts five
-   `test ... ok` lines, and asserts zero `SKIP ipc_` lines on stderr:
+   `test ... ok` lines, and asserts zero `SKIP ` lines on stderr. Only the second half is a
+   skip detector — a fully skipping suite still prints five `test ... ok` lines, because a
+   skipped test passes. The count catches a test that vanished or errored, not one that
+   skipped. Anchor the grep on `SKIP ` and nothing narrower: three tests print their own name,
+   but the two that go through `type_in_font_and_extract_text` print a scenario name
+   (`cursive-extract`, `win-ansi-extract`), so `^SKIP ipc_` would silently cover only three of
+   the five.
 
    ```text
    tests/ipc_e2e.rs declares 5 #[test] functions
@@ -156,8 +175,16 @@ adds only `cage`. The package set makes no measurable difference. These are step
 clock at one-second resolution; the harness's own reported figures are slightly tighter, 2.13 s
 to 4.34 s, the difference being cargo's up-to-date check.
 
-The first invocation in each job is consistently ~1.5 s slower than subsequent ones — cold page
-cache, not variance. Nothing else moves. **Zero failures and zero flakes across all of it.**
+The first invocation in each job is consistently slower than the ones after it — a cold-start
+effect, not variance. Two runs outside this table show it more strongly and are worth naming
+rather than quietly dropping: `31966379470` measured 7.03 s / 1.79 s / 1.71 s, and the sabotage
+run 7.59 s. Both predate the stream-splitting fix and neither is directly comparable, but they
+widen the honest first-invocation range to about 3–8 s. The combined column's 15-16 s versus
+5-6 s is a bigger gap than page cache explains; the likeliest cause is the first
+`cargo test -- --ignored` building the other test binaries, which the preceding
+`--test ipc_e2e --no-run` step did not.
+
+Steady-state is 2-3 s either way. **Zero failures and zero flakes across all of it.**
 
 Job-level cost of the whole probe was ~2 minutes, but most of that is the throwaway wgpu crate.
 The cost that matters for spe-qvm is only what gets added to the `check` job:
@@ -223,8 +250,19 @@ very likely to drift far past 40 pixels. That is a font-rendering and reference-
 question, not a compositor one, and it needs its own investigation. **This spike did not test
 it, and nothing here should be read as evidence either way.**
 
+`docs/visual-regression.md:10-12` and `:298` do still cite the compositor rationale this spike
+disproved. Correcting that text — without implying the CI conclusion flips — is tracked as
+`spe-eca`.
+
 ## Reproducing
 
-`.github/workflows/e2e-ci-probe.yml` (`workflow_dispatch` only, gates nothing) captures every
+`.github/workflows/e2e-ci-probe.yml` (`workflow_dispatch` only, gates nothing) reproduces every
 measurement above. Inputs: `repeats` for the timing loop, `sabotage` to re-run the
 proof-of-not-skipping check — which must go **red**. Delete the file once spe-qvm lands.
+
+It is not byte-for-byte the file that produced the numbers, and should not be described as
+such. The spike iterated behind a temporary push trigger on a throwaway branch, so every run
+cited here took the `inputs`-unset path; the sabotage evidence in particular came from a
+revision that forced the step on and still counted passes from a merged log. The
+`workflow_dispatch` inputs and the current counting logic are therefore untested as written.
+Re-run it once after merge to confirm.
