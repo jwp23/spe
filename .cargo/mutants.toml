@@ -25,6 +25,17 @@ exclude_re = [
     # with a nonzero post-table italic angle but non-italic fsSelection.
     '^src/fonts\.rs:\d+:\d+: replace \|\| with && in extract_font_descriptor$',
 
+    # src/fonts.rs default_font: default_font returns self.fonts[0].id. FontId
+    # derives Default, so Default::default() is FontId(0). fonts is a private
+    # Vec whose only constructor is FontRegistry::new(), which seeds it from
+    # standard_14_fonts() (first entry id: FontId(0)); add_entry only appends
+    # with strictly increasing ids and never touches index 0. Every reachable
+    # registry therefore has fonts[0].id == FontId(0), so the original and the
+    # mutant return the same value on every input — equivalence by
+    # construction, not difficulty. default_font is not dead code (it is the
+    # semantic "first registered font"), so deletion is not an option.
+    '^src/fonts\.rs:\d+:\d+: replace FontRegistry::default_font -> FontId with Default::default\(\)$',
+
     # src/pdf/writer.rs MAX_FONT_FILE_SIZE (`const ... = 50 * 1024 * 1024;`):
     # this line has two `*` operators, so `* -> +` is generated twice. The
     # excluded one is the first (inner) `*`: mutating it yields
