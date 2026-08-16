@@ -1,0 +1,240 @@
+name: Mutation testing (PR gate)
+
+# A separate workflow file, not a job in ci.yml: this keeps the gate
+# structurally parallel to ci.yml's jobs rather than sequenced after them
+# (docs/designs/mutation-testing.md, "Layer 1 — PR gate").
+#
+# Deliberately no workflow-level `paths:` filter. A required check that a
+# `paths:` filter excludes never runs at all, so GitHub reports no status for
+# it and the PR is blocked on a permanently "pending" check. Instead, an
+# in-job guard step (below) exits quickly when nothing in scope changed, and
+# the downstream job's `if:` makes it report "skipped" rather than never
+# running — skipped satisfies a required check.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+env:
+  # Pinned to the version the 2026-08-14 spike measured
+  # (docs/spikes/2026-08-14-cargo-mutants/results.md) and the local toolchain
+  # runs against, so the PR gate's mutant counts and timing stay comparable
+  # to that baseline instead of drifting with upstream cargo-mutants releases.
+  CARGO_MUTANTS_VERSION: "27.1.0"
+
+jobs:
+  # Determines whether the PR's diff touches mutation-testing scope and, if
+  # so, how many mutants are in play so the mutate job below can decide
+  # whether to shard.
+  scope:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      in-scope: ${{ steps.guard.outputs.in-scope }}
+      base-sha: ${{ steps.guard.outputs.base-sha }}
+      shards: ${{ steps.plan.outputs.shards }}
+      shard-matrix: ${{ steps.plan.outputs.shard-matrix }}
+    steps:
+      # fetch-depth: 0 so the merge base of the PR's base branch and HEAD is
+      # available locally for the diff below (a shallow clone only has HEAD).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Guard - is anything in mutation-testing scope changed?
+        id: guard
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "base-sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
+
+          CHANGED_RS=$(git diff --name-only "${BASE_SHA}...HEAD" -- '*.rs' || true)
+
+          if [ -z "$CHANGED_RS" ]; then
+            echo "No .rs files changed against ${BASE_SHA} — nothing in mutation-testing scope."
+            echo "in-scope=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Read the excluded paths from .cargo/mutants.toml itself rather
+          # than duplicating them here — the design's enforcement scope is
+          # defined once, negatively, and every layer reads the same config
+          # (docs/designs/mutation-testing.md, "Enforcement scope").
+          #
+          # This is a purpose-built line scanner, not a TOML parser. It
+          # assumes exclude_globs is a bracketed array with one
+          # double-quoted glob per line, e.g.:
+          #   exclude_globs = [
+          #       "src/main.rs",
+          #       "src/app/**",
+          #   ]
+          # If that shape changes (single line, single quotes, a different
+          # key order), this scanner needs updating alongside it.
+          EXCLUDE_GLOBS=$(awk '/^exclude_globs[[:space:]]*=[[:space:]]*\[/{flag=1; next} /^\]/{flag=0} flag' .cargo/mutants.toml | sed -E 's/^[[:space:]]*"(.*)",?[[:space:]]*$/\1/')
+
+          if [ -z "$EXCLUDE_GLOBS" ]; then
+            # Fail loudly rather than guessing. Treating a parse failure as
+            # "nothing excluded" would silently run mutation testing over
+            # the whole crate (very slow, but not wrong); treating it as
+            # "everything excluded" would silently stop enforcing the gate
+            # entirely. The second failure mode is the dangerous one — it
+            # can't be told apart from a legitimately out-of-scope PR — so
+            # this refuses to guess in either direction and fails the job.
+            echo "::error::Failed to parse exclude_globs from .cargo/mutants.toml — refusing to guess mutation-testing scope." >&2
+            exit 1
+          fi
+
+          is_excluded() {
+            local f="$1"
+            local pattern
+            while IFS= read -r pattern; do
+              [ -z "$pattern" ] && continue
+              # bash case matching (not filesystem globbing) treats `*` as
+              # matching any string including `/`, so "src/app/**" behaves
+              # the same as "src/app/*" here and correctly covers nested
+              # paths like src/app/sub/deep.rs.
+              case "$f" in
+                $pattern) return 0 ;;
+              esac
+            done <<< "$EXCLUDE_GLOBS"
+            return 1
+          }
+
+          IN_SCOPE=""
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if ! is_excluded "$f"; then
+              IN_SCOPE="yes"
+              echo "In scope: $f"
+            fi
+          done <<< "$CHANGED_RS"
+
+          if [ -z "$IN_SCOPE" ]; then
+            echo "All changed .rs files are excluded from mutation-testing scope."
+            echo "in-scope=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "in-scope=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        if: steps.guard.outputs.in-scope == 'true'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry and build artifacts
+        if: steps.guard.outputs.in-scope == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install cargo-mutants
+        if: steps.guard.outputs.in-scope == 'true'
+        run: cargo install cargo-mutants --version "$CARGO_MUTANTS_VERSION" --locked
+
+      - name: Plan shards from the in-diff mutant count
+        id: plan
+        if: steps.guard.outputs.in-scope == 'true'
+        env:
+          BASE_SHA: ${{ steps.guard.outputs.base-sha }}
+        run: |
+          set -euo pipefail
+
+          git diff "${BASE_SHA}...HEAD" > diff.patch
+
+          # --list is free (docs/spikes/2026-08-14-cargo-mutants/results.md)
+          # and applies .cargo/mutants.toml's exclude_globs/exclude_re
+          # itself, so this count already reflects the enforced scope.
+          COUNT=$(cargo mutants --list --in-diff diff.patch | wc -l)
+          echo "In-diff mutant count: $COUNT"
+
+          # A handful of mutants (the common case per the design) runs in
+          # minutes on a single hosted runner; split into parallel shards
+          # once the count gets large enough that a single job would be the
+          # slow part of the PR's CI run.
+          if [ "$COUNT" -gt 25 ]; then
+            SHARDS=4
+          else
+            SHARDS=1
+          fi
+
+          echo "shards=$SHARDS" >> "$GITHUB_OUTPUT"
+          MATRIX=$(seq 1 "$SHARDS" | jq -R . | jq -sc .)
+          echo "shard-matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  mutate:
+    needs: scope
+    if: needs.scope.outputs.in-scope == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.scope.outputs.shard-matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # --include-ignored (below) pulls in the #[ignore]d tests that exercise
+      # these system utilities, so the mutation run needs them installed the
+      # same way ci.yml's check job does.
+      - name: Install system utilities
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils fontconfig
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --version "$CARGO_MUTANTS_VERSION" --locked
+
+      - name: Run cargo-mutants over the PR diff
+        env:
+          BASE_SHA: ${{ needs.scope.outputs.base-sha }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ needs.scope.outputs.shards }}
+          # cargo-mutants copies the source tree plus a private target/ per
+          # job; on a tmpfs /tmp a parallel run eats RAM-backed storage
+          # toward OOM (spike finding). runner.temp is real disk on
+          # GitHub-hosted runners.
+          TMPDIR: ${{ runner.temp }}/cargo-mutants-tmp
+        run: |
+          set -euo pipefail
+          mkdir -p "$TMPDIR"
+
+          git diff "${BASE_SHA}...HEAD" > diff.patch
+
+          cargo mutants \
+            --in-diff diff.patch \
+            -j 2 \
+            --timeout-multiplier 6 \
+            --shard "${SHARD}/${SHARDS}" \
+            -o "${{ runner.temp }}/mutants-out-${{ matrix.shard }}" \
+            -- -- --include-ignored
+
+      - name: On failure - what to do about a surviving mutant
+        if: failure()
+        run: |
+          cat <<'EOF'
+          One or more mutants survived (see MISSED entries above).
+
+          For each survivor:
+            - add a test that kills it, or
+            - if it is genuinely equivalent or impractical to kill, document
+              it in .cargo/mutants.toml's exclude_re with a justification
+              (see docs/designs/mutation-testing.md, "Equivalence policy").
+              An exclusion is a reviewed code change on this PR, not a
+              silent skip.
+          EOF
