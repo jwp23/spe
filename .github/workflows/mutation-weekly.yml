@@ -313,6 +313,8 @@ jobs:
       # print a misleading message.
       - name: Fail the job if any shard did not complete
         if: always() && steps.merge.outcome == 'success' && steps.merge.outputs.crashed-count != '0'
+        env:
+          CRASHED_COUNT: ${{ steps.merge.outputs.crashed-count }}
         run: |
-          echo "::error::${{ steps.merge.outputs.crashed-count }} of $SHARD_COUNT shard(s) did not run to completion - see the job summary for which. The merged survivor list above is incomplete." >&2
+          echo "::error::$CRASHED_COUNT of $SHARD_COUNT shard(s) did not run to completion - see the job summary for which. The merged survivor list above is incomplete." >&2
           exit 1
