@@ -260,9 +260,13 @@ disproved. Correcting that text — without implying the CI conclusion flips —
 measurement above. Inputs: `repeats` for the timing loop, `sabotage` to re-run the
 proof-of-not-skipping check — which must go **red**. Delete the file once spe-qvm lands.
 
-It is not byte-for-byte the file that produced the numbers, and should not be described as
-such. The spike iterated behind a temporary push trigger on a throwaway branch, so every run
-cited here took the `inputs`-unset path; the sabotage evidence in particular came from a
-revision that forced the step on and still counted passes from a merged log. The
-`workflow_dispatch` inputs and the current counting logic are therefore untested as written.
-Re-run it once after merge to confirm.
+One caveat on provenance. The spike iterated behind a temporary push trigger on a throwaway
+branch, so every run cited above took the `inputs`-unset path, and the sabotage evidence in
+particular came from an earlier revision that forced the step on and still counted passes from
+a merged log. The file as committed was re-validated end to end by run `31968366276` — same
+results, 5/5 three times plus three clean combined runs — so the current counting and
+failure-detection logic is exercised, not assumed.
+
+What remains untested is the `workflow_dispatch` entry point itself, which cannot be dispatched
+until the file is on the default branch. Re-run it once after merge, including with
+`sabotage=true`, which must go **red**.

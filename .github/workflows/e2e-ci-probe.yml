@@ -13,8 +13,6 @@
 name: E2E CI probe (spike)
 
 on:
-  push:
-    branches: [docs/e2e-in-ci-spike]
   workflow_dispatch:
     inputs:
       repeats:
