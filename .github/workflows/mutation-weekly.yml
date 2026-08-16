@@ -76,9 +76,11 @@ jobs:
       - name: Install cargo-mutants
         run: cargo install cargo-mutants --version "$CARGO_MUTANTS_VERSION" --locked
 
-      # No -e: the script must keep running after cargo mutants exits
-      # non-zero so it can record the exit code before deciding, itself,
-      # whether the step should fail.
+      # GitHub's default `run:` shell is `bash -e {0}`, so a bare non-zero
+      # exit from cargo mutants would abort the step before the exit code
+      # could be recorded; `|| code=$?` keeps the script running so it can
+      # record the code before deciding, itself, whether the step should
+      # fail.
       #
       # Layer 1 (mutation-pr-gate.yml) fails on any survivor - there a
       # survivor blocks a specific PR. Layer 2 is the opposite: it exists to
@@ -113,13 +115,13 @@ jobs:
           # -j2: the spike found hosted 4-core runners need -j1-j2 per shard
           # to avoid the oversubscription that produced phantom timeouts on
           # a 20-core machine at -j12. Same value mutation-pr-gate.yml uses.
+          code=0
           cargo mutants \
             -j 2 \
             --timeout-multiplier 6 \
             --shard "${SHARD}/${SHARD_COUNT}" \
             -o "$OUT_DIR" \
-            -- -- --include-ignored
-          code=$?
+            -- -- --include-ignored || code=$?
 
           echo "exit-code=$code" >> "$GITHUB_OUTPUT"
 
