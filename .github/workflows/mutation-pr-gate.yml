@@ -241,6 +241,7 @@ jobs:
         run: cargo install cargo-mutants --version "$CARGO_MUTANTS_VERSION" --locked
 
       - name: Run cargo-mutants over the PR diff
+        id: run
         env:
           BASE_SHA: ${{ needs.scope.outputs.base-sha }}
           SHARD: ${{ matrix.shard }}
@@ -250,22 +251,24 @@ jobs:
           # toward OOM (spike finding). runner.temp is real disk on
           # GitHub-hosted runners.
           TMPDIR: ${{ runner.temp }}/cargo-mutants-tmp
+          DIFF_PATCH: ${{ runner.temp }}/diff.patch
+          MUTANTS_OUT: ${{ runner.temp }}/mutants-out-${{ matrix.shard }}
         run: |
           set -euo pipefail
           mkdir -p "$TMPDIR"
 
-          git diff "${BASE_SHA}...HEAD" > diff.patch
+          git diff "${BASE_SHA}...HEAD" > "$DIFF_PATCH"
 
           cargo mutants \
-            --in-diff diff.patch \
+            --in-diff "$DIFF_PATCH" \
             -j 2 \
             --timeout-multiplier 6 \
             --shard "${SHARD}/${SHARDS}" \
-            -o "${{ runner.temp }}/mutants-out-${{ matrix.shard }}" \
+            -o "$MUTANTS_OUT" \
             -- -- --include-ignored
 
       - name: On failure - what to do about a surviving mutant
-        if: failure()
+        if: failure() && steps.run.outcome == 'failure'
         run: |
           cat <<'EOF'
           One or more mutants survived (see MISSED entries above).
