@@ -267,6 +267,8 @@ a merged log. The file as committed was re-validated end to end by run `31968366
 results, 5/5 three times plus three clean combined runs — so the current counting and
 failure-detection logic is exercised, not assumed.
 
-What remains untested is the `workflow_dispatch` entry point itself, which cannot be dispatched
-until the file is on the default branch. Re-run it once after merge, including with
-`sabotage=true`, which must go **red**.
+The `workflow_dispatch` entry point could not be dispatched until the file reached the default
+branch, so it was verified immediately after merge. Both paths behave: run `31970815897`
+(`repeats=2`) honoured the input and passed 5/5 twice plus three clean combined runs, and run
+`31971021827` (`sabotage=true`) went **red** as required, with the assertion landing at line 422
+— after the `cage_available()` guard. Nothing in this document is now unexercised.
