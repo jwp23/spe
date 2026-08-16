@@ -1,0 +1,5 @@
+# exclude_globs with a mid-path wildcard the filter's matcher cannot
+# faithfully honour against globset semantics.
+exclude_globs = [
+    "src/*.rs",
+]
