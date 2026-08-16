@@ -637,6 +637,36 @@ fn bind_listener(path: &std::path::Path) -> std::io::Result<tokio::net::UnixList
     Ok(listener)
 }
 
+/// Serve connections from `listener`, one at a time in accept order, until the
+/// app stops answering.
+///
+/// Only [`handle_connection`] reporting the app channel closed ends the loop: a
+/// client that hangs up, or an accept that fails, leaves the next client able to
+/// connect, so one finished connection cannot end automation for the session.
+///
+/// Split out from [`ipc_stream`] so the loop can be driven over a listener on a
+/// test socket rather than the real one.
+async fn serve_connections(
+    listener: tokio::net::UnixListener,
+    output: &mut iced::futures::channel::mpsc::Sender<IpcEvent>,
+    resp_rx: &mut tokio::sync::mpsc::Receiver<IpcResponse>,
+    response_timeout: Duration,
+) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                if !handle_connection(stream, output, resp_rx, response_timeout).await {
+                    return;
+                }
+            }
+            Err(e) => {
+                eprintln!("IPC: accept error: {e}");
+                continue;
+            }
+        }
+    }
+}
+
 fn ipc_stream() -> impl iced::futures::Stream<Item = IpcEvent> {
     iced::stream::channel(32, async |mut output| {
         use iced::futures::SinkExt;
@@ -669,20 +699,7 @@ fn ipc_stream() -> impl iced::futures::Stream<Item = IpcEvent> {
         let sender = ResponseSender(Arc::new(tokio::sync::Mutex::new(resp_tx)));
         let _ = output.send(IpcEvent::Ready(sender)).await;
 
-        loop {
-            match listener.accept().await {
-                Ok((stream, _)) => {
-                    if !handle_connection(stream, &mut output, &mut resp_rx, RESPONSE_TIMEOUT).await
-                    {
-                        return;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("IPC: accept error: {e}");
-                    continue;
-                }
-            }
-        }
+        serve_connections(listener, &mut output, &mut resp_rx, RESPONSE_TIMEOUT).await;
     })
 }
 
@@ -1925,6 +1942,7 @@ mod tests {
         use tokio::io::AsyncReadExt;
         let mut buf = vec![0u8; 256];
         let n = client.read(&mut buf).await.unwrap();
+        assert!(n > 0, "the connection closed without sending a reply");
         serde_json::from_slice(&buf[..n]).unwrap()
     }
 
@@ -2147,6 +2165,197 @@ mod tests {
                 reply.get("warning").is_none(),
                 "a response with no warning must not include the key: {reply}"
             );
+        });
+    }
+
+    // --- connection lifetime (async) ---
+    //
+    // `handle_connection`'s bool answers one question for the accept loop: is
+    // the app still there? Answering it wrong either abandons every later
+    // command or spins on a dead channel, and a client that hangs up looks
+    // exactly like an app that shut down unless the two are told apart here.
+
+    /// Answer every event the subscription emits with a plain `ok: true`, the
+    /// way the app answers a command it accepted.
+    async fn answer_every_command(
+        mut events: iced::futures::channel::mpsc::Receiver<IpcEvent>,
+        responses: tokio::sync::mpsc::Sender<IpcResponse>,
+    ) {
+        use iced::futures::StreamExt;
+        while events.next().await.is_some() {
+            let delivered = responses
+                .send(IpcResponse {
+                    ok: true,
+                    error: None,
+                    warning: None,
+                })
+                .await;
+            if delivered.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Drive `handle_connection` over a socket pair while a client sends
+    /// `commands`, reading one reply for each, and then hangs up. Returns what
+    /// the connection reported about the app channel, and the replies the
+    /// client received.
+    async fn connection_exchange(commands: &[&str]) -> (bool, Vec<serde_json::Value>) {
+        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (mut output, events) = iced::futures::channel::mpsc::channel::<IpcEvent>(32);
+        let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel::<IpcResponse>(1);
+        tokio::spawn(answer_every_command(events, resp_tx));
+
+        let lines: Vec<String> = commands
+            .iter()
+            .map(|command| format!("{command}\n"))
+            .collect();
+        let client_side = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut replies = Vec::new();
+            for line in lines {
+                client
+                    .write_all(line.as_bytes())
+                    .await
+                    .expect("the connection must accept a command");
+                replies.push(read_reply(&mut client).await);
+            }
+            replies
+        });
+
+        let app_alive = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            handle_connection(
+                server,
+                &mut output,
+                &mut resp_rx,
+                std::time::Duration::from_secs(5),
+            ),
+        )
+        .await
+        .expect("handle_connection must return once the client hangs up");
+
+        (
+            app_alive,
+            client_side.await.expect("the client must not panic"),
+        )
+    }
+
+    #[test]
+    fn a_connection_the_client_closes_leaves_the_app_channel_live() {
+        run_async(async {
+            let (app_alive, replies) = connection_exchange(&[r#"{"cmd":"deselect"}"#]).await;
+            assert!(
+                app_alive,
+                "a client hanging up is not the app going away; reporting it as such \
+                 stops the accept loop and abandons every later command"
+            );
+            assert_eq!(replies.len(), 1);
+            assert_eq!(replies[0]["ok"], true);
+        });
+    }
+
+    #[test]
+    fn a_connection_answers_every_command_it_is_sent() {
+        run_async(async {
+            let (app_alive, replies) =
+                connection_exchange(&[r#"{"cmd":"deselect"}"#, r#"{"cmd":"zoom_in"}"#]).await;
+            assert!(app_alive);
+            assert_eq!(
+                replies.len(),
+                2,
+                "a connection must keep reading commands, not stop after the first"
+            );
+            assert!(
+                replies.iter().all(|reply| reply["ok"] == true),
+                "both commands must be answered ok: {replies:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_connection_reports_the_app_gone_when_the_response_channel_closes() {
+        run_async(async {
+            use tokio::io::AsyncWriteExt;
+            let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+            let (mut output, _events) = iced::futures::channel::mpsc::channel::<IpcEvent>(32);
+            // A closed response channel is what a shut-down app looks like from
+            // here: the command is read, but no answer can ever arrive.
+            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel::<IpcResponse>(1);
+            drop(resp_tx);
+
+            client
+                .write_all(b"{\"cmd\":\"deselect\"}\n")
+                .await
+                .expect("the connection must accept a command");
+
+            let app_alive = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                handle_connection(
+                    server,
+                    &mut output,
+                    &mut resp_rx,
+                    std::time::Duration::from_secs(5),
+                ),
+            )
+            .await
+            .expect("a closed app channel must end the connection, not wait out the timeout");
+
+            assert!(
+                !app_alive,
+                "the client is still connected, but with the app gone the accept loop \
+                 must be told to stop rather than serve commands nothing can answer"
+            );
+        });
+    }
+
+    /// Connect to the IPC socket at `path`, send one command, and return the
+    /// reply.
+    async fn command_on_a_new_connection(path: &Path, command: &str) -> serde_json::Value {
+        use tokio::io::AsyncWriteExt;
+        let mut client = tokio::net::UnixStream::connect(path)
+            .await
+            .expect("the accept loop must still be listening");
+        client
+            .write_all(format!("{command}\n").as_bytes())
+            .await
+            .expect("the connection must accept a command");
+        read_reply(&mut client).await
+    }
+
+    #[test]
+    fn the_accept_loop_serves_another_connection_after_one_ends() {
+        run_async(async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("spe-ipc.sock");
+            let listener = bind_listener(&path).expect("bind should succeed in a writable dir");
+            let (mut output, events) = iced::futures::channel::mpsc::channel::<IpcEvent>(32);
+            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel::<IpcResponse>(1);
+            tokio::spawn(answer_every_command(events, resp_tx));
+            tokio::spawn(async move {
+                serve_connections(
+                    listener,
+                    &mut output,
+                    &mut resp_rx,
+                    std::time::Duration::from_secs(5),
+                )
+                .await;
+            });
+
+            // Each script an IPC client runs is its own connection, so serving
+            // more than one of them is the whole point of the loop.
+            for connection in 1..=2 {
+                let reply = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    command_on_a_new_connection(&path, r#"{"cmd":"deselect"}"#),
+                )
+                .await
+                .unwrap_or_else(|_| panic!("connection {connection} was never answered"));
+                assert_eq!(
+                    reply["ok"], true,
+                    "connection {connection} was not served: {reply}"
+                );
+            }
         });
     }
 }
