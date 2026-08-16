@@ -42,6 +42,11 @@ kills it or document it as equivalent (see Equivalence policy). If a large backe
 PR makes the job slow, `--shard` splits it across parallel jobs; free on a public
 repo.
 
+Wall clock is a design constraint: the job runs in parallel with the other CI
+jobs, never after them, and uses build caching to warm the baseline build.
+(cargo-mutants copies a private `target/` per job, so caching mainly speeds the
+baseline; measure what it buys rather than assuming.)
+
 ## Layer 2 — weekly full-scope run
 
 A scheduled workflow (weekly) mutates the whole in-scope crate — every non-excluded
@@ -79,11 +84,14 @@ documenting, not fixing.
 
 ## Layer 3 — write-time local run
 
-Before a branch that touches in-scope files is pushed, the finishing-a-branch
-workflow runs cargo-mutants locally, scoped to the changed in-scope files
-(`-f <files>`). On a many-core dev machine this takes minutes and catches
-survivors before CI ever sees them. This layer is process, not machine
-enforcement; Layers 1 and 2 back it up.
+Before a branch that touches in-scope files is pushed, cargo-mutants runs
+locally, scoped to the changed in-scope files (`-f <files>`). On a many-core dev
+machine this takes minutes and catches survivors before CI ever sees them. This
+layer is process, not machine enforcement; Layers 1 and 2 back it up.
+
+The requirement lives in this project's own tooling (a project-local skill and
+project instructions), not in any shared cross-project workflow: mutation
+testing is a per-project adoption, and other projects may use different tools.
 
 ## Equivalence policy
 
