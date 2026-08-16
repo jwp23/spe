@@ -56,6 +56,14 @@ system utilities installed; anything needing `pdftoppm` or `fc-list` is an integ
 If your change affects what the canvas draws — overlay rendering, coordinate math, visual state
 — verify it visually before submitting. See [docs/screenshot-tool.md](docs/screenshot-tool.md).
 
+## Mutation Testing
+
+Before pushing, run cargo-mutants against any Rust file your branch changed that's in
+[scope](.cargo/mutants.toml). It catches tests that pass but don't actually exercise the
+behaviour they claim to cover; a surviving mutant blocks the push the same way a failing test
+would. See [AGENTS.md](AGENTS.md#mutation-testing) for the exact command, and
+[docs/designs/mutation-testing.md](docs/designs/mutation-testing.md) for why.
+
 ## Debugging
 
 Find the root cause before you write the fix. A change that makes a symptom disappear without

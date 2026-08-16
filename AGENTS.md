@@ -147,6 +147,47 @@ three regardless. Formatting, lint, and test failures always block the commit.
 
 NEVER skip, evade, or disable a hook.
 
+## Mutation Testing
+
+Before pushing a branch that touches an in-scope Rust file, run cargo-mutants locally against
+what you changed. This is a process check: Layer 1 (the required PR check) and Layer 2 (the
+weekly full-scope run) back it up, but both run after the push — this is what catches a
+survivor before either of them sees it. Full design: `docs/designs/mutation-testing.md`.
+
+Enforcement scope lives once, negatively, in `.cargo/mutants.toml`'s `exclude_globs`. You do not
+need to check your changed files against it yourself — `-f` respects the config's exclusions
+even when a file is passed explicitly, so an excluded file in your diff costs nothing:
+cargo-mutants finds zero mutants there and moves on.
+
+```sh
+CHANGED_RS=$(git diff --name-only main...HEAD -- '*.rs')
+[ -z "$CHANGED_RS" ] && echo "No changed Rust files." || \
+TMPDIR=~/.cache/cargo-mutants-tmp cargo mutants \
+  $(printf -- '-f %s ' $CHANGED_RS) \
+  -j 8 --timeout-multiplier 6 \
+  -o ~/.cache/cargo-mutants-out \
+  -- -- --include-ignored
+```
+
+`TMPDIR` must be real disk, never tmpfs `/tmp` — cargo-mutants copies the source tree plus a
+private `target/` per job, and a parallel run on tmpfs risks OOM. `-o` writes outside the repo
+(any directory works; `~/.cache/cargo-mutants-out` mirrors the `TMPDIR` convention above) so
+`mutants.out/` never lands in your working tree. `-j8` was the ceiling on a 20-core machine;
+oversubscription produces phantom timeouts, not speed, so tune it down on a smaller machine and
+keep `--timeout-multiplier` at 6 or higher regardless. The doubled `-- --` is deliberate: the
+first is cargo's own separator, the second passes `--include-ignored` to the test binary itself
+— drop it and mutants in system-utility wrapper code are judged against a suite missing their
+`#[ignore]`d tests, and report false misses.
+
+Expect minutes, not seconds: the spike measured 5–15 minutes for a single file
+(`docs/spikes/2026-08-14-cargo-mutants/results.md`). A branch touching several in-scope files
+takes proportionally longer. Never run this over the whole crate locally to check a branch —
+that was ~3 hours in the spike; Layer 2's weekly workflow does that job on hosted runners.
+
+A surviving mutant blocks the push: kill it with a new test, or, if it is genuinely equivalent
+or impractical to kill, exclude it in `.cargo/mutants.toml` with a justification (see
+`docs/designs/mutation-testing.md`, "Equivalence policy").
+
 ## Issue Tracking
 
 Report bugs and propose features as GitHub issues. Work that changes behaviour should trace back
@@ -166,6 +207,8 @@ Read these when the trigger applies, not before:
 - `docs/architecture.md` — navigating the module map, or changing component boundaries
 - `docs/tech-stack-docs.md` — working against a dependency's API
 - `docs/decision-recording.md` — recording a decision
+- `docs/designs/mutation-testing.md` — pushing a branch that touched an in-scope Rust file, or
+  documenting a mutant as equivalent
 - `docs/adr/*.md` — a decision touches an existing ADR
 - `docs/decisions/*.md` — working in an area an existing decision covers
 - `docs/screenshot-tool.md` — verifying UI changes visually

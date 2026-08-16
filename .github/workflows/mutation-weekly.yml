@@ -1,0 +1,316 @@
+name: Mutation testing (weekly full-scope)
+
+# Layer 2 of the mutation-testing SDLC (docs/designs/mutation-testing.md,
+# "Layer 2 - weekly full-scope run"). Unlike mutation-pr-gate.yml's
+# `--in-diff`, this mutates the whole in-scope crate - every file not
+# excluded by .cargo/mutants.toml - which is too slow for a PR gate but
+# catches what a diff-scoped run cannot: cross-file interactions and mutants
+# outside any recent diff. `--shard k/n` splits that work across parallel
+# jobs so each shard fits inside a hosted runner's limits.
+
+on:
+  schedule:
+    # Sunday 03:17 UTC - weekly, offset from semgrep.yml's Sunday 05:23 cron
+    # so the two scheduled workflows don't contend for runners at the same
+    # minute.
+    - cron: '17 3 * * 0'
+  workflow_dispatch: {}
+
+permissions: {}
+
+# Two overlapping runs (the weekly schedule firing while a manual dispatch
+# from the same week is still in flight, or two manual dispatches) would
+# each file/update/close the tracking issue independently, defeating the
+# "exactly one open tracking issue" requirement no matter how careful the
+# summary job's own duplicate check is. `cancel-in-progress: false`: a
+# second run queues behind the first instead of cancelling it - a queued
+# manual dispatch is cheap, but cancelling an in-progress full-scope run
+# throws away hours of already-completed shard work for no benefit.
+concurrency:
+  group: mutation-weekly
+  cancel-in-progress: false
+
+env:
+  # Pinned to the version the 2026-08-14 spike measured
+  # (docs/spikes/2026-08-14-cargo-mutants/results.md) and mutation-pr-gate.yml
+  # runs against, so results stay comparable across both layers instead of
+  # drifting with upstream cargo-mutants releases.
+  CARGO_MUTANTS_VERSION: "27.1.0"
+  # Must match the length of the `mutate` job's `strategy.matrix.shard` list
+  # below (job strategy can't read workflow `env:`, so the count is
+  # duplicated in two places - see the shard-count arithmetic in the task
+  # report for how 20 was chosen).
+  SHARD_COUNT: "20"
+
+jobs:
+  # Sharded full-scope run. `fail-fast: false` so one shard's crash (timeout,
+  # OOM, transient infra failure) doesn't cancel the others - each shard's
+  # result is independent forensic evidence the summary job needs.
+  mutate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # --include-ignored (below) pulls in the #[ignore]d tests that exercise
+      # these system utilities, so the mutation run needs them installed the
+      # same way ci.yml's check job and mutation-pr-gate.yml's mutate job do.
+      - name: Install system utilities
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils fontconfig
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --version "$CARGO_MUTANTS_VERSION" --locked
+
+      # No -e: the script must keep running after cargo mutants exits
+      # non-zero so it can record the exit code before deciding, itself,
+      # whether the step should fail.
+      #
+      # Layer 1 (mutation-pr-gate.yml) fails on any survivor - there a
+      # survivor blocks a specific PR. Layer 2 is the opposite: it exists to
+      # *capture* survivors, so a shard finding them (or a mutant timing
+      # out) is expected, informative data, not a shard failure. With ~335
+      # known survivors in the crate today, treating exit 2 as a step
+      # failure would make this job permanently red and destroy the signal
+      # status.txt exists to carry - "ran and found survivors" vs. "never
+      # ran" would both just be "red". cargo-mutants' own exit-code table
+      # (book/src/exit-codes.md in the 27.1.0 source, matching
+      # src/exit_code.rs): 0 Success, 1 Usage error, 2 FoundProblems
+      # (uncaught mutants), 3 Timeout (a test run timed out), 4 baseline
+      # tests already failing/hanging, 5/6 --in-diff filter errors (not
+      # reachable here - this run never passes --in-diff), 70 internal
+      # error. Only 0/2/3 mean the shard ran to completion; every other code
+      # is genuine infrastructure/config breakage this step should fail on
+      # loudly.
+      - name: Run cargo-mutants over the full in-scope crate
+        id: run
+        env:
+          SHARD: ${{ matrix.shard }}
+          # cargo-mutants copies the source tree plus a private target/ per
+          # job; on a tmpfs /tmp a parallel run eats RAM-backed storage
+          # toward OOM (spike finding). runner.temp is real disk on
+          # GitHub-hosted runners.
+          TMPDIR: ${{ runner.temp }}/cargo-mutants-tmp
+          OUT_DIR: ${{ runner.temp }}/mutants-out-${{ matrix.shard }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$TMPDIR" "$OUT_DIR"
+
+          # -j2: the spike found hosted 4-core runners need -j1-j2 per shard
+          # to avoid the oversubscription that produced phantom timeouts on
+          # a 20-core machine at -j12. Same value mutation-pr-gate.yml uses.
+          cargo mutants \
+            -j 2 \
+            --timeout-multiplier 6 \
+            --shard "${SHARD}/${SHARD_COUNT}" \
+            -o "$OUT_DIR" \
+            -- -- --include-ignored
+          code=$?
+
+          echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+          case "$code" in
+            0|2|3) exit 0 ;;
+            *) exit "$code" ;;
+          esac
+
+      # Runs even when the step above failed or the shard crashed partway
+      # through, so the summary job can tell "this shard found nothing" (a
+      # status.txt recording exit code 0) apart from "this shard never ran to
+      # completion" (any other code, or - if the runner died outright before
+      # this step could run - the whole artifact missing).
+      - name: Record shard completion status
+        if: always()
+        env:
+          SHARD: ${{ matrix.shard }}
+          # steps.run.outputs.exit-code is unset if the run step never
+          # reached its own `echo ... >> $GITHUB_OUTPUT` line (e.g. the
+          # runner was killed outright); default to a sentinel the summary
+          # job recognises as "unknown, treat as crashed".
+          EXIT_CODE: ${{ steps.run.outputs.exit-code || 'unknown' }}
+          OUT_DIR: ${{ runner.temp }}/mutants-out-${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT_DIR/mutants.out"
+          {
+            echo "shard=$SHARD"
+            echo "exit_code=$EXIT_CODE"
+          } > "$OUT_DIR/mutants.out/status.txt"
+
+      # The forensic record (docs/designs/mutation-testing.md, "Layer 2"
+      # capture pipeline step 1). Uploaded even on failure/crash: a partially
+      # written mutants.out (and always status.txt) is still evidence.
+      - name: Upload mutants.out
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v6.0.0
+        with:
+          name: mutants-out-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mutants-out-${{ matrix.shard }}/mutants.out
+          if-no-files-found: error
+
+  # Merges the shards' missed.txt files, computes the headline kill rate, and
+  # files/updates a single GitHub tracking issue when survivors exist
+  # (docs/designs/mutation-testing.md, "Layer 2" capture pipeline steps 2-5).
+  # `if: always()` and `needs: mutate` without a result check: this job must
+  # still run and report even when one or more shards crashed, since a crash
+  # must not be silently read as "no survivors found".
+  summary:
+    needs: mutate
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Only job that touches GitHub issues; every other job/step in this
+      # workflow needs at most `contents: read`.
+      issues: write
+    steps:
+      # Needed because the merge/compute step below runs
+      # scripts/mutation-weekly-summary.sh, a file that only exists once the
+      # repo is checked out. Without this, that step (and everything after
+      # it - the kill rate, the run summary, the tracking issue) never runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: mutants-out-*
+          path: shards
+          merge-multiple: false
+
+      - name: Merge shard results, compute kill rate, render summary
+        id: merge
+        run: scripts/mutation-weekly-summary.sh
+        env:
+          SHARDS_DIR: shards
+          MERGED_MISSED: ${{ runner.temp }}/merged-missed.txt
+          ISSUE_BODY: ${{ runner.temp }}/issue-body.md
+
+      # A second line of defense behind the workflow-level `concurrency:`
+      # group above, which prevents two runs of this workflow from racing to
+      # each create their own tracking issue. This step instead guards
+      # against any other way more than one open `mutation-survivors` issue
+      # could exist (a hand-created duplicate, or one left over from before
+      # this check existed). `.[0]` on an ambiguous list would silently pick
+      # one and leave the rest to rot forever - the opposite of "exactly one
+      # open tracking issue". Reconciling automatically (e.g. closing the
+      # "extra" ones) risks discarding a survivor snapshot nobody has looked
+      # at yet, so this fails loudly and leaves reconciliation to a human,
+      # consistent with this design's "triage is manual" stance elsewhere
+      # (docs/designs/mutation-testing.md, "Layer 2").
+      - name: Find the existing survivor tracking issue, if any
+        id: find-issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # gh infers the target repo from a checked-out git repo's remote;
+          # by default that would be this workflow's own repo, but being
+          # explicit here matches the other gh-using steps and survives a
+          # future reordering of the checkout step.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Label, not title text, is the durable marker for "the open
+          # mutation-survivors tracking issue": title text drifts (survivor
+          # counts change every run) and gh's title search is a fuzzy text
+          # match, not an exact key. `--force` makes label creation
+          # idempotent so this doesn't fail on a fresh repo or after someone
+          # deletes the label by hand.
+          gh label create mutation-survivors \
+            --color b60205 \
+            --description "Open weekly mutation-testing survivor report" \
+            --force
+
+          # `mapfile -t numbers < <(gh issue list ...)` would not do: a
+          # process substitution runs in an unwaited background subshell, so
+          # mapfile never sees gh's exit status - a failing `gh` (rate
+          # limit, auth hiccup, network blip) would silently read as "zero
+          # issues found", and the step below would then create a *second*
+          # tracking issue instead of finding the existing one. Capturing to
+          # a variable first (`numbers_raw=$(...)`) makes the assignment's
+          # own exit status equal gh's, so `if !` can catch it.
+          if ! numbers_raw=$(gh issue list --state open --label mutation-survivors \
+            --json number --jq '.[].number'); then
+            echo "::error::gh issue list failed while checking for an existing mutation-survivors tracking issue." >&2
+            exit 1
+          fi
+
+          if [ -z "$numbers_raw" ]; then
+            numbers=()
+          else
+            mapfile -t numbers <<< "$numbers_raw"
+          fi
+
+          if [ "${#numbers[@]}" -gt 1 ]; then
+            echo "::error::Found ${#numbers[@]} open issues labeled mutation-survivors (expected at most 1): ${numbers[*]}. Reconcile manually before the next run." >&2
+            exit 1
+          fi
+
+          echo "existing-issue=${numbers[0]:-}" >> "$GITHUB_OUTPUT"
+
+      - name: File or update the survivor tracking issue
+        if: steps.merge.outputs.missed-count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_BODY: ${{ runner.temp }}/issue-body.md
+          EXISTING_ISSUE: ${{ steps.find-issue.outputs.existing-issue }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$EXISTING_ISSUE" ]; then
+            gh issue edit "$EXISTING_ISSUE" --body-file "$ISSUE_BODY"
+            gh issue comment "$EXISTING_ISSUE" \
+              --body "Updated by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          else
+            gh issue create \
+              --title "Weekly mutation testing: surviving mutants" \
+              --label mutation-survivors \
+              --body-file "$ISSUE_BODY"
+          fi
+
+      - name: Close the survivor tracking issue if the run came back clean
+        if: steps.merge.outputs.missed-count == '0' && steps.merge.outputs.crashed-count == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EXISTING_ISSUE: ${{ steps.find-issue.outputs.existing-issue }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$EXISTING_ISSUE" ]; then
+            gh issue comment "$EXISTING_ISSUE" \
+              --body "This week's full-scope run found no survivors. Closing. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            gh issue close "$EXISTING_ISSUE"
+          fi
+
+      # always(): this signal must surface even if an earlier step in this
+      # job (e.g. issue filing, on a transient GitHub API error) failed -
+      # a crashed shard must not go unreported just because something else
+      # in the same job also went wrong. `steps.merge.outcome == 'success'`:
+      # without it, a `merge` step that itself failed or never ran leaves
+      # `crashed-count` empty, which also satisfies `!= '0'` - this step
+      # would then fire with a blank count ("::error:: of 20 shard(s)...").
+      # The job is already red from `merge`'s own failure in that case, so
+      # this step has nothing true to add and should stay quiet rather than
+      # print a misleading message.
+      - name: Fail the job if any shard did not complete
+        if: always() && steps.merge.outcome == 'success' && steps.merge.outputs.crashed-count != '0'
+        run: |
+          echo "::error::${{ steps.merge.outputs.crashed-count }} of $SHARD_COUNT shard(s) did not run to completion - see the job summary for which. The merged survivor list above is incomplete." >&2
+          exit 1

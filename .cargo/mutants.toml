@@ -1,0 +1,44 @@
+# Mutation testing scope and exclusions for cargo-mutants.
+#
+# This is the single, shared definition of enforcement scope: every layer of the
+# mutation-testing pipeline (PR gate, weekly full-scope run, write-time local run)
+# reads this file, so exclusions live here once, never re-declared downstream.
+# See docs/designs/mutation-testing.md ("Enforcement scope", "Equivalence policy").
+
+# iced view/handler plumbing, where a mutation-killing test costs more than it
+# protects.
+exclude_globs = [
+    "src/main.rs",
+    "src/app/**",
+    "src/ui/**",
+]
+
+exclude_re = [
+    # src/fonts.rs descriptor_flags: flag bits are disjoint, so XOR is
+    # equivalent to OR here. Line:col not pinned (unlike writer.rs below) since
+    # the operator + replacement + function name already identify this mutant
+    # uniquely, and a pin would break silently on an unrelated edit that shifts
+    # the line.
+    '^src/fonts\.rs:\d+:\d+: replace \| with \^ in descriptor_flags$',
+
+    # src/fonts.rs extract_font_descriptor: killing this needs a font fixture
+    # with a nonzero post-table italic angle but non-italic fsSelection.
+    '^src/fonts\.rs:\d+:\d+: replace \|\| with && in extract_font_descriptor$',
+
+    # src/pdf/writer.rs MAX_FONT_FILE_SIZE (`const ... = 50 * 1024 * 1024;`):
+    # this line has two `*` operators, so `* -> +` is generated twice. The
+    # excluded one is the first (inner) `*`: mutating it yields
+    # (50+1024)*1024 ~= 1.05 MB, which is the mutant the design's "needs a
+    # >1 MB font fixture" justification actually describes. The column is
+    # pinned (`\d+:42`, line left floating) because it's what distinguishes
+    # the two `*` mutants on the same line — the second (outer) `*` yields
+    # ~51 KB and is deliberately left in scope, along with both `* -> /`
+    # variants on this line. Confirmed those three siblings are not a known-red
+    # gate: `cargo mutants --re 'src/pdf/writer\.rs:220:'` -> 5 mutants, 4
+    # caught, 1 unviable, 0 missed (measured 2026-08-15).
+    '^src/pdf/writer\.rs:\d+:42: replace \* with \+ in embedded_font_program_fingerprint$',
+
+    # src/pdf/renderer.rs probe_pdftoppm: environment-equivalent on any
+    # machine with pdftoppm installed.
+    '^src/pdf/renderer\.rs:\d+:\d+: replace probe_pdftoppm -> Result<\(\), RendererError> with Ok\(\(\)\)$',
+]
