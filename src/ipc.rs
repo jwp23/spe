@@ -644,8 +644,8 @@ fn bind_listener(path: &std::path::Path) -> std::io::Result<tokio::net::UnixList
 /// client that hangs up, or an accept that fails, leaves the next client able to
 /// connect, so one finished connection cannot end automation for the session.
 ///
-/// Split out from [`ipc_stream`] so the loop can be driven over a listener on a
-/// test socket rather than the real one.
+/// Tests drive this loop directly over a listener bound to a test socket,
+/// independent of the real one [`ipc_stream`] uses.
 async fn serve_connections(
     listener: tokio::net::UnixListener,
     output: &mut iced::futures::channel::mpsc::Sender<IpcEvent>,
@@ -2366,6 +2366,58 @@ mod tests {
                     "connection {connection} was not served: {reply}"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn the_accept_loop_stops_once_the_app_response_channel_closes() {
+        run_async(async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("spe-ipc.sock");
+            let listener = bind_listener(&path).expect("bind should succeed in a writable dir");
+            let (mut output, _events) = iced::futures::channel::mpsc::channel::<IpcEvent>(32);
+            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel::<IpcResponse>(1);
+            // Dropped immediately: no command sent through this connection can
+            // ever be answered, which is what a shut-down app looks like.
+            drop(resp_tx);
+
+            let serve = tokio::spawn(async move {
+                serve_connections(
+                    listener,
+                    &mut output,
+                    &mut resp_rx,
+                    std::time::Duration::from_secs(5),
+                )
+                .await;
+            });
+
+            let mut client = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::net::UnixStream::connect(&path),
+            )
+            .await
+            .expect("the accept loop must still be listening")
+            .expect("connect should succeed against a live listener");
+            client
+                .write_all(b"{\"cmd\":\"deselect\"}\n")
+                .await
+                .expect("the connection must accept a command");
+            let mut buf = [0u8; 1];
+            let n = tokio::time::timeout(std::time::Duration::from_secs(5), client.read(&mut buf))
+                .await
+                .expect("the connection must close rather than hang once the app is gone")
+                .expect("reading the closed connection must not error");
+            assert_eq!(
+                n, 0,
+                "no reply can be sent once the app response channel is closed"
+            );
+
+            tokio::time::timeout(std::time::Duration::from_secs(5), serve)
+                .await
+                .expect("a closed app channel must end the accept loop, not leave it running")
+                .expect("the accept loop task must not panic");
         });
     }
 }
