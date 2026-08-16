@@ -1,0 +1,32 @@
+# Mutation testing scope and exclusions for cargo-mutants.
+#
+# This is the single, shared definition of enforcement scope: every layer of the
+# mutation-testing pipeline (PR gate, weekly full-scope run, write-time local run)
+# reads this file, so exclusions live here once, never re-declared downstream.
+# See docs/designs/mutation-testing.md ("Enforcement scope", "Equivalence policy").
+
+# iced view/handler plumbing, where a mutation-killing test costs more than it
+# protects.
+exclude_globs = [
+    "src/main.rs",
+    "src/app/**",
+    "src/ui/**",
+]
+
+exclude_re = [
+    # src/fonts.rs descriptor_flags: flag bits are disjoint, so XOR is
+    # equivalent to OR here.
+    '^src/fonts\.rs:306:26: replace \| with \^ in descriptor_flags$',
+
+    # src/fonts.rs extract_font_descriptor: killing this needs a font fixture
+    # with a nonzero post-table italic angle but non-italic fsSelection.
+    '^src/fonts\.rs:323:62: replace \|\| with && in extract_font_descriptor$',
+
+    # src/pdf/writer.rs MAX_FONT_FILE_SIZE: killing this needs a >1 MB font
+    # fixture.
+    '^src/pdf/writer\.rs:220:42: replace \* with \+ in embedded_font_program_fingerprint$',
+
+    # src/pdf/renderer.rs probe_pdftoppm: environment-equivalent on any
+    # machine with pdftoppm installed.
+    '^src/pdf/renderer\.rs:55:5: replace probe_pdftoppm -> Result<\(\), RendererError> with Ok\(\(\)\)$',
+]
