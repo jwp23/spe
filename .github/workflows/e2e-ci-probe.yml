@@ -25,6 +25,10 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   probe:
     runs-on: ubuntu-latest
@@ -148,6 +152,12 @@ jobs:
         env:
           REPEATS: ${{ inputs.repeats || '3' }}
         run: |
+          # A zero or non-numeric count would run the loop no times and leave
+          # the step green — the exact false-success this probe exists to
+          # rule out, and it would silently neuter a sabotage run.
+          case "$REPEATS" in
+            ''|*[!0-9]*|0) echo "repeats must be a positive integer, got [$REPEATS]"; exit 2 ;;
+          esac
           EXPECTED=$(grep -c '#\[test\]' tests/ipc_e2e.rs)
           echo "tests/ipc_e2e.rs declares $EXPECTED #[test] functions"
           status=0

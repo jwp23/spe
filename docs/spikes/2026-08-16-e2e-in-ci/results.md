@@ -6,7 +6,7 @@ job rather than a new one.
 
 ## Headline result
 
-**All five `ipc_e2e` tests pass on a stock hosted `ubuntu-latest` runner, in 2–4 seconds, with
+**All five `ipc_e2e` tests pass on a stock hosted `ubuntu-latest` runner, in 2–5 seconds, with
 exactly one new package: `cage`.** No GPU, no Vulkan driver, no `XDG_RUNTIME_DIR` setup, no
 change to the tests. wgpu falls back to the GL backend on llvmpipe and iced renders fine.
 
@@ -26,13 +26,13 @@ zero flakes.
 | 2 | Does `cage` start headless on a runner? | **Yes.** Starts, serves `wayland-0`, exits 0. |
 | 3 | Does wgpu initialise under software rendering? | **Yes.** llvmpipe, GL backend, no Vulkan needed. |
 | 4 | Does the suite pass, with proof it did not skip? | **Yes**, and proven three independent ways. |
-| 5 | How long, and is it stable? | **2–4 s** for the suite; stable across 4 jobs. |
+| 5 | How long, and is it stable? | **2–5 s** for the suite; stable across 5 jobs. |
 
 ### Q1 — cage installs and reports version
 
 `sudo apt-get install -y cage` on `Ubuntu 24.04.4 LTS`:
 
-```
+```text
 Setting up cage (0.1.5+20240127-2build1) ...
 Cage version 0.1.5
 cage -v exit status: 0
@@ -46,7 +46,7 @@ Ubuntu 24.04.
 
 Launched exactly as `scripts/screenshot.sh:60-68` does, wrapping `/bin/sh` instead of the app:
 
-```
+```text
 client saw WAYLAND_DISPLAY=[wayland-0]
 cage exit status: 0
 ```
@@ -58,7 +58,7 @@ DRM and libinput entirely, so there is nothing left to be missing.
 wlroots still logs an error while doing this, and it is harmless — it appears in every passing
 run:
 
-```
+```text
 [ERROR] [render/wlr_renderer.c:279] Failed to find any DRM render node
 ```
 
@@ -70,7 +70,7 @@ Enumerated through the same wgpu version the app links (27.0.1, per `Cargo.lock`
 throwaway crate so nothing in the tree changed. With **only `cage` added** to the packages CI
 already installs:
 
-```
+```text
 adapters found: 1
 AdapterInfo { name: "llvmpipe (LLVM 20.1.2, 256 bits)", vendor: 65541, device: 0,
               device_type: Cpu, driver: "",
@@ -85,7 +85,7 @@ picks the GL backend on Mesa's llvmpipe software rasteriser. It needs no coaxing
 Adding `mesa-vulkan-drivers` was also tried, and it does work — it produces a second, Vulkan
 adapter which `request_adapter` then prefers:
 
-```
+```text
 adapters found: 2
 AdapterInfo { name: "llvmpipe (LLVM 20.1.2, 256 bits)", ..., backend: Vulkan }
 AdapterInfo { name: "llvmpipe (LLVM 20.1.2, 256 bits)", ..., backend: Gl }
@@ -99,7 +99,7 @@ future runner image happens to preinstall.
 Two more errors appear in passing runs and are noise, from Xwayland and Mesa's zink driver
 respectively:
 
-```
+```text
 Failed to initialize glamor, falling back to sw
 MESA: error: ZINK: failed to choose pdev
 ```
@@ -114,21 +114,25 @@ then returns early and passes. Three independent checks, all enforced by the pro
    non-zero exit.
 2. **A count and a skip check.** Five `#[test]` functions are declared; the job asserts five
    `test ... ok` lines, and asserts zero `SKIP ipc_` lines on stderr:
-   ```
+
+   ```text
    tests/ipc_e2e.rs declares 5 #[test] functions
    run 1: harness summary — test result: ok. 5 passed; 0 failed; 0 ignored; ... finished in 3.45s
    run 1: 5 of 5 tests reported ok, 0 self-reported skips
    ```
+
 3. **Deliberate sabotage.** A run with `assert!(false, ...)` injected into
    `ipc_open_save_with_no_overlays_still_writes_file`, *after* its `cage_available()` guard,
    went red as required (run `31966256007`):
-   ```
+
+   ```text
    422:    assert!(false, "SPIKE SABOTAGE: this run must be RED");
    SPIKE SABOTAGE: this run must be RED
    test result: FAILED. 4 passed; 1 failed; 0 ignored; ... finished in 7.59s
    run 1: SUITE INCOMPLETE
    ##[error]Process completed with exit code 1.
    ```
+
    Placement matters: inject before the guard and a skipping suite would go red too, proving
    nothing. Injecting after it means only a suite that genuinely executes can fail.
 
@@ -148,8 +152,9 @@ The suite is far cheaper than expected. Step-measured wall clock, three invocati
 | `31967008279` | minimal | 3 s / 3 s / 2 s | 15 s / 6 s / 5 s |
 
 "full" adds `mesa-vulkan-drivers`, `libglx-mesa0`, `vulkan-tools` and `mesa-utils`; "minimal"
-adds only `cage`. The package set makes no measurable difference. The harness's own reported
-figures agree to within a second (2.13 s to 4.34 s).
+adds only `cage`. The package set makes no measurable difference. These are step-measured wall
+clock at one-second resolution; the harness's own reported figures are slightly tighter, 2.13 s
+to 4.34 s, the difference being cargo's up-to-date check.
 
 The first invocation in each job is consistently ~1.5 s slower than subsequent ones — cold page
 cache, not variance. Nothing else moves. **Zero failures and zero flakes across all of it.**
