@@ -8,8 +8,8 @@ name: Mutation testing (PR gate)
 # `paths:` filter excludes never runs at all, so GitHub reports no status for
 # it and the PR is blocked on a permanently "pending" check. Instead, an
 # in-job guard step (below) exits quickly when nothing in scope changed, and
-# the downstream job's `if:` makes it report "skipped" rather than never
-# running — skipped satisfies a required check.
+# `mutation-gate` (the job branch protection should point at) always runs and
+# reports success on that fast path, never a missing status.
 
 on:
   pull_request:
@@ -25,9 +25,15 @@ env:
   CARGO_MUTANTS_VERSION: "27.1.0"
 
 jobs:
-  # Determines whether the PR's diff touches mutation-testing scope and, if
-  # so, how many mutants are in play so the mutate job below can decide
-  # whether to shard.
+  # Git-only: decides whether the PR's diff touches mutation-testing scope,
+  # and if so, a rough shard count from diff size. Deliberately does not
+  # install a toolchain or cargo-mutants — that cost is paid exactly once,
+  # in the mutate job below, instead of once here (just to list mutants) and
+  # again there (to actually run them). A real mutant count via
+  # `cargo mutants --list --in-diff` would be more accurate than the line-count
+  # proxy below, but paying a full toolchain install + cache restore + cargo
+  # install here just to get that number would serialize ahead of the
+  # (already toolchain-installing) mutate job for no wall-clock benefit.
   scope:
     runs-on: ubuntu-latest
     permissions:
@@ -35,8 +41,8 @@ jobs:
     outputs:
       in-scope: ${{ steps.guard.outputs.in-scope }}
       base-sha: ${{ steps.guard.outputs.base-sha }}
-      shards: ${{ steps.plan.outputs.shards }}
-      shard-matrix: ${{ steps.plan.outputs.shard-matrix }}
+      shards: ${{ steps.guard.outputs.shards }}
+      shard-matrix: ${{ steps.guard.outputs.shard-matrix }}
     steps:
       # fetch-depth: 0 so the merge base of the PR's base branch and HEAD is
       # available locally for the diff below (a shallow clone only has HEAD).
@@ -54,11 +60,29 @@ jobs:
 
           echo "base-sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
 
-          CHANGED_RS=$(git diff --name-only "${BASE_SHA}...HEAD" -- '*.rs' || true)
+          # Always emit valid values for every output below, even on the
+          # fast-exit paths, so a downstream fromJSON(needs.scope.outputs.*)
+          # never sees an empty string.
+          IN_SCOPE="false"
+          SHARDS=0
+          SHARD_MATRIX="[]"
+
+          emit_outputs() {
+            echo "in-scope=${IN_SCOPE}" >> "$GITHUB_OUTPUT"
+            echo "shards=${SHARDS}" >> "$GITHUB_OUTPUT"
+            echo "shard-matrix=${SHARD_MATRIX}" >> "$GITHUB_OUTPUT"
+          }
+
+          # No `|| true`: a git failure here (an unreachable base SHA, a
+          # corrupt ref) must fail the job loudly, not be read as "nothing
+          # changed" — that's the exact silent-pass direction the parse
+          # failure below also refuses. Only a genuinely empty diff (no .rs
+          # files touched) is allowed to reach the fast path.
+          CHANGED_RS=$(git diff --name-only "${BASE_SHA}...HEAD" -- '*.rs')
 
           if [ -z "$CHANGED_RS" ]; then
             echo "No .rs files changed against ${BASE_SHA} — nothing in mutation-testing scope."
-            echo "in-scope=false" >> "$GITHUB_OUTPUT"
+            emit_outputs
             exit 0
           fi
 
@@ -90,82 +114,98 @@ jobs:
             exit 1
           fi
 
+          # Only two glob shapes are matched faithfully against globset
+          # semantics (the matcher cargo-mutants itself uses), where a
+          # single `*` does not cross `/`: an exact path, or a `dir/**`
+          # recursive-directory prefix. Anything else (`src/*.rs`, a mid-path
+          # `**`, multiple wildcards) is rejected loudly rather than matched
+          # approximately — bash's `case` `*` crosses `/`, unlike globset's,
+          # so an approximate match can silently over- or under-exclude a
+          # pattern this scanner was never taught to handle.
+          match_glob() {
+            local f="$1" pattern="$2" prefix
+            case "$pattern" in
+              */'**')
+                prefix="${pattern%/**}"
+                case "$prefix" in
+                  *'*'*) return 2 ;;
+                esac
+                case "$f" in
+                  "$prefix"/*) return 0 ;;
+                  *) return 1 ;;
+                esac
+                ;;
+              *'*'*)
+                return 2
+                ;;
+              *)
+                [ "$f" = "$pattern" ] && return 0 || return 1
+                ;;
+            esac
+          }
+
           is_excluded() {
-            local f="$1"
-            local pattern
+            local f="$1" pattern rc
             while IFS= read -r pattern; do
               [ -z "$pattern" ] && continue
-              # bash case matching (not filesystem globbing) treats `*` as
-              # matching any string including `/`, so "src/app/**" behaves
-              # the same as "src/app/*" here and correctly covers nested
-              # paths like src/app/sub/deep.rs.
-              case "$f" in
-                $pattern) return 0 ;;
-              esac
+              match_glob "$f" "$pattern"
+              rc=$?
+              if [ "$rc" -eq 0 ]; then
+                return 0
+              elif [ "$rc" -eq 2 ]; then
+                echo "::error::exclude_globs entry '$pattern' is not a glob shape this guard can faithfully match (supported: an exact path, or 'dir/**'). Update the guard's matcher before adding this pattern." >&2
+                exit 1
+              fi
             done <<< "$EXCLUDE_GLOBS"
             return 1
           }
 
-          IN_SCOPE=""
+          IN_SCOPE_FILES=""
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             if ! is_excluded "$f"; then
-              IN_SCOPE="yes"
+              IN_SCOPE_FILES="${IN_SCOPE_FILES}${f}"$'\n'
               echo "In scope: $f"
             fi
           done <<< "$CHANGED_RS"
 
-          if [ -z "$IN_SCOPE" ]; then
+          if [ -z "$IN_SCOPE_FILES" ]; then
             echo "All changed .rs files are excluded from mutation-testing scope."
-            echo "in-scope=false" >> "$GITHUB_OUTPUT"
+            emit_outputs
             exit 0
           fi
 
-          echo "in-scope=true" >> "$GITHUB_OUTPUT"
+          IN_SCOPE="true"
 
-      - name: Install Rust toolchain
-        if: steps.guard.outputs.in-scope == 'true'
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: stable
+          # Cheap proxy for how much work this diff is, without a toolchain:
+          # total changed lines across in-scope files. Coarser than a real
+          # mutant count, but git-only. The 200-line cut point is a judgment
+          # call with no measured data behind it yet (same caveat as any
+          # threshold chosen before the gate has run against real PRs).
+          CHANGED_LINES=0
+          while IFS=$'\t' read -r added removed path; do
+            [ -z "$path" ] && continue
+            if ! is_excluded "$path"; then
+              [ "$added" = "-" ] && added=0
+              [ "$removed" = "-" ] && removed=0
+              CHANGED_LINES=$((CHANGED_LINES + added + removed))
+            fi
+          done < <(git diff --numstat "${BASE_SHA}...HEAD" -- '*.rs')
 
-      - name: Cache cargo registry and build artifacts
-        if: steps.guard.outputs.in-scope == 'true'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          echo "In-scope changed lines: $CHANGED_LINES"
 
-      - name: Install cargo-mutants
-        if: steps.guard.outputs.in-scope == 'true'
-        run: cargo install cargo-mutants --version "$CARGO_MUTANTS_VERSION" --locked
-
-      - name: Plan shards from the in-diff mutant count
-        id: plan
-        if: steps.guard.outputs.in-scope == 'true'
-        env:
-          BASE_SHA: ${{ steps.guard.outputs.base-sha }}
-        run: |
-          set -euo pipefail
-
-          git diff "${BASE_SHA}...HEAD" > diff.patch
-
-          # --list is free (docs/spikes/2026-08-14-cargo-mutants/results.md)
-          # and applies .cargo/mutants.toml's exclude_globs/exclude_re
-          # itself, so this count already reflects the enforced scope.
-          COUNT=$(cargo mutants --list --in-diff diff.patch | wc -l)
-          echo "In-diff mutant count: $COUNT"
-
-          # A handful of mutants (the common case per the design) runs in
-          # minutes on a single hosted runner; split into parallel shards
-          # once the count gets large enough that a single job would be the
-          # slow part of the PR's CI run.
-          if [ "$COUNT" -gt 25 ]; then
+          if [ "$CHANGED_LINES" -gt 200 ]; then
             SHARDS=4
           else
             SHARDS=1
           fi
 
-          echo "shards=$SHARDS" >> "$GITHUB_OUTPUT"
-          MATRIX=$(seq 1 "$SHARDS" | jq -R . | jq -sc .)
-          echo "shard-matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          # cargo-mutants' --shard k/n is 0-based (k must be < n; `--shard
+          # 1/1` errors "shard k must be less than n" — confirmed against
+          # the installed 27.1.0 binary). seq starts at 0, not 1.
+          SHARD_MATRIX=$(seq 0 $((SHARDS - 1)) | jq -R . | jq -sc .)
+
+          emit_outputs
 
   mutate:
     needs: scope
@@ -238,3 +278,44 @@ jobs:
               An exclusion is a reviewed code change on this PR, not a
               silent skip.
           EOF
+
+  # The single fixed-name job branch protection should mark required.
+  # mutate's own check names are matrix-derived (mutate (0), mutate (1), ...)
+  # and vary with the shard count, so nothing about mutate's name is stable
+  # enough to point branch protection at. scope alone doesn't say whether a
+  # mutant survived. This job needs: [scope, mutate] with if: always() (so it
+  # still runs even though mutate is skipped or failed — the default
+  # skip-on-failed-dependency behaviour would otherwise skip this job too,
+  # which is exactly the "no status reported" failure mode being avoided) and
+  # translates the two jobs' results into a single pass/fail.
+  mutation-gate:
+    needs: [scope, mutate]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Check mutation-testing gate result
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          MUTATE_RESULT: ${{ needs.mutate.result }}
+        run: |
+          set -euo pipefail
+          echo "scope: ${SCOPE_RESULT}, mutate: ${MUTATE_RESULT}"
+
+          if [ "$SCOPE_RESULT" != "success" ]; then
+            echo "::error::scope job did not succeed (${SCOPE_RESULT})."
+            exit 1
+          fi
+
+          case "$MUTATE_RESULT" in
+            success|skipped)
+              # success: mutants ran and none survived.
+              # skipped: the PR touched nothing in mutation-testing scope —
+              # the fast path, not a failure.
+              exit 0
+              ;;
+            *)
+              echo "::error::mutate job result: ${MUTATE_RESULT}."
+              exit 1
+              ;;
+          esac
