@@ -139,7 +139,7 @@ jobs:
       # Q4 proof-of-not-skipping, opt-in: with sabotage on, the run MUST go red.
       # A green run here voids every other result in this spike.
       - name: 'Q4: sabotage an e2e assertion'
-        if: ${{ inputs.sabotage || true }}  # SPIKE: forced on for the sabotage run
+        if: ${{ inputs.sabotage }}
         run: |
           # Insert *after* the cage_available() guard, so the assertion only
           # fires when the test body actually executes. Put it before the guard
@@ -152,7 +152,7 @@ jobs:
       # functions report as passing, so a skipping suite cannot read as green.
       - name: 'Q4/Q5: run the e2e suite'
         env:
-          REPEATS: ${{ inputs.repeats || '1' }}
+          REPEATS: ${{ inputs.repeats || '3' }}
         run: |
           EXPECTED=$(grep -c '#\[test\]' tests/ipc_e2e.rs)
           echo "tests/ipc_e2e.rs declares $EXPECTED #[test] functions"
