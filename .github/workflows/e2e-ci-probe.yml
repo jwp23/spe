@@ -176,6 +176,31 @@ jobs:
           done
           exit "$status"
 
+      # Does the suite belong in ci.yml's existing integration step, or its own
+      # job? spe-6i8 saw e2e.rs and ipc_e2e.rs contend for GPU/compositor under
+      # a combined `cargo test -- --ignored`, and closed as "serialization not
+      # needed" on developer hardware. Re-check that verdict on a 4-vCPU runner
+      # with no GPU, which is the harsher case.
+      - name: 'Combined `cargo test -- --ignored`, as ci.yml runs it'
+        if: ${{ !inputs.sabotage }}
+        run: |
+          status=0
+          for i in 1 2 3; do
+            echo "::group::combined run $i"
+            start=$SECONDS
+            set +e
+            cargo test -- --ignored > "combined-$i.out" 2> "combined-$i.err"
+            run_status=$?
+            set -e
+            cat "combined-$i.out"; tail -40 "combined-$i.err"
+            ipc_ok=$(grep -c '^test ipc_.* \.\.\. ok$' "combined-$i.out" || true)
+            echo "combined $i: exit $run_status, $((SECONDS - start)) s, $ipc_ok/5 ipc_e2e tests ok"
+            grep '^test result:' "combined-$i.out" || true
+            [ "$run_status" -eq 0 ] && [ "$ipc_ok" -eq 5 ] || status=1
+            echo '::endgroup::'
+          done
+          exit "$status"
+
       - name: Upload run logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -184,4 +209,6 @@ jobs:
           path: |
             run-*.out
             run-*.err
+            combined-*.out
+            combined-*.err
           if-no-files-found: warn
