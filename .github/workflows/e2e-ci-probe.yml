@@ -1,0 +1,178 @@
+# SPIKE PROBE — spe-qvm.1. workflow_dispatch ONLY, never triggered by push or
+# pull_request, and referenced by no other workflow. Delete this file when the
+# spike is closed.
+#
+# Question: can tests/ipc_e2e.rs (cage + iced/wgpu) run green on a hosted
+# ubuntu-latest runner, and can we prove it did not silently skip?
+name: E2E CI probe (spike)
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: How many times to run the e2e suite, for timing variance
+        default: '3'
+      sabotage:
+        description: Inject a failing assertion into an e2e test, to prove the suite is not skipping
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Report runner baseline
+        run: |
+          . /etc/os-release && echo "distro: $PRETTY_NAME"
+          echo "XDG_RUNTIME_DIR=[${XDG_RUNTIME_DIR:-<unset>}]"
+          echo "WAYLAND_DISPLAY=[${WAYLAND_DISPLAY:-<unset>}]"
+          echo "DISPLAY=[${DISPLAY:-<unset>}]"
+          id
+
+      - name: Install cage and rendering stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cage \
+            poppler-utils fontconfig \
+            mesa-vulkan-drivers libgl1-mesa-dri libglx-mesa0 \
+            vulkan-tools mesa-utils
+          dpkg-query -W -f='${Package} ${Version}\n' \
+            cage mesa-vulkan-drivers libgl1-mesa-dri vulkan-tools
+
+      # Q1 hard gate. tests/ipc_e2e.rs:37 skips every test when this exits
+      # non-zero, so a green suite without this gate proves nothing.
+      - name: 'Q1: cage -v exits 0'
+        run: |
+          cage -v
+          echo "cage -v exit status: $?"
+
+      # Q3 evidence, independent of the app: what does the runner's software
+      # stack actually offer wgpu?
+      - name: 'Q3: software rendering inventory'
+        run: |
+          echo '--- vulkaninfo --summary ---'
+          vulkaninfo --summary 2>&1 | head -60 || echo "vulkaninfo failed: $?"
+          echo '--- glxinfo (needs a display; expected to fail here) ---'
+          glxinfo -B 2>&1 | head -20 || echo "glxinfo failed: $?"
+          echo '--- installed ICDs ---'
+          ls -l /usr/share/vulkan/icd.d/ || true
+
+      # Q3 proper: enumerate adapters through the same wgpu version the app
+      # links (Cargo.lock), in a throwaway crate outside the repo so nothing in
+      # the working tree changes.
+      - name: 'Q3: wgpu adapter enumeration'
+        run: |
+          WGPU_VERSION=$(grep -A1 '^name = "wgpu"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')
+          echo "app links wgpu $WGPU_VERSION"
+          mkdir -p "$RUNNER_TEMP/wgpu-probe/src"
+          cd "$RUNNER_TEMP/wgpu-probe"
+          cat > Cargo.toml <<EOF
+          [package]
+          name = "wgpu-probe"
+          version = "0.0.0"
+          edition = "2021"
+
+          [dependencies]
+          wgpu = "$WGPU_VERSION"
+          pollster = "0.4"
+          EOF
+          cat > src/main.rs <<'EOF'
+          fn main() {
+              let instance = wgpu::Instance::default();
+              let adapters = instance.enumerate_adapters(wgpu::Backends::all());
+              println!("adapters found: {}", adapters.len());
+              for adapter in &adapters {
+                  println!("{:?}", adapter.get_info());
+              }
+              let chosen = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                  power_preference: wgpu::PowerPreference::default(),
+                  force_fallback_adapter: false,
+                  compatible_surface: None,
+              }));
+              match chosen {
+                  Ok(a) => println!("default request_adapter picked: {:?}", a.get_info()),
+                  Err(e) => println!("default request_adapter FAILED: {e}"),
+              }
+          }
+          EOF
+          cargo run --release 2>&1 | tail -40
+
+      # Q2: does cage itself come up headless, with no compositor and no GPU?
+      - name: 'Q2: cage starts headless'
+        run: |
+          RUNTIME_DIR=$(mktemp -d)
+          chmod 700 "$RUNTIME_DIR"
+          set +e
+          env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$RUNTIME_DIR" \
+            WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+            timeout 30 cage -- /bin/sh -c 'echo "client saw WAYLAND_DISPLAY=[$WAYLAND_DISPLAY]"; ls -l "$XDG_RUNTIME_DIR"'
+          echo "cage exit status: $?"
+          set -e
+
+      - name: Build the app and the e2e test binary
+        run: cargo test --test ipc_e2e --no-run
+
+      # Q4 proof-of-not-skipping, opt-in: with sabotage on, the run MUST go red.
+      # A green run here voids every other result in this spike.
+      - name: 'Q4: sabotage an e2e assertion'
+        if: ${{ inputs.sabotage }}
+        run: |
+          # Insert *after* the cage_available() guard, so the assertion only
+          # fires when the test body actually executes. Put it before the guard
+          # and a skipping suite would go red too, proving nothing.
+          sed -i 's|^    let runtime_dir = make_test_runtime_dir("save-empty");|    assert!(false, "SPIKE SABOTAGE: this run must be RED");\n&|' \
+            tests/ipc_e2e.rs
+          grep -n -A1 'SPIKE SABOTAGE' tests/ipc_e2e.rs
+
+      # Q4 + Q5. Each repeat is timed; the step fails unless all five #[test]
+      # functions report as passing, so a skipping suite cannot read as green.
+      - name: 'Q4/Q5: run the e2e suite'
+        env:
+          REPEATS: ${{ inputs.repeats }}
+        run: |
+          EXPECTED=$(grep -c '#\[test\]' tests/ipc_e2e.rs)
+          echo "tests/ipc_e2e.rs declares $EXPECTED #[test] functions"
+          status=0
+          for i in $(seq 1 "$REPEATS"); do
+            echo "::group::e2e run $i of $REPEATS"
+            start=$SECONDS
+            set +e
+            cargo test --test ipc_e2e -- --ignored --nocapture 2>&1 | tee "run-$i.log"
+            run_status=${PIPESTATUS[0]}
+            set -e
+            echo "run $i: exit $run_status, $((SECONDS - start)) s wall clock"
+            passed=$(grep -c '^test ipc_.* \.\.\. ok$' "run-$i.log" || true)
+            skipped=$(grep -c '^SKIP ipc_' "run-$i.log" || true)
+            echo "run $i: $passed of $EXPECTED tests reported ok, $skipped self-reported skips"
+            [ "$run_status" -eq 0 ] || status=1
+            [ "$passed" -eq "$EXPECTED" ] || { echo "run $i: SUITE INCOMPLETE"; status=1; }
+            [ "$skipped" -eq 0 ] || { echo "run $i: SUITE SKIPPED — cage_available() was false"; status=1; }
+            echo '::endgroup::'
+          done
+          exit "$status"
+
+      - name: Upload run logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-probe-logs
+          path: run-*.log
+          if-no-files-found: warn
