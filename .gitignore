@@ -20,5 +20,8 @@
 # Claude brainstorming session artifacts
 .claude/brainstorm/
 
+# Subagent-driven development scratch workspace (briefs, reports, review packages)
+.joe-bag-of-tricks/
+
 # Screenshot tool artifacts
 screenshots/
