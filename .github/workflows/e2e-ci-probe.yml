@@ -139,7 +139,7 @@ jobs:
       # Q4 proof-of-not-skipping, opt-in: with sabotage on, the run MUST go red.
       # A green run here voids every other result in this spike.
       - name: 'Q4: sabotage an e2e assertion'
-        if: ${{ inputs.sabotage }}
+        if: ${{ inputs.sabotage || true }}  # SPIKE: forced on for the sabotage run
         run: |
           # Insert *after* the cage_available() guard, so the assertion only
           # fires when the test body actually executes. Put it before the guard
