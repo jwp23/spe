@@ -7,6 +7,12 @@
 name: E2E CI probe (spike)
 
 on:
+  # SPIKE-ONLY, REMOVE BEFORE FINISHING: workflow_dispatch is undispatchable
+  # until the file reaches the default branch, so iteration rides a push
+  # trigger scoped to this one throwaway branch. No pull_request trigger, so
+  # this cannot run against anyone else's changes.
+  push:
+    branches: [spike/e2e-in-ci]
   workflow_dispatch:
     inputs:
       repeats:
@@ -146,7 +152,7 @@ jobs:
       # functions report as passing, so a skipping suite cannot read as green.
       - name: 'Q4/Q5: run the e2e suite'
         env:
-          REPEATS: ${{ inputs.repeats }}
+          REPEATS: ${{ inputs.repeats || '1' }}
         run: |
           EXPECTED=$(grep -c '#\[test\]' tests/ipc_e2e.rs)
           echo "tests/ipc_e2e.rs declares $EXPECTED #[test] functions"
