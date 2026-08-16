@@ -1372,6 +1372,36 @@ mod tests {
     }
 
     #[test]
+    fn click_on_page_zero_is_rejected() {
+        // Pages are numbered from 1, so 0 names no page even in a multi-page
+        // document — the lower bound is a real check, not a formality.
+        let mut doc = test_document_with_overlay();
+        doc.page_count = 2;
+        let cmd = IpcCommand::Click {
+            page: 0,
+            x: 100.0,
+            y: 700.0,
+        };
+        let result = cmd.to_message(&context_with_document(&doc), &test_registry());
+        assert!(matches!(result, Err(IpcError::PageOutOfRange)));
+    }
+
+    #[test]
+    fn click_on_the_last_page_is_accepted() {
+        let mut doc = test_document_with_overlay();
+        doc.page_count = 2;
+        let cmd = IpcCommand::Click {
+            page: 2,
+            x: 100.0,
+            y: 700.0,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(msg, Message::PlaceOverlay { page: 2, .. }));
+    }
+
+    #[test]
     fn drag_without_document_is_rejected() {
         let cmd = IpcCommand::Drag {
             page: 1,
@@ -1400,6 +1430,26 @@ mod tests {
         let ctx = CommandContext {
             document: Some(&doc),
             active_overlay: Some(7),
+            ..CommandContext::default()
+        };
+        let cmd = IpcCommand::Type {
+            text: "Hello".to_string(),
+        };
+        assert!(matches!(
+            cmd.to_message(&ctx, &test_registry()),
+            Err(IpcError::NoActiveOverlay)
+        ));
+    }
+
+    #[test]
+    fn type_with_an_active_overlay_index_one_past_the_end_is_rejected() {
+        // The index the app last selected can name a slot that no longer
+        // exists once an overlay is removed; one past the end is the boundary
+        // that check has to get right.
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            active_overlay: Some(doc.overlays.len()),
             ..CommandContext::default()
         };
         let cmd = IpcCommand::Type {
@@ -1531,6 +1581,25 @@ mod tests {
             .to_message(&context_with_document(&doc), &test_registry())
             .unwrap();
         assert!(matches!(msg, Message::DeselectOverlay));
+    }
+
+    #[test]
+    fn click_at_just_outside_any_single_page_edge_deselects() {
+        // The test page is 612x792 and its only overlay sits near the top, so
+        // each point below misses that overlay and crosses exactly one page
+        // edge — the case that tells the four bounds checks apart from each
+        // other. A point outside two edges at once cannot.
+        let doc = test_document_with_overlay();
+        for (x, y) in [(-1.0, 300.0), (613.0, 300.0), (300.0, -1.0), (300.0, 793.0)] {
+            let cmd = IpcCommand::ClickAt { page: 1, x, y };
+            let msg = cmd
+                .to_message(&context_with_document(&doc), &test_registry())
+                .unwrap();
+            assert!(
+                matches!(msg, Message::DeselectOverlay),
+                "a click at ({x}, {y}) is off the page and must deselect, got {msg:?}"
+            );
+        }
     }
 
     #[test]
