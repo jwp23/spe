@@ -637,6 +637,36 @@ fn bind_listener(path: &std::path::Path) -> std::io::Result<tokio::net::UnixList
     Ok(listener)
 }
 
+/// Serve connections from `listener`, one at a time in accept order, until the
+/// app stops answering.
+///
+/// Only [`handle_connection`] reporting the app channel closed ends the loop: a
+/// client that hangs up, or an accept that fails, leaves the next client able to
+/// connect, so one finished connection cannot end automation for the session.
+///
+/// Tests drive this loop directly over a listener bound to a test socket,
+/// independent of the real one [`ipc_stream`] uses.
+async fn serve_connections(
+    listener: tokio::net::UnixListener,
+    output: &mut iced::futures::channel::mpsc::Sender<IpcEvent>,
+    resp_rx: &mut tokio::sync::mpsc::Receiver<IpcResponse>,
+    response_timeout: Duration,
+) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                if !handle_connection(stream, output, resp_rx, response_timeout).await {
+                    return;
+                }
+            }
+            Err(e) => {
+                eprintln!("IPC: accept error: {e}");
+                continue;
+            }
+        }
+    }
+}
+
 fn ipc_stream() -> impl iced::futures::Stream<Item = IpcEvent> {
     iced::stream::channel(32, async |mut output| {
         use iced::futures::SinkExt;
@@ -669,20 +699,7 @@ fn ipc_stream() -> impl iced::futures::Stream<Item = IpcEvent> {
         let sender = ResponseSender(Arc::new(tokio::sync::Mutex::new(resp_tx)));
         let _ = output.send(IpcEvent::Ready(sender)).await;
 
-        loop {
-            match listener.accept().await {
-                Ok((stream, _)) => {
-                    if !handle_connection(stream, &mut output, &mut resp_rx, RESPONSE_TIMEOUT).await
-                    {
-                        return;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("IPC: accept error: {e}");
-                    continue;
-                }
-            }
-        }
+        serve_connections(listener, &mut output, &mut resp_rx, RESPONSE_TIMEOUT).await;
     })
 }
 
@@ -1318,6 +1335,64 @@ mod tests {
         assert_eq!(socket_path_in(None), Err(MissingRuntimeDir));
     }
 
+    /// Names the runtime directory the parent test wants `socket_path` to
+    /// read, and marks the process as that test's child.
+    const CHILD_RUNTIME_DIR: &str = "SPE_TEST_CHILD_RUNTIME_DIR";
+
+    /// Printed by the child only once it has actually asserted. A child that
+    /// took its early-out reports a passing test just the same, so this line is
+    /// what tells the parent the two apart.
+    const CHILD_ASSERTED: &str = "socket_path assertion ran";
+
+    /// The assertion half of
+    /// [`socket_path_reads_the_runtime_dir_from_the_environment`]. It runs in a
+    /// child process because it needs `XDG_RUNTIME_DIR` set, and mutating the
+    /// environment of the test process would race every test sharing it. Inert
+    /// unless the parent asked for it.
+    #[test]
+    fn socket_path_child_reads_xdg_runtime_dir() {
+        let Ok(runtime_dir) = std::env::var(CHILD_RUNTIME_DIR) else {
+            return;
+        };
+        assert_eq!(
+            socket_path(),
+            Ok(PathBuf::from(runtime_dir).join("spe-ipc.sock"))
+        );
+        println!("{CHILD_ASSERTED}");
+    }
+
+    #[test]
+    fn socket_path_reads_the_runtime_dir_from_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime_dir = dir.path().to_str().expect("a temp dir path is UTF-8");
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("the test binary must have a path"),
+        )
+        // `--nocapture` so the child's confirmation line reaches this process
+        // rather than the test harness's own buffer.
+        .args([
+            "ipc::tests::socket_path_child_reads_xdg_runtime_dir",
+            "--exact",
+            "--nocapture",
+        ])
+        .env("XDG_RUNTIME_DIR", runtime_dir)
+        .env(CHILD_RUNTIME_DIR, runtime_dir)
+        .output()
+        .expect("the test binary must be runnable as a child process");
+
+        let report = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "socket_path must build its path from XDG_RUNTIME_DIR:\n{report}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            report.contains(CHILD_ASSERTED),
+            "the child never reached the assertion — a renamed test or a broken \
+             {CHILD_RUNTIME_DIR} handoff would leave this test passing on nothing:\n{report}"
+        );
+    }
+
     #[test]
     fn missing_runtime_dir_error_says_how_to_fix_it() {
         let message = MissingRuntimeDir.to_string();
@@ -1372,6 +1447,36 @@ mod tests {
     }
 
     #[test]
+    fn click_on_page_zero_is_rejected() {
+        // Pages are numbered from 1, so 0 names no page even in a multi-page
+        // document — the lower bound is a real check, not a formality.
+        let mut doc = test_document_with_overlay();
+        doc.page_count = 2;
+        let cmd = IpcCommand::Click {
+            page: 0,
+            x: 100.0,
+            y: 700.0,
+        };
+        let result = cmd.to_message(&context_with_document(&doc), &test_registry());
+        assert!(matches!(result, Err(IpcError::PageOutOfRange)));
+    }
+
+    #[test]
+    fn click_on_the_last_page_is_accepted() {
+        let mut doc = test_document_with_overlay();
+        doc.page_count = 2;
+        let cmd = IpcCommand::Click {
+            page: 2,
+            x: 100.0,
+            y: 700.0,
+        };
+        let msg = cmd
+            .to_message(&context_with_document(&doc), &test_registry())
+            .unwrap();
+        assert!(matches!(msg, Message::PlaceOverlay { page: 2, .. }));
+    }
+
+    #[test]
     fn drag_without_document_is_rejected() {
         let cmd = IpcCommand::Drag {
             page: 1,
@@ -1400,6 +1505,26 @@ mod tests {
         let ctx = CommandContext {
             document: Some(&doc),
             active_overlay: Some(7),
+            ..CommandContext::default()
+        };
+        let cmd = IpcCommand::Type {
+            text: "Hello".to_string(),
+        };
+        assert!(matches!(
+            cmd.to_message(&ctx, &test_registry()),
+            Err(IpcError::NoActiveOverlay)
+        ));
+    }
+
+    #[test]
+    fn type_with_an_active_overlay_index_one_past_the_end_is_rejected() {
+        // The index the app last selected can name a slot that no longer
+        // exists once an overlay is removed; one past the end is the boundary
+        // that check has to get right.
+        let doc = test_document_with_overlay();
+        let ctx = CommandContext {
+            document: Some(&doc),
+            active_overlay: Some(doc.overlays.len()),
             ..CommandContext::default()
         };
         let cmd = IpcCommand::Type {
@@ -1531,6 +1656,25 @@ mod tests {
             .to_message(&context_with_document(&doc), &test_registry())
             .unwrap();
         assert!(matches!(msg, Message::DeselectOverlay));
+    }
+
+    #[test]
+    fn click_at_just_outside_any_single_page_edge_deselects() {
+        // The test page is 612x792 and its only overlay sits near the top, so
+        // each point below misses that overlay and crosses exactly one page
+        // edge — the case that tells the four bounds checks apart from each
+        // other. A point outside two edges at once cannot.
+        let doc = test_document_with_overlay();
+        for (x, y) in [(-1.0, 300.0), (613.0, 300.0), (300.0, -1.0), (300.0, 793.0)] {
+            let cmd = IpcCommand::ClickAt { page: 1, x, y };
+            let msg = cmd
+                .to_message(&context_with_document(&doc), &test_registry())
+                .unwrap();
+            assert!(
+                matches!(msg, Message::DeselectOverlay),
+                "a click at ({x}, {y}) is off the page and must deselect, got {msg:?}"
+            );
+        }
     }
 
     #[test]
@@ -1808,6 +1952,7 @@ mod tests {
         use tokio::io::AsyncReadExt;
         let mut buf = vec![0u8; 256];
         let n = client.read(&mut buf).await.unwrap();
+        assert!(n > 0, "the connection closed without sending a reply");
         serde_json::from_slice(&buf[..n]).unwrap()
     }
 
@@ -2030,6 +2175,249 @@ mod tests {
                 reply.get("warning").is_none(),
                 "a response with no warning must not include the key: {reply}"
             );
+        });
+    }
+
+    // --- connection lifetime (async) ---
+    //
+    // `handle_connection`'s bool answers one question for the accept loop: is
+    // the app still there? Answering it wrong either abandons every later
+    // command or spins on a dead channel, and a client that hangs up looks
+    // exactly like an app that shut down unless the two are told apart here.
+
+    /// Answer every event the subscription emits with a plain `ok: true`, the
+    /// way the app answers a command it accepted.
+    async fn answer_every_command(
+        mut events: iced::futures::channel::mpsc::Receiver<IpcEvent>,
+        responses: tokio::sync::mpsc::Sender<IpcResponse>,
+    ) {
+        use iced::futures::StreamExt;
+        while events.next().await.is_some() {
+            let delivered = responses
+                .send(IpcResponse {
+                    ok: true,
+                    error: None,
+                    warning: None,
+                })
+                .await;
+            if delivered.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Drive `handle_connection` over a socket pair while a client sends
+    /// `commands`, reading one reply for each, and then hangs up. Returns what
+    /// the connection reported about the app channel, and the replies the
+    /// client received.
+    async fn connection_exchange(commands: &[&str]) -> (bool, Vec<serde_json::Value>) {
+        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (mut output, events) = iced::futures::channel::mpsc::channel::<IpcEvent>(32);
+        let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel::<IpcResponse>(1);
+        tokio::spawn(answer_every_command(events, resp_tx));
+
+        let lines: Vec<String> = commands
+            .iter()
+            .map(|command| format!("{command}\n"))
+            .collect();
+        let client_side = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut replies = Vec::new();
+            for line in lines {
+                client
+                    .write_all(line.as_bytes())
+                    .await
+                    .expect("the connection must accept a command");
+                replies.push(read_reply(&mut client).await);
+            }
+            replies
+        });
+
+        let app_alive = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            handle_connection(
+                server,
+                &mut output,
+                &mut resp_rx,
+                std::time::Duration::from_secs(5),
+            ),
+        )
+        .await
+        .expect("handle_connection must return once the client hangs up");
+
+        (
+            app_alive,
+            client_side.await.expect("the client must not panic"),
+        )
+    }
+
+    #[test]
+    fn a_connection_the_client_closes_leaves_the_app_channel_live() {
+        run_async(async {
+            let (app_alive, replies) = connection_exchange(&[r#"{"cmd":"deselect"}"#]).await;
+            assert!(
+                app_alive,
+                "a client hanging up is not the app going away; reporting it as such \
+                 stops the accept loop and abandons every later command"
+            );
+            assert_eq!(replies.len(), 1);
+            assert_eq!(replies[0]["ok"], true);
+        });
+    }
+
+    #[test]
+    fn a_connection_answers_every_command_it_is_sent() {
+        run_async(async {
+            let (app_alive, replies) =
+                connection_exchange(&[r#"{"cmd":"deselect"}"#, r#"{"cmd":"zoom_in"}"#]).await;
+            assert!(app_alive);
+            assert_eq!(
+                replies.len(),
+                2,
+                "a connection must keep reading commands, not stop after the first"
+            );
+            assert!(
+                replies.iter().all(|reply| reply["ok"] == true),
+                "both commands must be answered ok: {replies:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_connection_reports_the_app_gone_when_the_response_channel_closes() {
+        run_async(async {
+            use tokio::io::AsyncWriteExt;
+            let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+            let (mut output, _events) = iced::futures::channel::mpsc::channel::<IpcEvent>(32);
+            // A closed response channel is what a shut-down app looks like from
+            // here: the command is read, but no answer can ever arrive.
+            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel::<IpcResponse>(1);
+            drop(resp_tx);
+
+            client
+                .write_all(b"{\"cmd\":\"deselect\"}\n")
+                .await
+                .expect("the connection must accept a command");
+
+            let app_alive = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                handle_connection(
+                    server,
+                    &mut output,
+                    &mut resp_rx,
+                    std::time::Duration::from_secs(5),
+                ),
+            )
+            .await
+            .expect("a closed app channel must end the connection, not wait out the timeout");
+
+            assert!(
+                !app_alive,
+                "the client is still connected, but with the app gone the accept loop \
+                 must be told to stop rather than serve commands nothing can answer"
+            );
+        });
+    }
+
+    /// Connect to the IPC socket at `path`, send one command, and return the
+    /// reply.
+    async fn command_on_a_new_connection(path: &Path, command: &str) -> serde_json::Value {
+        use tokio::io::AsyncWriteExt;
+        let mut client = tokio::net::UnixStream::connect(path)
+            .await
+            .expect("the accept loop must still be listening");
+        client
+            .write_all(format!("{command}\n").as_bytes())
+            .await
+            .expect("the connection must accept a command");
+        read_reply(&mut client).await
+    }
+
+    #[test]
+    fn the_accept_loop_serves_another_connection_after_one_ends() {
+        run_async(async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("spe-ipc.sock");
+            let listener = bind_listener(&path).expect("bind should succeed in a writable dir");
+            let (mut output, events) = iced::futures::channel::mpsc::channel::<IpcEvent>(32);
+            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel::<IpcResponse>(1);
+            tokio::spawn(answer_every_command(events, resp_tx));
+            tokio::spawn(async move {
+                serve_connections(
+                    listener,
+                    &mut output,
+                    &mut resp_rx,
+                    std::time::Duration::from_secs(5),
+                )
+                .await;
+            });
+
+            // Each script an IPC client runs is its own connection, so serving
+            // more than one of them is the whole point of the loop.
+            for connection in 1..=2 {
+                let reply = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    command_on_a_new_connection(&path, r#"{"cmd":"deselect"}"#),
+                )
+                .await
+                .unwrap_or_else(|_| panic!("connection {connection} was never answered"));
+                assert_eq!(
+                    reply["ok"], true,
+                    "connection {connection} was not served: {reply}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn the_accept_loop_stops_once_the_app_response_channel_closes() {
+        run_async(async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("spe-ipc.sock");
+            let listener = bind_listener(&path).expect("bind should succeed in a writable dir");
+            let (mut output, _events) = iced::futures::channel::mpsc::channel::<IpcEvent>(32);
+            let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel::<IpcResponse>(1);
+            // Dropped immediately: no command sent through this connection can
+            // ever be answered, which is what a shut-down app looks like.
+            drop(resp_tx);
+
+            let serve = tokio::spawn(async move {
+                serve_connections(
+                    listener,
+                    &mut output,
+                    &mut resp_rx,
+                    std::time::Duration::from_secs(5),
+                )
+                .await;
+            });
+
+            let mut client = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::net::UnixStream::connect(&path),
+            )
+            .await
+            .expect("the accept loop must still be listening")
+            .expect("connect should succeed against a live listener");
+            client
+                .write_all(b"{\"cmd\":\"deselect\"}\n")
+                .await
+                .expect("the connection must accept a command");
+            let mut buf = [0u8; 1];
+            let n = tokio::time::timeout(std::time::Duration::from_secs(5), client.read(&mut buf))
+                .await
+                .expect("the connection must close rather than hang once the app is gone")
+                .expect("reading the closed connection must not error");
+            assert_eq!(
+                n, 0,
+                "no reply can be sent once the app response channel is closed"
+            );
+
+            tokio::time::timeout(std::time::Duration::from_secs(5), serve)
+                .await
+                .expect("a closed app channel must end the accept loop, not leave it running")
+                .expect("the accept loop task must not panic");
         });
     }
 }
