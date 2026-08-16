@@ -154,7 +154,6 @@ fn strip_app_streams(doc: &mut Document, meta: &OverlayMetadata) {
             doc.objects.remove(&prefix_id);
         }
         let contents = match remaining.len() {
-            0 => Object::Array(vec![]),
             1 => Object::Reference(remaining[0]),
             _ => Object::Array(remaining.iter().map(|id| Object::Reference(*id)).collect()),
         };
