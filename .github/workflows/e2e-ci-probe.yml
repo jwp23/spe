@@ -161,12 +161,19 @@ jobs:
             echo "::group::e2e run $i of $REPEATS"
             start=$SECONDS
             set +e
-            cargo test --test ipc_e2e -- --ignored --nocapture 2>&1 | tee "run-$i.log"
-            run_status=${PIPESTATUS[0]}
+            # Keep the streams apart. cage, Xwayland and the app all write to
+            # the inherited stderr, and under --nocapture that noise interleaves
+            # mid-line with the harness's own "test ... ok" progress on stdout —
+            # which silently breaks any anchored grep over a merged log.
+            cargo test --test ipc_e2e -- --ignored --nocapture \
+              > "run-$i.out" 2> "run-$i.err"
+            run_status=$?
             set -e
+            cat "run-$i.out"; cat "run-$i.err"
             echo "run $i: exit $run_status, $((SECONDS - start)) s wall clock"
-            passed=$(grep -c '^test ipc_.* \.\.\. ok$' "run-$i.log" || true)
-            skipped=$(grep -c '^SKIP ipc_' "run-$i.log" || true)
+            passed=$(grep -c '^test ipc_.* \.\.\. ok$' "run-$i.out" || true)
+            skipped=$(grep -c '^SKIP ipc_' "run-$i.err" || true)
+            echo "run $i: harness summary — $(grep '^test result:' "run-$i.out" || echo '<none>')"
             echo "run $i: $passed of $EXPECTED tests reported ok, $skipped self-reported skips"
             [ "$run_status" -eq 0 ] || status=1
             [ "$passed" -eq "$EXPECTED" ] || { echo "run $i: SUITE INCOMPLETE"; status=1; }
@@ -180,5 +187,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-probe-logs
-          path: run-*.log
+          path: |
+            run-*.out
+            run-*.err
           if-no-files-found: warn
