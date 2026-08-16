@@ -45,9 +45,13 @@ each now has a test that catches it.
 - **Tests added: 35** (24 in #155, 11 in #164), growing the lib suite
   844 → 870 (the delta is smaller than 35 because the hollow tests were
   replaced and other commits landed between counts).
-- **Proven-equivalent mutants: 7** dispositioned with written justifications
-  (`.cargo/mutants.toml` `exclude_re`, or code deletion) rather than chased —
-  the audit trail that keeps the 97% kill rate meaningful instead of padded.
+- **Proven-equivalent or intentionally excluded mutants: 7** dispositioned with
+  written justifications (`.cargo/mutants.toml` `exclude_re`, or code deletion).
+  Some are proven equivalent by construction (e.g. `descriptor_flags`,
+  `default_font`, `probe_pdftoppm`); others are excluded because killing them
+  needs a costly fixture (e.g. `extract_font_descriptor`,
+  `MAX_FONT_FILE_SIZE`) rather than because they are equivalent — the audit
+  trail that keeps the 97% kill rate meaningful instead of padded.
 
 ## Kill-rate movement
 
