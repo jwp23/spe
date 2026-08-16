@@ -57,11 +57,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cage \
-            poppler-utils fontconfig \
-            mesa-vulkan-drivers libgl1-mesa-dri libglx-mesa0 \
-            vulkan-tools mesa-utils
+            poppler-utils fontconfig
           dpkg-query -W -f='${Package} ${Version}\n' \
-            cage mesa-vulkan-drivers libgl1-mesa-dri vulkan-tools
+            cage mesa-vulkan-drivers libgl1-mesa-dri || true
 
       # Q1 hard gate. tests/ipc_e2e.rs:37 skips every test when this exits
       # non-zero, so a green suite without this gate proves nothing.
@@ -74,10 +72,6 @@ jobs:
       # stack actually offer wgpu?
       - name: 'Q3: software rendering inventory'
         run: |
-          echo '--- vulkaninfo --summary ---'
-          vulkaninfo --summary 2>&1 | head -60 || echo "vulkaninfo failed: $?"
-          echo '--- glxinfo (needs a display; expected to fail here) ---'
-          glxinfo -B 2>&1 | head -20 || echo "glxinfo failed: $?"
           echo '--- installed ICDs ---'
           ls -l /usr/share/vulkan/icd.d/ || true
 
